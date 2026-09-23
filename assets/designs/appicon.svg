@@ -1,0 +1,24 @@
+
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background with rounded corners and gradient -->
+  <defs>
+    <linearGradient id="appBgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#667eea"/>
+      <stop offset="100%" style="stop-color:#764ba2"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- iOS style rounded rectangle background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="200" ry="200" fill="url(#appBgGradient)"/>
+  
+  <!-- Simple AI/Data icon in white -->
+  <g fill="#FFFFFF" stroke="none">
+    <!-- Central circle representing AI core -->
+    <circle cx="512" cy="400" r="100"/>
+    
+    <!-- Three flowing lines representing data streams -->
+    <path d="M200 620 Q512 520 824 620" stroke="#FFFFFF" stroke-width="50" stroke-linecap="round" fill="none"/>
+    <path d="M250 720 Q512 620 774 720" stroke="#FFFFFF" stroke-width="50" stroke-linecap="round" fill="none"/>
+    <path d="M300 820 Q512 720 724 820" stroke="#FFFFFF" stroke-width="50" stroke-linecap="round" fill="none"/>
+  </g>
+</svg>
