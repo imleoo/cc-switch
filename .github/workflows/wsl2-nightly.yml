@@ -4,8 +4,7 @@ name: WSL2 Nightly
 # so it runs nightly instead of per PR. The per-PR gate in ci.yml only runs the
 # atomic-write contract test against the same WSL2-backed environment.
 on:
-  schedule:
-    - cron: "23 18 * * *" # 02:23 Beijing time
+  # we2ai: 上游触发器已禁用，仅手动触发（见 自定义开发功能列表.md 功能 2）
   workflow_dispatch:
 
 jobs:

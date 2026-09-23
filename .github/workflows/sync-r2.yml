@@ -20,9 +20,7 @@
 name: Sync release to R2
 
 on:
-  release:
-    types: [released]
-  # Manual recovery/backfill: re-sync any existing release tag.
+  # we2ai: 上游触发器已禁用，仅手动触发（见 自定义开发功能列表.md 功能 2）
   workflow_dispatch:
     inputs:
       tag:

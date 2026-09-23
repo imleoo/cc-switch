@@ -1,10 +1,8 @@
 name: Close Stale Issues
 
 on:
-  schedule:
-    # Run daily at 00:00 UTC
-    - cron: '0 0 * * *'
-  workflow_dispatch: # Allow manual trigger
+  # we2ai: 上游触发器已禁用，仅手动触发（见 自定义开发功能列表.md 功能 2）
+  workflow_dispatch:
 
 permissions:
   issues: write

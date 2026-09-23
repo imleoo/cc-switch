@@ -1,14 +1,8 @@
 name: Claude
 
 on:
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
-  pull_request_review:
-    types: [submitted]
-  issues:
-    types: [opened, assigned]
+  # we2ai: 上游触发器已禁用，仅手动触发（见 自定义开发功能列表.md 功能 2）
+  workflow_dispatch:
 
 jobs:
   claude:
