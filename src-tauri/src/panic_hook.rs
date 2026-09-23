@@ -22,10 +22,16 @@ pub fn init_app_config_dir(dir: PathBuf) {
 }
 
 /// 获取默认应用配置目录（不会 panic）
+///
+/// we2ai: WE2AI 模式下回退到 `~/.we2ai`——setup 之前若发生 panic，
+/// `init_app_config_dir` 还没被调用，此处的回退值就是崩溃日志的实际落盘目录。
 fn default_app_config_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cc-switch")
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    if crate::we2ai::mode::enabled() {
+        return home.join(".we2ai");
+    }
+    // we2ai-allow-cc-switch
+    home.join(".cc-switch")
 }
 
 /// 获取应用配置目录（优先使用初始化时写入的值；不会 panic）
@@ -250,7 +256,8 @@ mod tests {
     fn test_crash_log_path() {
         let path = get_crash_log_path();
         assert!(path.ends_with("crash.log"));
-        assert!(path.to_string_lossy().contains(".cc-switch"));
+        // we2ai: 本 fork 恒为 WE2AI 模式，默认回退目录是 ~/.we2ai
+        assert!(path.to_string_lossy().contains(".we2ai"));
     }
 
     #[test]

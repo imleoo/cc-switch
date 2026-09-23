@@ -2,15 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- 注册 ccswitch:// 自定义 URL 协议，用于深链接导入 -->
+  <!-- we2ai: 注册 we2ai:// 自定义 URL 协议，用于深链接导入。
+       本文件与 tauri.conf.json 的 plugins.deep-link.desktop.schemes 都声明了
+       同一个 scheme，两处必须保持一致，由 check-guards.sh 4.3b 的品牌/scheme
+       残留扫描保证。 -->
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
       <key>CFBundleURLName</key>
-      <string>CC Switch Deep Link</string>
+      <string>WE2AI Deep Link</string>
       <key>CFBundleURLSchemes</key>
       <array>
-        <string>ccswitch</string>
+        <string>we2ai</string>
       </array>
     </dict>
   </array>

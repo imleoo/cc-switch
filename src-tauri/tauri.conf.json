@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CC Switch",
+  "productName": "WE2AI",
+  "mainBinaryName": "we2ai",
   "version": "4.20.4",
-  "identifier": "com.ccswitch.desktop",
+  "identifier": "com.we2ai.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
@@ -56,7 +57,7 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["ccswitch"]
+        "schemes": ["we2ai"]
       }
     },
     "updater": {

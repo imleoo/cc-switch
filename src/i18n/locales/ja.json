@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "CC Switch",
+    "title": "WE2AI",
     "description": "Claude Code・Codex・Gemini CLI のためのオールインワンアシスタント"
   },
   "common": {
@@ -46,9 +46,9 @@
     "collapse": "折りたたむ"
   },
   "firstRunNotice": {
-    "title": "CC Switch へようこそ",
-    "bodyDefault": "CC Switch は Claude Code / Codex / Gemini CLI の複数プロバイダーをワンクリックで切り替えられるツールです。すでにこれらのツールを設定済みの場合、CC Switch は現在の設定を「default」という名前のプロバイダーとして自動的に保存するので、既存の設定が失われることはありません。",
-    "bodyOfficial": "リストには「Official（公式）」プリセットも用意されており、公式バージョンに戻したくなったらクリックするだけで切り替えられます。切り替える前に現在の設定は自動で default にバックアップされるので、自由に行き来できます。これが CC Switch の仕組みです 😊",
+    "title": "WE2AI へようこそ",
+    "bodyDefault": "WE2AI は Claude Code / Codex / Gemini CLI の複数プロバイダーをワンクリックで切り替えられるツールです。すでにこれらのツールを設定済みの場合、WE2AI は現在の設定を「default」という名前のプロバイダーとして自動的に保存するので、既存の設定が失われることはありません。",
+    "bodyOfficial": "リストには「Official（公式）」プリセットも用意されており、公式バージョンに戻したくなったらクリックするだけで切り替えられます。切り替える前に現在の設定は自動で default にバックアップされるので、自由に行き来できます。これが WE2AI の仕組みです 😊",
     "confirm": "了解しました"
   },
   "apiKeyInput": {
@@ -210,7 +210,7 @@
     "modeProxy": "ルーティング必要",
     "modelMappingToggle": "モデルマッピングが必要",
     "modelMappingOffHint": "プロバイダーが Claude Desktop の三つの役割 ID（claude-sonnet-* / claude-opus-* / claude-haiku-*）を受け付ける場合のみ直結できます。それ以外のモデル名（claude-3-5-sonnet-… などの旧式 ID を含む）は「モデルマッピング」を選択してください。",
-    "modelMappingOnHint": "Claude Desktop は claude-sonnet-* / claude-opus-* / claude-haiku-* の三つの役割 ID のみ受け付けます。「モデルマッピング」を選択すると、CC Switch がこの三役割をプロバイダーの実モデルにマッピングし、使用中はローカルルーティングを起動したままにします。",
+    "modelMappingOnHint": "Claude Desktop は claude-sonnet-* / claude-opus-* / claude-haiku-* の三つの役割 ID のみ受け付けます。「モデルマッピング」を選択すると、WE2AI がこの三役割をプロバイダーの実モデルにマッピングし、使用中はローカルルーティングを起動したままにします。",
     "routeMapTitle": "モデルマッピング",
     "routeMapHint": "Sonnet・Opus・Haiku の各区分に実際のリクエストモデルを入力してください。DeepSeek や Kimi などのブランド名はメニュー表示名に入れられます。空欄の区分は Sonnet（または最初に入力した区分）のモデルを引き継ぐため、サブ agent が呼び出す Haiku が常に利用可能になります。",
     "routeModelLabel": "モデル役割",
@@ -252,7 +252,7 @@
     "codexRestartRequired": "切り替えました。反映するにはクライアントを再起動してください",
     "grokBuildRestartRequired": "切り替えました。反映するには Grok Build を再起動してください",
     "claudeDesktopRestartRequired": "切り替えました。反映するには Claude Desktop を再起動してください",
-    "claudeDesktopProxyRestartRequired": "切り替えました。CC Switch を起動したまま Claude Desktop を再起動してください",
+    "claudeDesktopProxyRestartRequired": "切り替えました。WE2AI を起動したまま Claude Desktop を再起動してください",
     "addToConfigSuccess": "設定に追加しました",
     "removeFromConfigSuccess": "設定から削除しました",
     "removeFromConfigFailed": "プロバイダーを削除できません",
@@ -300,7 +300,7 @@
     "deleteProvider": "プロバイダーを削除",
     "deleteProviderMessage": "プロバイダー「{{name}}」を削除してもよろしいですか？この操作は元に戻せません。",
     "removeProvider": "プロバイダーを解除",
-    "removeProviderMessage": "プロバイダー「{{name}}」を設定から解除してもよろしいですか？\n\n解除後、このプロバイダーは無効になりますが、設定データは CC Switch に保持されます。いつでも再追加できます。",
+    "removeProviderMessage": "プロバイダー「{{name}}」を設定から解除してもよろしいですか？\n\n解除後、このプロバイダーは無効になりますが、設定データは WE2AI に保持されます。いつでも再追加できます。",
     "piDefaultProviderWarning": "Pi のグローバルデフォルトは現在このプロバイダーを参照しています。続行すると、Pi は別の利用可能なモデルを試します。/model で再選択するか、/login で別のプロバイダーにログインできます。",
     "proxy": {
       "title": "ローカルルーティングの有効化",
@@ -384,7 +384,7 @@
       },
       "globalProxy": {
         "title": "グローバル送信プロキシ",
-        "description": "CC Switch が外部 API にアクセスする際のプロキシを設定"
+        "description": "WE2AI が外部 API にアクセスする際のプロキシを設定"
       },
       "data": {
         "title": "データ管理",
@@ -455,7 +455,7 @@
     "themeDark": "ダーク",
     "themeSystem": "システム",
     "importExport": "SQL インポート/エクスポート",
-    "importExportHint": "移行や復元用にデータベースの SQL バックアップをインポート/エクスポートします（インポートは CC Switch がエクスポートしたバックアップのみ対応）。",
+    "importExportHint": "移行や復元用にデータベースの SQL バックアップをインポート/エクスポートします（インポートは WE2AI がエクスポートしたバックアップのみ対応）。",
     "exportConfig": "SQL バックアップをエクスポート",
     "selectConfigFile": "SQL ファイルを選択",
     "noFileSelected": "ファイルが選択されていません。",
@@ -693,7 +693,7 @@
     "windowBehavior": "ウィンドウ動作",
     "windowBehaviorHint": "最小化動作や Claude プラグイン連携を設定します。",
     "launchOnStartup": "起動時に自動実行",
-    "launchOnStartupDescription": "システム起動時に CC Switch を自動起動します",
+    "launchOnStartupDescription": "システム起動時に WE2AI を自動起動します",
     "silentStartup": "サイレント起動",
     "silentStartupDescription": "起動時にメインウィンドウを表示せず、トレイのみで起動",
     "autoLaunchFailed": "自動起動の設定に失敗しました",
@@ -726,10 +726,10 @@
     },
     "skillStorage": {
       "title": "スキル保存場所",
-      "description": "CC Switch がスキルのマスターコピーを保存するディレクトリを選択します",
-      "ccSwitch": "CC Switch",
+      "description": "WE2AI がスキルのマスターコピーを保存するディレクトリを選択します",
+      "ccSwitch": "WE2AI",
       "unified": "~/.agents/skills",
-      "ccSwitchHint": "スキルは ~/.cc-switch/skills/ に保存され、シンボリックリンクまたはコピーで各アプリに同期されます。",
+      "ccSwitchHint": "スキルは ~/.we2ai/skills/ に保存され、シンボリックリンクまたはコピーで各アプリに同期されます。",
       "unifiedHint": "スキルは ~/.agents/skills/ に保存されます（Agent Skills オープン標準）。対応ツール（Claude Code、Codex、Gemini CLI など）はこのディレクトリのスキルを直接検出します。",
       "confirmTitle": "スキル保存場所の移行",
       "confirmMessage": "{{count}} 個のスキルを新しい場所に移動します。続行しますか？",
@@ -776,8 +776,8 @@
     },
     "configDirectoryOverride": "設定ディレクトリの上書き（詳細）",
     "configDirectoryDescription": "WSL などで Claude Code や Codex を使う場合、ここで設定ディレクトリを WSL 側に合わせるとデータを揃えられます。",
-    "appConfigDir": "CC Switch 設定ディレクトリ",
-    "appConfigDirDescription": "CC Switch の保存場所をカスタマイズします（クラウド同期フォルダを指定すると設定を同期できます）",
+    "appConfigDir": "WE2AI 設定ディレクトリ",
+    "appConfigDirDescription": "WE2AI の保存場所をカスタマイズします（クラウド同期フォルダを指定すると設定を同期できます）",
     "browsePlaceholderApp": "例: C:\\\\Users\\\\Administrator\\\\.cc-switch",
     "claudeConfigDir": "Claude Code 設定ディレクトリ",
     "claudeConfigDirDescription": "Claude の設定ディレクトリ（settings.json）を上書きします。カスタムディレクトリでは .claude.json（MCP）をその中に保存し、既定の ~/.claude では Claude Code の既定どおり ~/.claude.json を使います。",
@@ -822,7 +822,7 @@
     "viewCurrentReleaseNotes": "現在のバージョンのリリースノートを見る",
     "officialWebsite": "公式サイト",
     "github": "GitHub",
-    "starPrompt": "CC Switch がお役に立てたなら、GitHub でスターをお願いします。私たちにとって大きな励みになります",
+    "starPrompt": "WE2AI がお役に立てたなら、GitHub でスターをお願いします。私たちにとって大きな励みになります",
     "manualInstallCommands": "手動インストールコマンド",
     "oneClickInstallHint": "Claude Code / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes / Pi をインストールまたは更新",
     "localEnvCheck": "ローカル環境チェック",
@@ -868,7 +868,7 @@
     "importFailedError": "設定のインポートに失敗しました: {{message}}",
     "exportFailedError": "設定のエクスポートに失敗しました:",
     "restartRequired": "再起動が必要です",
-    "restartRequiredMessage": "CC Switch の設定ディレクトリを変更すると再起動が必要です。今すぐ再起動しますか？",
+    "restartRequiredMessage": "WE2AI の設定ディレクトリを変更すると再起動が必要です。今すぐ再起動しますか？",
     "restartNow": "今すぐ再起動",
     "restartLater": "後で再起動",
     "restartFailed": "アプリの再起動に失敗しました。手動で閉じて再度開いてください。",
@@ -987,7 +987,7 @@
     },
     "current": {
       "readFailed": "Pi のプロバイダー設定を読み込めません",
-      "stateUnavailableHint": "CC Switch が Pi のプロバイダー設定を読み込むまで、プロバイダーの変更は無効です。"
+      "stateUnavailableHint": "WE2AI が Pi のプロバイダー設定を読み込むまで、プロバイダーの変更は無効です。"
     },
     "prompts": {
       "globalTab": "グローバルプロンプト",
@@ -1638,7 +1638,7 @@
     "headerName": "ヘッダー",
     "headerValue": "値",
     "headerNamePlaceholder": "X-Title",
-    "headerValuePlaceholder": "CC Switch",
+    "headerValuePlaceholder": "WE2AI",
     "removeHeader": "ヘッダーを削除",
     "noHeaders": "カスタムヘッダーはありません",
     "extraOptions": "追加オプション",
@@ -1850,11 +1850,11 @@
     "modelsDevDefaultHint": "最新リリース順に {{shown}} 件を表示しています（全 {{total}} 件）。キーワード入力で全件検索できます",
     "modelsDevAutoSync": {
       "title": "models.dev 料金の自動同期",
-      "description": "有効にすると、CC Switch の起動時に選択したモデルの最新料金を定期的に取得し、ローカル料金ファイルに保存します。",
+      "description": "有効にすると、WE2AI の起動時に選択したモデルの最新料金を定期的に取得し、ローカル料金ファイルに保存します。",
       "enabled": "有効",
       "disabled": "無効",
       "enableConfirmTitle": "料金の自動同期を有効にしますか？",
-      "enableConfirmMessage": "有効にすると、CC Switch の起動時に models.dev から選択したモデルの料金を定期的に更新します（最大 6 時間に 1 回）。同じモデル ID の内蔵料金と手動設定した料金は上書きされます。",
+      "enableConfirmMessage": "有効にすると、WE2AI の起動時に models.dev から選択したモデルの料金を定期的に更新します（最大 6 時間に 1 回）。同じモデル ID の内蔵料金と手動設定した料金は上書きされます。",
       "enableConfirmAction": "自動同期を有効にする",
       "configure": "モデルを選択",
       "configureTitle": "料金を自動同期するモデルを選択",
@@ -1975,7 +1975,7 @@
   },
   "dbUpgrade": {
     "title": "データベースのバージョンが新しすぎます",
-    "description": "このデータベースは新しいバージョンの CC Switch で作成されています。続行するにはアプリを更新してください。更新してもデータは削除されません。",
+    "description": "このデータベースは新しいバージョンの WE2AI で作成されています。続行するにはアプリを更新してください。更新してもデータは削除されません。",
     "versionInfo": "データベース v{{db}} · アプリ対応 v{{supported}}",
     "dbPath": "データベースファイル",
     "checking": "利用可能な更新を確認中…",
@@ -2021,7 +2021,7 @@
       "deleteConfirm": "サーバー「{{id}}」を削除しますか？この操作は元に戻せません。",
       "noServers": "まだサーバーがありません",
       "enabledApps": "有効なアプリ",
-      "noImportFound": "インポートする MCP サーバーが見つかりませんでした。すべてのサーバーは CC Switch で管理されています。",
+      "noImportFound": "インポートする MCP サーバーが見つかりませんでした。すべてのサーバーは WE2AI で管理されています。",
       "importSuccess": "{{count}} 個の MCP サーバーをインポートしました",
       "searchPlaceholder": "MCP の名前、説明、タグ、コマンドを検索...",
       "searchAriaLabel": "管理中の MCP サーバーを検索",
@@ -2513,7 +2513,7 @@
     "installSuccess": "スキル {{name}} をインストールしました",
     "installFailed": "インストールに失敗しました",
     "uninstallSuccess": "スキル {{name}} をアンインストールしました",
-    "uninstallPiPreserved": "Pi のコピーが CC Switch 管理下であることを確認できなかったため、そのまま残しました: {{path}}",
+    "uninstallPiPreserved": "Pi のコピーが WE2AI 管理下であることを確認できなかったため、そのまま残しました: {{path}}",
     "uninstallPiCleanupIncomplete": "Pi のクリーンアップを完了できませんでした。Pi Skills ディレクトリにコピーが残っていないか手動で確認してください。",
     "uninstallFailed": "アンインストールに失敗しました",
     "update": "更新",
@@ -2613,10 +2613,10 @@
     "noInstalledDescription": "リポジトリからスキルを発見してインストールするか、既存のスキルをインポートしてください",
     "discover": "スキルを発見",
     "import": "既存をインポート",
-    "importDescription": "CC Switch 統合管理にインポートするスキルを選択してください",
+    "importDescription": "WE2AI 統合管理にインポートするスキルを選択してください",
     "importSuccess": "{{count}} 件のスキルをインポートしました",
     "importSelected": "選択をインポート ({{count}})",
-    "noUnmanagedFound": "インポートするスキルが見つかりませんでした。すべてのスキルは CC Switch で管理されています。",
+    "noUnmanagedFound": "インポートするスキルが見つかりませんでした。すべてのスキルは WE2AI で管理されています。",
     "unmanagedAvailable": "インポート可能なスキルがあります",
     "foundIn": "発見場所",
     "local": "ローカル",
@@ -2661,7 +2661,7 @@
   },
   "deeplink": {
     "confirmImport": "プロバイダーのインポートを確認",
-    "confirmImportDescription": "次の設定をディープリンクから CC Switch へインポートします",
+    "confirmImportDescription": "次の設定をディープリンクから WE2AI へインポートします",
     "importPrompt": "プロンプトをインポート",
     "importPromptDescription": "このシステムプロンプトをインポートするか確認してください",
     "importMcp": "MCP サーバーをインポート",

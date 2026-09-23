@@ -255,12 +255,19 @@ pub fn get_claude_settings_path() -> PathBuf {
     settings
 }
 
-/// 获取应用配置目录路径 (~/.cc-switch)
+/// 获取应用配置目录路径 (~/.cc-switch，WE2AI 模式下为 ~/.we2ai)
 pub fn get_app_config_dir() -> PathBuf {
+    // we2ai: 数据根最先返回 ~/.we2ai，早于 Store override 与 Windows 旧目录回退，
+    // 确保 WE2AI 与 CC Switch 的数据库、设置、日志、备份完全隔离。
+    if crate::we2ai::mode::enabled() {
+        return crate::we2ai::mode::data_root();
+    }
+
     if let Some(custom) = crate::app_store::get_app_config_dir_override() {
         return custom;
     }
 
+    // we2ai-allow-cc-switch
     let default_dir = get_home_dir().join(".cc-switch");
 
     // 兼容 v3.10.3：当用户环境存在 `HOME` 且与真实用户目录不同，
@@ -274,6 +281,7 @@ pub fn get_app_config_dir() -> PathBuf {
             if let Ok(home_env) = std::env::var("HOME") {
                 let trimmed = home_env.trim();
                 if !trimmed.is_empty() {
+                    // we2ai-allow-cc-switch
                     let legacy_dir = PathBuf::from(trimmed).join(".cc-switch");
                     if legacy_dir.join("cc-switch.db").exists() {
                         log::info!(

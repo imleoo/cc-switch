@@ -39,6 +39,11 @@ mod store;
 mod tray;
 mod usage_events;
 mod usage_script;
+// we2ai: WE2AI 定制模块（模式开关、数据隔离、启动/退出白名单、IPC 白名单）。
+// pub 是为了让 tests/we2ai_startup_migration_gates.rs 之类的外部集成测试能
+// 直接引用 we2ai::mode::{startup_allowed, StartupTask}，不影响 crate 内部
+// 既有的 `crate::we2ai::...` 用法。
+pub mod we2ai;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
 pub use codex_config::{
@@ -68,7 +73,9 @@ pub use services::{
     ConfigService, EndpointLatency, McpService, PromptService, ProviderService, ProxyService,
     SkillService, SpeedtestService,
 };
-pub use settings::{update_settings, AppSettings};
+pub use settings::{
+    is_codex_third_party_history_provider_bucket_migrated, update_settings, AppSettings,
+};
 pub use store::AppState;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -250,7 +257,8 @@ fn handle_deeplink_url(
     focus_main_window: bool,
     source: &str,
 ) -> bool {
-    if !url_str.starts_with("ccswitch://") {
+    // we2ai: 协议名改为 we2ai://（deeplink/parser.rs 同步只接受该 scheme）
+    if !url_str.starts_with("we2ai://") {
         return false;
     }
 
@@ -258,6 +266,33 @@ fn handle_deeplink_url(
         "✓ Deep link URL detected from {source}: {}",
         url_for_log(url_str)
     );
+
+    // we2ai: WE2AI 模式下 provider/mcp/skill/prompt 四类导入全部拒绝，深链第一版
+    // 只用于唤起窗口，避免创建非 WE2AI 供应商（IPC 白名单本身也会拒绝导入命令，
+    // 这里是第二层防御，同时避免向前端广播一个走不通的 deeplink-import 事件）。
+    if we2ai::mode::enabled() {
+        log::info!(
+            "○ WE2AI 模式下忽略深链导入请求，仅用于唤起窗口: {}",
+            url_for_log(url_str)
+        );
+        if focus_main_window {
+            if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = window.set_skip_taskbar(false);
+                }
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+                #[cfg(target_os = "linux")]
+                {
+                    linux_fix::nudge_main_window(window.clone());
+                }
+                log::info!("✓ Window shown and focused");
+            }
+        }
+        return true;
+    }
 
     match crate::deeplink::parse_deeplink_url(url_str) {
         Ok(request) => {
@@ -504,7 +539,7 @@ pub fn run() {
 
                 // 用户配置存在数据库中，数据库尚未打开时使用保守的 Info 级别。
                 log::set_max_level(log::LevelFilter::Info);
-                log::info!("=== CC Switch v{} started ===", env!("CARGO_PKG_VERSION"));
+                log::info!("=== WE2AI v{} started ===", env!("CARGO_PKG_VERSION"));
             }
 
             // 首次读取覆盖路径时 logger 尚未可用；此处重放一次，
@@ -675,53 +710,61 @@ pub fn run() {
             // ============================================================
 
             // 1. 初始化默认 Skills 仓库（已有内置检查：表非空则跳过）
-            match app_state.db.init_default_skill_repos() {
-                Ok(count) if count > 0 => {
-                    log::info!("✓ Initialized {count} default skill repositories");
+            // we2ai: WE2AI 模式禁用，避免向全新数据根写入内置 Skills 仓库
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::DefaultSkillsInit) {
+                match app_state.db.init_default_skill_repos() {
+                    Ok(count) if count > 0 => {
+                        log::info!("✓ Initialized {count} default skill repositories");
+                    }
+                    Ok(_) => {} // 表非空，静默跳过
+                    Err(e) => log::warn!("✗ Failed to initialize default skill repos: {e}"),
                 }
-                Ok(_) => {} // 表非空，静默跳过
-                Err(e) => log::warn!("✗ Failed to initialize default skill repos: {e}"),
             }
 
             // 1.1. Skills 统一管理迁移：当数据库迁移到 v3 结构后，自动从各应用目录导入到 SSOT
             // 触发条件由 schema 迁移设置 settings.skills_ssot_migration_pending = true 控制。
-            match app_state.db.get_setting("skills_ssot_migration_pending") {
-                Ok(Some(flag)) if flag == "true" || flag == "1" => {
-                    // 安全保护：如果用户已经有 v3 结构的 Skills 数据，就不要自动清空重建。
-                    let has_existing = app_state
-                        .db
-                        .get_all_installed_skills()
-                        .map(|skills| !skills.is_empty())
-                        .unwrap_or(false);
-
-                    if has_existing {
-                        log::info!(
-                            "Detected skills_ssot_migration_pending but skills table not empty; skipping auto import."
-                        );
-                        let _ = app_state
+            // we2ai: WE2AI 模式禁用——migrate_skills_to_ssot 会扫描各工具的真实
+            // Skills 目录（~/.claude/skills、~/.codex/skills 等）并复制文件，
+            // 属于"从外部工具读取"的范畴，不是纯内部数据库格式迁移。
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::SkillsSsotMigration) {
+                match app_state.db.get_setting("skills_ssot_migration_pending") {
+                    Ok(Some(flag)) if flag == "true" || flag == "1" => {
+                        // 安全保护：如果用户已经有 v3 结构的 Skills 数据，就不要自动清空重建。
+                        let has_existing = app_state
                             .db
-                            .set_setting("skills_ssot_migration_pending", "false");
-                    } else {
-                        match crate::services::skill::migrate_skills_to_ssot(&app_state.db) {
-                            Ok(count) => {
-                                log::info!("✓ Auto imported {count} skill(s) into SSOT");
-                                if count > 0 {
-                                    crate::init_status::set_skills_migration_result(count);
+                            .get_all_installed_skills()
+                            .map(|skills| !skills.is_empty())
+                            .unwrap_or(false);
+
+                        if has_existing {
+                            log::info!(
+                                "Detected skills_ssot_migration_pending but skills table not empty; skipping auto import."
+                            );
+                            let _ = app_state
+                                .db
+                                .set_setting("skills_ssot_migration_pending", "false");
+                        } else {
+                            match crate::services::skill::migrate_skills_to_ssot(&app_state.db) {
+                                Ok(count) => {
+                                    log::info!("✓ Auto imported {count} skill(s) into SSOT");
+                                    if count > 0 {
+                                        crate::init_status::set_skills_migration_result(count);
+                                    }
+                                    let _ = app_state
+                                        .db
+                                        .set_setting("skills_ssot_migration_pending", "false");
                                 }
-                                let _ = app_state
-                                    .db
-                                    .set_setting("skills_ssot_migration_pending", "false");
-                            }
-                            Err(e) => {
-                                log::warn!("✗ Failed to auto import legacy skills to SSOT: {e}");
-                                crate::init_status::set_skills_migration_error(e.to_string());
-                                // 保留 pending 标志，方便下次启动重试
+                                Err(e) => {
+                                    log::warn!("✗ Failed to auto import legacy skills to SSOT: {e}");
+                                    crate::init_status::set_skills_migration_error(e.to_string());
+                                    // 保留 pending 标志，方便下次启动重试
+                                }
                             }
                         }
                     }
+                    Ok(_) => {} // 未开启迁移标志，静默跳过
+                    Err(e) => log::warn!("✗ Failed to read skills migration flag: {e}"),
                 }
-                Ok(_) => {} // 未开启迁移标志，静默跳过
-                Err(e) => log::warn!("✗ Failed to read skills migration flag: {e}"),
             }
 
             // 1.5. 自动导入 live 配置 + seed 官方预设供应商（Claude / Codex / Gemini）
@@ -738,50 +781,61 @@ pub fn run() {
             let fresh_install_at_startup =
                 app_state.db.is_providers_empty().unwrap_or(false);
 
-            for app_type in
-                crate::app_config::AppType::all().filter(|t| !t.is_additive_mode())
+            // we2ai: WE2AI 模式禁用首次运行导入现有工具供应商，避免污染全新数据根
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::FirstRunImportToolProviders)
             {
-                if !crate::services::provider::should_import_default_config_on_startup(
-                    &app_state,
-                    &app_type,
-                )
-                .unwrap_or(false)
+                for app_type in
+                    crate::app_config::AppType::all().filter(|t| !t.is_additive_mode())
                 {
-                    log::debug!(
-                        "○ {} already has providers; live import skipped",
-                        app_type.as_str()
-                    );
-                    continue;
-                }
+                    if !crate::services::provider::should_import_default_config_on_startup(
+                        &app_state,
+                        &app_type,
+                    )
+                    .unwrap_or(false)
+                    {
+                        log::debug!(
+                            "○ {} already has providers; live import skipped",
+                            app_type.as_str()
+                        );
+                        continue;
+                    }
 
-                match crate::services::provider::import_default_config(
-                    &app_state,
-                    app_type.clone(),
-                ) {
-                    Ok(true) => log::info!(
-                        "✓ Imported live config for {} as default provider",
-                        app_type.as_str()
-                    ),
-                    Ok(false) => log::debug!(
-                        "○ {} already has providers; live import skipped",
-                        app_type.as_str()
-                    ),
-                    Err(e) => log::debug!(
-                        "○ No live config to import for {}: {e}",
-                        app_type.as_str()
-                    ),
+                    match crate::services::provider::import_default_config(
+                        &app_state,
+                        app_type.clone(),
+                    ) {
+                        Ok(true) => log::info!(
+                            "✓ Imported live config for {} as default provider",
+                            app_type.as_str()
+                        ),
+                        Ok(false) => log::debug!(
+                            "○ {} already has providers; live import skipped",
+                            app_type.as_str()
+                        ),
+                        Err(e) => log::debug!(
+                            "○ No live config to import for {}: {e}",
+                            app_type.as_str()
+                        ),
+                    }
                 }
             }
 
-            match app_state.db.init_default_official_providers() {
-                Ok(count) if count > 0 => {
-                    log::info!("✓ Seeded {count} official provider(s)");
+            // we2ai: WE2AI 模式禁用官方供应商种子，供应商表只应含 WE2AI 自己写入的记录
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::SeedOfficialProviders) {
+                match app_state.db.init_default_official_providers() {
+                    Ok(count) if count > 0 => {
+                        log::info!("✓ Seeded {count} official provider(s)");
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("✗ Failed to seed official providers: {e}"),
                 }
-                Ok(_) => {}
-                Err(e) => log::warn!("✗ Failed to seed official providers: {e}"),
             }
 
-            {
+            // we2ai: WE2AI 模式禁用——三个迁移函数都会改写共享的 Codex 会话
+            // jsonl 与 state DB 文件（codex_history_migration.rs），全新数据根
+            // 下 DB 里没有第三方 provider id，函数本身会 no-op，但仍按门控清单
+            // 统一禁用，避免未来 DB 状态变化后意外触发。
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::CodexHistoryMigration) {
                 let db_for_codex_history_migration = app_state.db.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     match crate::codex_history_migration::maybe_migrate_codex_third_party_history_provider_bucket(
@@ -859,6 +913,10 @@ pub fn run() {
             //
             // 底层 read_*_config 在文件不存在时返回默认空配置，因此新装且无
             // live 文件的用户走 Ok(0) 路径，不会产生错误日志噪音。
+            //
+            // we2ai: WE2AI 模式禁用累加模式供应商同步与 OMO/OMO Slim 本地导入，
+            // 二者都会向全新数据根写入供应商记录。
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::AdditiveProviderImport) {
             match crate::services::provider::import_opencode_providers_from_live(&app_state) {
                 Ok(count) if count > 0 => {
                     log::info!("✓ Synced {count} OpenCode provider(s) from live config");
@@ -938,9 +996,13 @@ pub fn run() {
                     }
                 }
             }
+            } // we2ai: AdditiveProviderImport 门控结束
 
             // 3. 导入 MCP 服务器配置（表空时触发）
-            if app_state.db.is_mcp_table_empty().unwrap_or(false) {
+            // we2ai: WE2AI 模式禁用，避免向全新数据根写入 MCP 记录
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::ImportMcpOnEmptyTable)
+                && app_state.db.is_mcp_table_empty().unwrap_or(false)
+            {
                 log::info!("MCP table empty, importing from live configurations...");
 
                 match crate::services::mcp::McpService::import_from_claude(&app_state) {
@@ -993,7 +1055,10 @@ pub fn run() {
             }
 
             // 4. 导入提示词文件（表空时触发）
-            if app_state.db.is_prompts_table_empty().unwrap_or(false) {
+            // we2ai: WE2AI 模式禁用，避免向全新数据根写入提示词记录
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::ImportPromptsOnEmptyTable)
+                && app_state.db.is_prompts_table_empty().unwrap_or(false)
+            {
                 log::info!("Prompts table empty, importing from live configurations...");
 
                 for app in [
@@ -1035,14 +1100,30 @@ pub fn run() {
             {
                 #[cfg(target_os = "linux")]
                 {
-                    // Use Tauri's path API to get correct path (includes app identifier)
-                    // tauri-plugin-deep-link writes to: ~/.local/share/com.ccswitch.desktop/applications/cc-switch-handler.desktop
-                    // Only register if .desktop file doesn't exist to avoid overwriting user customizations
-                    let should_register = app
-                        .path()
-                        .data_dir()
-                        .map(|d| !d.join("applications/cc-switch-handler.desktop").exists())
-                        .unwrap_or(true);
+                    // `app.path().data_dir()` 是裸的 XDG data 目录（`~/.local/share`，
+                    // 不带任何 app 标识），所有桌面应用共享；tauri-plugin-deep-link
+                    // 2.4.7 正是写到这里的 `applications/` 子目录（其内部实现同样调用
+                    // `.data_dir()` 而不是按 identifier 隔离的 `.app_data_dir()`），
+                    // 文件名为 `<可执行文件名>-handler.desktop`。这意味着两个不同
+                    // identifier 的应用只要编译出的可执行文件同名，就会在这个共享
+                    // 目录里抢占同一个 .desktop 文件——we2ai-allow-cc-switch 场景
+                    // 之外的真正解法是让可执行文件名唯一（见 tauri.conf.json 的
+                    // `mainBinaryName`），而不是依赖 identifier 区分。
+                    //
+                    // 这里按运行时的实际可执行文件名（`tauri::utils::platform::current_exe()`，
+                    // 与插件内部使用的是同一个函数）动态推导 handler 文件名，不写死
+                    // "we2ai-handler.desktop"：这样无论 `mainBinaryName` 是否在当前
+                    // 构建方式下生效（例如 `cargo run` 之类不经过 `tauri build` 重命名
+                    // 步骤的场景），本判断读到的都是与插件一致的真实文件名，不会因为
+                    // 硬编码而与插件的实际行为脱节。
+                    let should_register = (|| {
+                        let exe = tauri::utils::platform::current_exe().ok()?;
+                        let file_name = exe.file_name()?.to_string_lossy().to_string();
+                        let handler_file_name = format!("{file_name}-handler.desktop");
+                        let data_dir = app.path().data_dir().ok()?;
+                        Some(!data_dir.join("applications").join(handler_file_name).exists())
+                    })()
+                    .unwrap_or(true);
 
                     if should_register {
                         if let Err(e) = app.deep_link().register_all() {
@@ -1084,7 +1165,7 @@ pub fn run() {
                         log::debug!("  URL[{i}]: {}", url_for_log(url_str));
 
                         if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
-                            break; // Process only first ccswitch:// URL
+                            break; // Process only first we2ai:// URL
                         }
                     }
                 }
@@ -1096,7 +1177,7 @@ pub fn run() {
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
-                .tooltip("CC Switch") // 鼠标悬停提示
+                .tooltip("WE2AI") // 鼠标悬停提示
                 .on_tray_icon_event(|tray, event| match event {
                     // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
                     // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
@@ -1138,14 +1219,17 @@ pub fn run() {
             }
 
             let _tray = tray_builder.build(app)?;
-            crate::services::webdav_auto_sync::start_worker(
-                app_state.db.clone(),
-                app.handle().clone(),
-            );
-            crate::services::s3_auto_sync::start_worker(
-                app_state.db.clone(),
-                app.handle().clone(),
-            );
+            // we2ai: WE2AI 模式禁用 WebDAV/S3 自动同步，不同步任何供应商配置出站
+            if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::WebdavS3Sync) {
+                crate::services::webdav_auto_sync::start_worker(
+                    app_state.db.clone(),
+                    app.handle().clone(),
+                );
+                crate::services::s3_auto_sync::start_worker(
+                    app_state.db.clone(),
+                    app.handle().clone(),
+                );
+            }
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
 
@@ -1234,7 +1318,10 @@ pub fn run() {
                 // 检查 Live 配置是否仍处于被接管状态（包含占位符）
                 let live_taken_over = state.proxy_service.detect_takeover_in_live_configs();
 
-                if has_backups || live_taken_over {
+                // we2ai: WE2AI 模式禁用接管残留恢复——恢复会改写 CC Switch 正在接管的 live 文件
+                if (has_backups || live_taken_over)
+                    && we2ai::mode::startup_allowed(we2ai::mode::StartupTask::CrashRecovery)
+                {
                     log::warn!("检测到上次异常退出（存在接管残留），正在恢复 Live 配置...");
                     if let Err(e) = state.proxy_service.recover_from_crash().await {
                         log::error!("恢复 Live 配置失败: {e}");
@@ -1243,21 +1330,29 @@ pub fn run() {
                     }
                 }
 
-                // 必须排在 auto-extract 之前：先把历史泄漏进 Gemini 共享片段的凭据
-                // 清干净，否则紧接着的提取会基于被污染的 live 再写一遍。
-                if let Err(e) =
-                    crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
-                        &state,
-                    )
-                    .await
-                {
-                    log::warn!("清理 Gemini 通用配置泄漏凭据失败: {e}");
+                // we2ai: WE2AI 模式禁用清理与公共配置片段抽取，避免把用户 hooks、
+                // permissions 等非托管内容落进 WE2AI 数据库与备份
+                if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::CommonConfigSnippets) {
+                    // 必须排在 auto-extract 之前：先把历史泄漏进 Gemini 共享片段的凭据
+                    // 清干净，否则紧接着的提取会基于被污染的 live 再写一遍。
+                    if let Err(e) =
+                        crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
+                            &state,
+                        )
+                        .await
+                    {
+                        log::warn!("清理 Gemini 通用配置泄漏凭据失败: {e}");
+                    }
+
+                    initialize_common_config_snippets(&state);
                 }
 
-                initialize_common_config_snippets(&state);
-
-                // 检查 settings 表中的代理状态，自动恢复代理服务
-                restore_proxy_state_on_startup(&state).await;
+                // we2ai: WE2AI 模式禁用代理状态自动恢复
+                if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::ProxyStateRestoreOnStartup)
+                {
+                    // 检查 settings 表中的代理状态，自动恢复代理服务
+                    restore_proxy_state_on_startup(&state).await;
+                }
 
                 // Periodic backup check (on startup)
                 if let Err(e) = state.db.periodic_backup_if_needed() {
@@ -1281,6 +1376,8 @@ pub fn run() {
                 });
 
                 // Session log usage sync: 启动时同步一次，之后每 60 秒检查
+                // we2ai: WE2AI 模式禁用，不扫描用户工具的会话日志
+                if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::SessionUsageSync) {
                 let db_for_session_sync = state.db.clone();
                 tauri::async_runtime::spawn(async move {
                     const SESSION_SYNC_INTERVAL_SECS: u64 = 60;
@@ -1331,6 +1428,7 @@ pub fn run() {
                         run_session_sync(db_for_session_sync.clone(), false).await;
                     }
                 });
+                } // we2ai: SessionUsageSync 门控结束
             });
 
             // Linux: 禁用 WebKitGTK 硬件加速，防止 EGL 初始化失败导致白屏
@@ -1385,7 +1483,15 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        // we2ai: 默认拒绝的 IPC 白名单——we2ai_* 交给 WE2AI 自己的 handler，
+        // 上游命令只放行 we2ai::mode 白名单内的一小部分，其余一律 reject。
+        // 上游 generate_handler! 列表本身一行不动。
+        .invoke_handler(we2ai::mode::gate(
+            tauri::generate_handler![
+                we2ai::commands::we2ai_get_settings,
+                we2ai::commands::we2ai_save_settings,
+            ],
+            tauri::generate_handler![
             commands::get_providers,
             commands::get_current_provider,
             commands::add_provider,
@@ -1730,7 +1836,8 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
-        ]);
+            ],
+        ));
 
     let app = builder
         .build(tauri::generate_context!())
@@ -1815,70 +1922,24 @@ pub fn run() {
                         }
                     }
                 }
-                // 处理通过自定义 URL 协议触发的打开事件（例如 ccswitch://...）
+                // 处理通过自定义 URL 协议触发的打开事件（例如 we2ai://...）
+                // we2ai: 三条深链入口（single-instance、on_open_url、这里）合并到
+                // 同一分发函数 handle_deeplink_url，scheme 校验与 WE2AI 模式下的
+                // 导入拒绝只需维护一处。
                 RunEvent::Opened { urls } => {
                     if let Some(url) = urls.first() {
                         let url_str = url.to_string();
-                        log::info!(
-                            "RunEvent::Opened with URL: {}",
-                            url_for_log(&url_str)
-                        );
+                        log::info!("RunEvent::Opened with URL: {}", url_for_log(&url_str));
 
-                        if url_str.starts_with("ccswitch://") {
-                            if crate::lightweight::is_lightweight_mode() {
-                                if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
-                                {
-                                    log::error!("退出轻量模式重建窗口失败: {e}");
-                                }
-                            }
-
-                            // 解析并广播深链接事件，复用与 single_instance 相同的逻辑
-                            match crate::deeplink::parse_deeplink_url(&url_str) {
-                                Ok(request) => {
-                                    log::info!(
-                                        "Successfully parsed deep link from RunEvent::Opened: resource={}, app={:?}",
-                                        request.resource,
-                                        request.app
-                                    );
-
-                                    if let Err(e) =
-                                        app_handle.emit("deeplink-import", &request)
-                                    {
-                                        log::error!(
-                                            "Failed to emit deep link event from RunEvent::Opened: {e}"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "Failed to parse deep link URL from RunEvent::Opened: {e}"
-                                    );
-
-                                    if let Err(emit_err) = app_handle.emit(
-                                        "deeplink-error",
-                                        serde_json::json!({
-                                            "url": url_str,
-                                            "error": e.to_string()
-                                        }),
-                                    ) {
-                                        log::error!(
-                                            "Failed to emit deep link error event from RunEvent::Opened: {emit_err}"
-                                        );
-                                    }
-                                }
-                            }
-
-                            // 确保主窗口可见
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                #[cfg(target_os = "windows")]
-                                {
-                                    let _ = window.set_skip_taskbar(false);
-                                }
-                                let _ = window.unminimize();
-                                let _ = window.show();
-                                let _ = window.set_focus();
+                        if url_str.starts_with("we2ai://")
+                            && crate::lightweight::is_lightweight_mode()
+                        {
+                            if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle) {
+                                log::error!("退出轻量模式重建窗口失败: {e}");
                             }
                         }
+
+                        handle_deeplink_url(app_handle, &url_str, true, "RunEvent::Opened");
                     }
                 }
                 _ => {}
@@ -1914,9 +1975,14 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
             }
         };
         let live_taken_over = proxy_service.detect_takeover_in_live_configs();
-        let needs_restore = has_backups || live_taken_over;
 
-        if needs_restore {
+        // we2ai: WE2AI 模式禁用退出时的 live 恢复——恢复会改写 CC Switch 正在接管
+        // 的文件。门控条件与被门控的调用直接写在同一个 if 块里（不再拆成一个
+        // `needs_restore` 变量再在别处 if），这样 check-guards.sh 才能用"调用出
+        // 现在 startup_allowed(...) 所在的 if 块内"这条通用规则做静态校验。
+        if (has_backups || live_taken_over)
+            && we2ai::mode::startup_allowed(we2ai::mode::StartupTask::ExitLiveRestore)
+        {
             log::info!("检测到接管残留，开始恢复 Live 配置（保留代理状态）...");
             // 使用 keep_state 版本，保留 settings 表中的代理状态
             if let Err(e) = proxy_service.stop_with_restore_keep_state().await {
@@ -2123,7 +2189,7 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
         format!(
             "从旧版本迁移配置时发生错误：\n\n{error}\n\n\
             您的数据尚未丢失，旧配置文件仍然保留。\n\
-            建议回退到旧版本 CC Switch 以保护数据。\n\n\
+            建议回退到旧版本 WE2AI 以保护数据。\n\n\
             点击「重试」重新尝试迁移\n\
             点击「退出」关闭程序（可回退版本后重新打开）"
         )
@@ -2131,7 +2197,7 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
         format!(
             "An error occurred while migrating configuration:\n\n{error}\n\n\
             Your data is NOT lost - the old config file is still preserved.\n\
-            Consider rolling back to an older CC Switch version.\n\n\
+            Consider rolling back to an older WE2AI version.\n\n\
             Click 'Retry' to attempt migration again\n\
             Click 'Exit' to close the program"
         )
@@ -2196,7 +2262,7 @@ fn show_database_init_error_dialog(
             Common causes include: newer database version, corrupted file, permission issues, or low disk space.\n\n\
             Suggestions:\n\
             1) Back up the entire config directory (including cc-switch.db)\n\
-            2) If you see “database version is newer”, please upgrade CC Switch\n\
+            2) If you see “database version is newer”, please upgrade WE2AI\n\
             3) If this happened right after upgrading, consider rolling back to export/backup then upgrade again\n\n\
             Click 'Retry' to attempt initialization again\n\
             Click 'Exit' to close the program",

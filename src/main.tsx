@@ -24,6 +24,7 @@ import {
   syncModelsDevPricingOnStartup,
 } from "./lib/modelsDevAutoSync";
 import { initializeWindowActivity } from "@/lib/windowActivity";
+import { WE2AI_MODE } from "@/config/we2ai";
 
 installGlobalErrorHandlers();
 
@@ -54,7 +55,8 @@ interface ConfigLoadErrorPayload {
 async function handleConfigLoadError(
   payload: ConfigLoadErrorPayload | null,
 ): Promise<void> {
-  const path = payload?.path ?? "~/.cc-switch/config.json";
+  // we2ai: 本 fork 恒为 WE2AI 模式，get_app_config_path() 落在 ~/.we2ai 下
+  const path = payload?.path ?? "~/.we2ai/config.json";
   const detail = payload?.error ?? "Unknown error";
 
   await message(
@@ -132,24 +134,28 @@ async function bootstrap() {
     </React.StrictMode>,
   );
 
-  void syncModelsDevPricingOnStartup()
-    .then((result) => {
-      if (!result.skipped) {
-        return Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["usage"] }),
-          queryClient.invalidateQueries({
-            queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
-          }),
-        ]);
-      }
-    })
-    .catch((error) => {
-      // 离线或 models.dev 暂时不可用不应阻塞应用启动。
-      reportFrontendError("models_dev_startup_sync", error);
-      void queryClient.invalidateQueries({
-        queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+  // we2ai: WE2AI 模式下不跑上游的启动任务——它调用的 IPC 命令不在白名单内，
+  // 且模型定价目录与 WE2AI 模式无关。
+  if (!WE2AI_MODE) {
+    void syncModelsDevPricingOnStartup()
+      .then((result) => {
+        if (!result.skipped) {
+          return Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["usage"] }),
+            queryClient.invalidateQueries({
+              queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+            }),
+          ]);
+        }
+      })
+      .catch((error) => {
+        // 离线或 models.dev 暂时不可用不应阻塞应用启动。
+        reportFrontendError("models_dev_startup_sync", error);
+        void queryClient.invalidateQueries({
+          queryKey: MODELS_DEV_SYNC_CONFIG_QUERY_KEY,
+        });
       });
-    });
+  }
 }
 
 void bootstrap();

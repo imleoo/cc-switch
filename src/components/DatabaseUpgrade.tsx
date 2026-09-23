@@ -13,6 +13,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WE2AI_MODE } from "@/config/we2ai";
 
 const RELEASES_URL = "https://github.com/imleoo/cc-switch/releases";
 
@@ -59,6 +60,13 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
 
   // 启动时检查可用更新，决定 upgradable / incompatible
   useEffect(() => {
+    // we2ai: check_app_update_available 不在 IPC 白名单内。WE2AI 模式下不探测，
+    // 直接进入 upgradable——与下方 catch 分支（探测失败时的兜底）行为一致，
+    // 用户仍可点击「升级应用」触发白名单内的 install_update_and_restart。
+    if (WE2AI_MODE) {
+      setPhase("upgradable");
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -149,7 +157,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
             <p className="text-sm text-muted-foreground">
               {t(
                 "dbUpgrade.description",
-                "当前数据库由更新版本的 CC Switch 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
+                "当前数据库由更新版本的 WE2AI 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
               )}
             </p>
             {dbVersion != null && supportedVersion != null && (
@@ -276,15 +284,18 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
             </Button>
           )}
 
-          <Button
-            variant="outline"
-            className="gap-2"
-            onClick={() => void invoke("open_app_config_folder")}
-            disabled={phase === "updating"}
-          >
-            <FolderOpen className="h-4 w-4" />
-            {t("dbUpgrade.openConfigDir", "打开配置目录")}
-          </Button>
+          {/* we2ai: open_app_config_folder 不在 IPC 白名单内，WE2AI 模式下隐藏该入口 */}
+          {!WE2AI_MODE && (
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={() => void invoke("open_app_config_folder")}
+              disabled={phase === "updating"}
+            >
+              <FolderOpen className="h-4 w-4" />
+              {t("dbUpgrade.openConfigDir", "打开配置目录")}
+            </Button>
+          )}
 
           <Button
             variant="ghost"

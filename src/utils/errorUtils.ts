@@ -45,6 +45,8 @@ export const translatePiProviderMutationError = (
 
   if (
     message.includes("models.json changed") ||
+    // 与后端 pi_config/mod.rs、services/{pi_prompt_files,prompt}.rs 的错误文案字面量匹配，
+    // 不是用户可见品牌文案，故不随品牌改名替换。
     message.includes("changed outside CC Switch") ||
     message.includes("no longer present in models.json") ||
     message.includes("another value now owns the key")

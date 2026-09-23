@@ -35,6 +35,9 @@ pub fn reset_test_fs() {
         ".claude",
         ".codex",
         ".cc-switch",
+        // we2ai: 本 fork 恒为 WE2AI 模式，get_app_config_dir()/settings_path()
+        // 实际落在 .we2ai 下，必须一并清理，否则数据库/设置会跨测试用例残留。
+        ".we2ai",
         ".gemini",
         ".grok",
         ".config",

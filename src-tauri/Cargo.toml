@@ -119,3 +119,6 @@ strip = "symbols"
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"
+# we2ai: 仅测试期启用 tauri 的 mock 运行时（tauri::test），用于对
+# we2ai::mode::gate() 做真实的 IPC 分发测试，而不只是测底层判定纯函数。
+tauri = { version = "2.8.2", features = ["test"] }

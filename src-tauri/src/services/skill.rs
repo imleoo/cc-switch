@@ -6324,11 +6324,8 @@ mod tests {
 
         let result = SkillService::migrate_storage(&db, SkillStorageLocation::CcSwitch)
             .expect("migrate away from alias");
-        let new_source = temp
-            .path()
-            .join(".cc-switch")
-            .join("skills")
-            .join("test-skill");
+        // we2ai: 本 fork 恒为 WE2AI 模式，SSOT 实际落在 .we2ai/skills 下
+        let new_source = temp.path().join(".we2ai").join("skills").join("test-skill");
         let pi_skill = temp
             .path()
             .join(".agents")
@@ -6441,7 +6438,8 @@ mod tests {
             .join("test-skill");
         fs::create_dir_all(pi_skill.parent().expect("Pi skills directory"))
             .expect("create Pi skills directory");
-        std::os::unix::fs::symlink(Path::new("../../.cc-switch/skills/test-skill"), &pi_skill)
+        // we2ai: 本 fork 恒为 WE2AI 模式，SSOT 实际落在 .we2ai/skills 下
+        std::os::unix::fs::symlink(Path::new("../../.we2ai/skills/test-skill"), &pi_skill)
             .expect("create relative Pi symlink");
 
         let result = SkillService::migrate_storage(&db, SkillStorageLocation::Unified)
@@ -6733,7 +6731,8 @@ mod tests {
                 ("weread-skills", "skills", "."),
             ] {
                 let home = tempdir().expect("home");
-                let config_dir = home.path().join(".cc-switch");
+                // we2ai: 本 fork 恒为 WE2AI 模式，get_app_config_dir() 落在 .we2ai 下
+                let config_dir = home.path().join(".we2ai");
                 fs::create_dir_all(&config_dir).expect("isolated config directory");
                 // Keep Windows' legacy-HOME fallback out of this destructive test.
                 fs::File::create(config_dir.join("cc-switch.db"))

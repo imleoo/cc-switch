@@ -379,7 +379,7 @@ IPC 白名单（WE2AI 模式唯一可调用的命令）：
 | `tray.rs` 主页链接 | ccswitch.io | we2ai.com |
 | `src-tauri/src/auto_launch.rs` 开机自启注册名 | CC Switch（`auto_launch.rs:20,34`） | WE2AI |
 | `src-tauri/icons/*` | 上游 | `pnpm tauri icon assets/designs/appicon.png` |
-| `src/index.html` favicon、登录页与关于页 logo | 上游 | `assets/designs/favicon.svg`、`web-logo.svg` |
+| `src/index.html` favicon、登录页与关于页 logo | 上游 | `assets/designs/favicon.svg`、`web-logo.svg`；**备注**：登录页与上游关于页（`AboutSection.tsx`）在 WE2AI 模式下均不挂载（P0 只有 `We2aiShell` 渲染），本期 `We2aiShell` 的顶栏与关于卡片已经使用 `web-logo.svg`，上游 `AboutSection.tsx` 里的 `app-icon.png` 暂不替换，延后到该页面真正启用时再处理 |
 | i18n 与 12 个前端文件中的品牌文字 | CC Switch | WE2AI |
 | updater endpoints 与公钥 | fork 已有 | 不变；identifier 不影响验签 |
 | `.github/workflows/release.yml` DMG 打包步骤 | `.app` 名、卷名、图标目标写死为 CC Switch（`release.yml:324` 附近） | WE2AI；产物文件名同步改为 WE2AI 前缀 |

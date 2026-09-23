@@ -27,6 +27,15 @@ vi.mock("sonner", () => ({
   },
 }));
 
+// we2ai: 本文件覆盖的是上游供应商管理界面，WE2AI 模式下 App() 只渲染
+// We2aiShell（见 src/App.tsx）。这里把开关强制为 false，让本文件继续对上游
+// 代码路径做回归测试——上游逻辑仍打包在 fork 里，只是默认不挂载。
+vi.mock("@/config/we2ai", () => ({
+  WE2AI_MODE: false,
+  WE2AI_BRAND_NAME: "WE2AI",
+  WE2AI_WEBSITE_URL: "https://we2ai.com",
+}));
+
 vi.mock("@/components/providers/ProviderList", () => ({
   ProviderList: ({
     providers,

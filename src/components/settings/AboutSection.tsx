@@ -879,10 +879,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           <div className="flex items-center gap-8">
             <div className="flex flex-col items-center gap-2">
               <div className="flex items-center gap-2">
-                <img src={appIcon} alt="CC Switch" className="h-5 w-5" />
-                <h4 className="text-lg font-semibold text-foreground">
-                  CC Switch
-                </h4>
+                <img src={appIcon} alt="WE2AI" className="h-5 w-5" />
+                <h4 className="text-lg font-semibold text-foreground">WE2AI</h4>
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant="outline" className="gap-1.5 bg-background/80">
@@ -942,7 +940,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => settingsApi.openExternal("https://ccswitch.io")}
+              onClick={() => settingsApi.openExternal("https://we2ai.com")}
               className="h-8 gap-1.5 text-xs"
             >
               <Globe className="h-3.5 w-3.5" />

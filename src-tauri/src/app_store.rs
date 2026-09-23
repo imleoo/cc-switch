@@ -124,6 +124,14 @@ fn resolve_path(raw: &str) -> PathBuf {
     PathBuf::from(raw)
 }
 
+/// 仅供测试使用：直接写入 app_config_dir 覆盖缓存，绕过需要真实 Tauri Store
+/// 的 `refresh_app_config_dir_override`。用于验证 WE2AI 模式下
+/// `get_app_config_dir()` 会无视该覆盖（见 `we2ai::mode::tests`）。
+#[cfg(test)]
+pub(crate) fn set_app_config_dir_override_for_test(path: Option<PathBuf>) {
+    update_cached_override(path);
+}
+
 /// 从旧的 settings.json 迁移 app_config_dir 到 Store
 pub fn migrate_app_config_dir_from_settings(app: &tauri::AppHandle) -> Result<(), AppError> {
     // app_config_dir 已从 settings.json 移除，此函数保留但不再执行迁移

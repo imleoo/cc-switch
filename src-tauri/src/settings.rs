@@ -577,9 +577,16 @@ impl Default for AppSettings {
 
 impl AppSettings {
     fn settings_path() -> Option<PathBuf> {
+        // we2ai: WE2AI 模式下写入 ~/.we2ai，与 CC Switch 的本地设置完全隔离
+        // （含每个应用的本地 current 供应商、工具目录覆盖）。
+        if crate::we2ai::mode::enabled() {
+            return Some(crate::we2ai::mode::data_root().join("settings.json"));
+        }
+
         // settings.json 保留用于旧版本迁移和无数据库场景
         Some(
             crate::config::get_home_dir()
+                // we2ai-allow-cc-switch
                 .join(".cc-switch")
                 .join("settings.json"),
         )
@@ -792,7 +799,9 @@ pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
     Ok(())
 }
 
-fn mutate_settings<F>(mutator: F) -> Result<(), AppError>
+// we2ai: 放宽到 pub(crate)，供 we2ai::commands::we2ai_save_settings 复用同一把
+// 写锁做读-改-写，避免读、写分两次加锁产生的 TOCTOU 竞态（并发保存互相覆盖）。
+pub(crate) fn mutate_settings<F>(mutator: F) -> Result<(), AppError>
 where
     F: FnOnce(&mut AppSettings),
 {

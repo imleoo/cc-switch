@@ -66,8 +66,13 @@ fn create_backup(conflicts: &[EnvConflict]) -> Result<BackupInfo, String> {
 }
 
 /// Get backup directory path
+// we2ai: WE2AI 模式下环境变量备份目录改为 ~/.we2ai/backups
 fn get_backup_dir() -> Result<PathBuf, String> {
+    if crate::we2ai::mode::enabled() {
+        return Ok(crate::we2ai::mode::data_root().join("backups"));
+    }
     let home = dirs::home_dir().ok_or("无法获取用户主目录")?;
+    // we2ai-allow-cc-switch
     Ok(home.join(".cc-switch").join("backups"))
 }
 
@@ -236,5 +241,17 @@ mod tests {
     fn test_backup_dir_creation() {
         let backup_dir = get_backup_dir();
         assert!(backup_dir.is_ok());
+    }
+
+    // we2ai: 本 fork 恒为 WE2AI 模式，get_backup_dir() 必须落在 ~/.we2ai/backups
+    // 而不是 ~/.cc-switch/backups。
+    #[test]
+    fn get_backup_dir_ends_with_we2ai_backups() {
+        let backup_dir = get_backup_dir().expect("get_backup_dir should succeed");
+        let backup_dir = backup_dir.to_string_lossy();
+        assert!(
+            backup_dir.ends_with(".we2ai/backups") || backup_dir.ends_with(".we2ai\\backups"),
+            "expected backup dir to end with .we2ai/backups, got {backup_dir}"
+        );
     }
 }

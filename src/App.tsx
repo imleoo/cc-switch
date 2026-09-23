@@ -29,6 +29,9 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+// we2ai: WE2AI 模式壳，见下方 App() 顶部的早退分支
+import { WE2AI_MODE } from "@/config/we2ai";
+import { We2aiShell } from "@/we2ai/We2aiShell";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
 import { proxyKeys, useProvidersQuery, useSettingsQuery } from "@/lib/query";
@@ -174,6 +177,13 @@ const getInitialView = (): View => {
 };
 
 function App() {
+  // we2ai: WE2AI 模式下只渲染精简壳，其余上游视图与其触发的 IPC 调用全部不
+  // 挂载。WE2AI_MODE 恒为编译期常量，同一挂载实例的分支永远一致，不违反
+  // hooks 调用顺序规则。
+  if (WE2AI_MODE) {
+    return <We2aiShell />;
+  }
+
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
