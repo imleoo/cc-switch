@@ -790,6 +790,8 @@ pub fn scrub_managed_provider_keys(state: &AppState) -> Result<(), crate::error:
 }
 
 fn scrub_managed_provider_keys_locked(state: &AppState) -> Result<(), crate::error::AppError> {
+    // 方案 5.2 "登出处理"：清空两条固定供应商行的整个 settings_config。下次
+    // apply 从 live 重新取基底，不依赖数据库行。
     for (app, id) in [
         (AppType::Claude, CLAUDE_PROVIDER_ID),
         (AppType::Codex, CODEX_PROVIDER_ID),
@@ -797,31 +799,10 @@ fn scrub_managed_provider_keys_locked(state: &AppState) -> Result<(), crate::err
         let Some(row) = state.db.get_provider_by_id(id, app.as_str())? else {
             continue;
         };
-        let mut config = row.settings_config.clone();
-        if let Some(env) = config.get_mut("env").and_then(Value::as_object_mut) {
-            env.remove("ANTHROPIC_AUTH_TOKEN");
-            env.remove("ANTHROPIC_API_KEY");
-        }
-        if let Some(auth) = config.get_mut("auth").and_then(Value::as_object_mut) {
-            auth.remove("OPENAI_API_KEY");
-        }
-        if let Some(text) = config.get("config").and_then(Value::as_str) {
-            if let Ok(mut doc) = text.parse::<toml_edit::DocumentMut>() {
-                if let Some(table) = doc
-                    .get_mut("model_providers")
-                    .and_then(|p| p.as_table_like_mut())
-                    .and_then(|p| p.get_mut(CODEX_MODEL_PROVIDER))
-                    .and_then(|t| t.as_table_like_mut())
-                {
-                    table.remove("experimental_bearer_token");
-                }
-                config["config"] = Value::String(doc.to_string());
-            }
-        }
-        if config != row.settings_config {
+        if row.settings_config != json!({}) {
             state
                 .db
-                .update_provider_settings_config(app.as_str(), id, &config)?;
+                .update_provider_settings_config(app.as_str(), id, &json!({}))?;
         }
     }
     Ok(())
@@ -931,6 +912,146 @@ pub fn key_material_residue(state: &AppState) -> bool {
         Ok(mut entries) => entries.next().is_some(),
         Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
+}
+
+/// 登出弹窗勾选"同时从工具配置中移除 Key"时的结果（方案 5.2）。
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveToolKeysOutcome {
+    /// 已移除 Key 的文件。
+    pub removed: Vec<String>,
+    /// 未能移除的项及原因（如 WorkBuddy 条目被手工修改过）。
+    pub skipped: Vec<String>,
+}
+
+fn is_we2ai_gateway_root(url: &str) -> bool {
+    let url = url.trim_end_matches('/');
+    super::region::Region::all()
+        .iter()
+        .any(|r| r.base_url().trim_end_matches('/') == url)
+}
+
+/// 从三个工具的 live 配置里移除 WE2AI 写入的 Key：只动指向 WE2AI 的部分——
+/// Claude 仅当 `env.ANTHROPIC_BASE_URL` 是 WE2AI 网关时删 `ANTHROPIC_AUTH_TOKEN`；
+/// Codex 删 `[model_providers.we2ai].experimental_bearer_token`；WorkBuddy 删除
+/// 托管记录指向且未被手改的条目。只在未登录时执行，持 apply 锁。
+pub fn remove_tool_keys(
+    data_root: &Path,
+    still_logged_out: &dyn Fn() -> bool,
+) -> Result<RemoveToolKeysOutcome, ApplyError> {
+    let _lock = apply_lock();
+    if !still_logged_out() {
+        return Err(ApplyError::new(
+            ERR_SESSION_CHANGED,
+            "当前已登录，未移除工具配置中的 Key",
+        ));
+    }
+    let mut outcome = RemoveToolKeysOutcome::default();
+    // 工具文件里的 WE2AI Key 只能由 apply 写入，apply 与本函数共用 apply 锁，
+    // 所以这里删除的一定是登出前写入的 Key。每次写文件前仍复查一次未登录：
+    // 用户在移除过程中重新登录时就此停止，剩余项报告为未移除（Codex P5 验收
+    // 第 2 轮中危项 2）。
+    let relogged = |outcome: &mut RemoveToolKeysOutcome, path: &Path| -> bool {
+        if still_logged_out() {
+            false
+        } else {
+            outcome
+                .skipped
+                .push(format!("{}：已重新登录，未继续移除", path.display()));
+            true
+        }
+    };
+    // 读取或解析失败（文件不存在除外）要报告，不能静默当作"没有 Key"（第 2 轮
+    // 中危项 1）。
+    let read_text = |outcome: &mut RemoveToolKeysOutcome, path: &Path| -> Option<String> {
+        match std::fs::read_to_string(path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                outcome
+                    .skipped
+                    .push(format!("{}：读取失败（{e}），未移除", path.display()));
+                None
+            }
+        }
+    };
+
+    let claude = crate::config::get_claude_settings_path();
+    if let Some(text) = read_text(&mut outcome, &claude) {
+        match serde_json::from_str::<Value>(&text) {
+            Err(e) => outcome.skipped.push(format!(
+                "{}：不是有效的 JSON（{e}），未移除",
+                claude.display()
+            )),
+            Ok(mut value) => {
+                let points_to_we2ai = value
+                    .pointer("/env/ANTHROPIC_BASE_URL")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_we2ai_gateway_root);
+                let removed = points_to_we2ai
+                    && value
+                        .get_mut("env")
+                        .and_then(Value::as_object_mut)
+                        .is_some_and(|env| env.remove("ANTHROPIC_AUTH_TOKEN").is_some());
+                if removed && !relogged(&mut outcome, &claude) {
+                    match serde_json::to_string_pretty(&value) {
+                        Err(e) => outcome.skipped.push(format!("{}: {e}", claude.display())),
+                        Ok(text) => {
+                            match crate::config::atomic_write_private(&claude, text.as_bytes()) {
+                                Ok(()) => outcome.removed.push(claude.display().to_string()),
+                                Err(e) => {
+                                    outcome.skipped.push(format!("{}: {e}", claude.display()))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let codex = crate::codex_config::get_codex_config_path();
+    if let Some(text) = read_text(&mut outcome, &codex) {
+        match text.parse::<toml_edit::DocumentMut>() {
+            Err(e) => outcome.skipped.push(format!(
+                "{}：不是有效的 TOML（{e}），未移除",
+                codex.display()
+            )),
+            Ok(mut doc) => {
+                // 与 Claude 一致：只有该表仍指向 WE2AI 网关才删（用户若把 we2ai
+                // 表改成自有端点，不动它的 token）。
+                let removed = doc
+                    .get_mut("model_providers")
+                    .and_then(|p| p.as_table_like_mut())
+                    .and_then(|p| p.get_mut(CODEX_MODEL_PROVIDER))
+                    .and_then(|t| t.as_table_like_mut())
+                    .filter(|t| {
+                        t.get("base_url")
+                            .and_then(|v| v.as_str())
+                            .and_then(|u| u.trim_end_matches('/').strip_suffix("/v1"))
+                            .is_some_and(is_we2ai_gateway_root)
+                    })
+                    .and_then(|t| t.remove("experimental_bearer_token"))
+                    .is_some();
+                if removed && !relogged(&mut outcome, &codex) {
+                    match crate::config::atomic_write_private(&codex, doc.to_string().as_bytes()) {
+                        Ok(()) => outcome.removed.push(codex.display().to_string()),
+                        Err(e) => outcome.skipped.push(format!("{}: {e}", codex.display())),
+                    }
+                }
+            }
+        }
+    }
+
+    let wb = super::workbuddy::models_path();
+    if !relogged(&mut outcome, &wb) {
+        match super::workbuddy::remove_managed_entry(data_root) {
+            Ok(Some(path)) => outcome.removed.push(path),
+            Ok(None) => {}
+            Err(reason) => outcome.skipped.push(reason),
+        }
+    }
+    Ok(outcome)
 }
 
 pub fn apply_provider_tool(

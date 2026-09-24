@@ -181,6 +181,10 @@ fn claude_managed_model(gateway_root: Option<&str>) -> Option<String> {
     {
         return None;
     }
+    // Key 已被移除（登出时勾选）则不算生效。
+    env.get("ANTHROPIC_AUTH_TOKEN")?
+        .as_str()
+        .filter(|t| !t.is_empty())?;
     env.get("ANTHROPIC_MODEL")?.as_str().map(|s| s.to_string())
 }
 
@@ -191,6 +195,12 @@ fn codex_managed_model() -> Option<String> {
     if value.get("model_provider")?.as_str()? != super::apply::CODEX_MODEL_PROVIDER {
         return None;
     }
+    value
+        .get("model_providers")?
+        .get(super::apply::CODEX_MODEL_PROVIDER)?
+        .get("experimental_bearer_token")?
+        .as_str()
+        .filter(|t| !t.is_empty())?;
     value.get("model")?.as_str().map(|s| s.to_string())
 }
 

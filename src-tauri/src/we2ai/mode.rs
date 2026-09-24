@@ -21,6 +21,77 @@ pub fn data_root() -> PathBuf {
     crate::config::get_home_dir().join(".we2ai")
 }
 
+/// Unix 下把数据根收紧为仅本人可访问（方案第 8 节 P5：`~/.we2ai` 为 0700、数据库
+/// 与备份为 0600）。目录 0700、文件 0600，递归处理子目录（最多到根下第 5 层；`backups/`、
+/// `apply-snapshots/`、`logs/` 等），只收紧不放宽。启动时在数据库初始化之后调用；
+/// 数据库 WAL 等运行期新建的文件落在 0700 目录内，其他本机用户无法进入。
+pub fn harden_data_root() -> Vec<String> {
+    // Windows 不做 Unix 权限处理，无需遍历目录树。
+    if cfg!(not(unix)) {
+        return Vec::new();
+    }
+    harden_data_root_at(&data_root())
+}
+
+pub(crate) fn harden_data_root_at(root: &std::path::Path) -> Vec<String> {
+    let mut failures = Vec::new();
+    // 数据根本身是符号链接时不处理：收紧会改到链接目标（可能是用户其他目录）
+    // （Codex P5 验收中危项）。
+    if std::fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_symlink()) {
+        failures.push(format!("{} 是符号链接，未收紧权限", root.display()));
+        return failures;
+    }
+    if let Err(e) = super::fsguard::tighten_dir(root) {
+        failures.push(e.to_string());
+        return failures;
+    }
+    harden_children(root, 0, &mut failures);
+    failures
+}
+
+fn harden_children(dir: &std::path::Path, depth: usize, failures: &mut Vec<String>) {
+    const MAX_DEPTH: usize = 4;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            failures.push(format!("{}: {e}", dir.display()));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("{}: {e}", dir.display()));
+                continue;
+            }
+        };
+        let path = entry.path();
+        // 不跟随符号链接：数据根里不应有指向外部的链接，收紧它们的目标可能误伤。
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                failures.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if let Err(e) = super::fsguard::tighten_dir(&path) {
+                failures.push(e.to_string());
+                continue;
+            }
+            if depth < MAX_DEPTH {
+                harden_children(&path, depth + 1, failures);
+            }
+        } else if let Err(e) = super::fsguard::tighten_file(&path) {
+            failures.push(format!("{}: {e}", path.display()));
+        }
+    }
+}
+
 /// 启动/退出阶段可能被 WE2AI 模式禁用的任务。
 ///
 /// 每个变体对应自定义开发功能列表.md 登记的一个调用点，新增调用点时在此追加
@@ -761,5 +832,50 @@ mod tests {
              src-tauri/src/we2ai/mode.rs::UPSTREAM_COMMAND_WHITELIST (backend) \
              have drifted apart; update both together"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn harden_data_root_makes_dirs_0700_and_files_0600_without_following_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join(".we2ai");
+        let backups = root.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        for dir in [&root, &backups] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let db = root.join("cc-switch.db");
+        let backup = backups.join("db_backup_1.db");
+        for f in [&db, &backup] {
+            std::fs::write(f, "x").unwrap();
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "x").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        assert!(harden_data_root_at(&root).is_empty());
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&backups), 0o700);
+        assert_eq!(mode(&db), 0o600);
+        assert_eq!(mode(&backup), 0o600);
+        assert_eq!(
+            mode(&outside),
+            0o644,
+            "symlink targets outside the data root are untouched"
+        );
+
+        // 数据根本身是链接：报失败，不改目标目录。
+        let target = tmp.path().join("real-root");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let linked_root = tmp.path().join("linked-root");
+        std::os::unix::fs::symlink(&target, &linked_root).unwrap();
+        assert_eq!(harden_data_root_at(&linked_root).len(), 1);
+        assert_eq!(mode(&target), 0o755);
     }
 }

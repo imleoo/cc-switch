@@ -50,6 +50,21 @@ pub async fn we2ai_tool_status(
     Ok(detect::tool_status(region, manager.data_root().to_path_buf()).await)
 }
 
+/// 登出弹窗勾选"同时从工具配置中移除 Key"时，登出成功后调用（方案 5.2）。
+#[tauri::command]
+pub async fn we2ai_remove_tool_keys(
+    session: State<'_, We2aiSessionState>,
+) -> Result<apply::RemoveToolKeysOutcome, We2aiApiError> {
+    let manager = session.0.clone();
+    let data_root = manager.data_root().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        let still_logged_out = move || manager.current_identity().is_none();
+        apply::remove_tool_keys(&data_root, &still_logged_out).map_err(We2aiApiError::from)
+    })
+    .await
+    .map_err(|e| error("APPLY_FAILED", format!("移除任务执行失败: {e}")))?
+}
+
 #[tauri::command]
 pub fn we2ai_apply_plan(tool: We2aiToolArg) -> ApplyPlan {
     match tool {

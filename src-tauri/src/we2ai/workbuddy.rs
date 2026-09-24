@@ -338,6 +338,41 @@ pub fn apply_workbuddy(
     ))
 }
 
+/// 删除托管记录指向且未被手改的条目，并清除托管记录。返回写过的文件；条目
+/// 被手改过时保留并返回原因。调用方持 apply 锁。
+pub fn remove_managed_entry(data_root: &Path) -> Result<Option<String>, String> {
+    let Some(record) = load_record(data_root) else {
+        return Ok(None);
+    };
+    let path = models_path();
+    let read_hash = hash_file(&path).map_err(|e| e.to_string())?;
+    let items = read_items(&path).map_err(|e| e.message)?;
+    let Some(index) = items
+        .iter()
+        .position(|v| entry_id(v) == Some(record.id.as_str()))
+    else {
+        let _ = std::fs::remove_file(record_path(data_root));
+        return Ok(None);
+    };
+    if fingerprint(&items[index]) != record.fingerprint {
+        return Err(format!(
+            "WorkBuddy 中 {} 条目被手工修改过，未删除",
+            record.id
+        ));
+    }
+    let mut items = items;
+    items.remove(index);
+    let mut bytes = serde_json::to_vec_pretty(&Value::Array(items)).map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    // 读后被其他程序改过则不覆盖（与 apply_workbuddy 同样的尽力检测）。
+    if hash_file(&path).map_err(|e| e.to_string())? != read_hash {
+        return Err("WorkBuddy 的 models.json 刚被其他程序修改，未删除 WE2AI 条目，请重试".into());
+    }
+    crate::config::atomic_write_private(&path, &bytes).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(record_path(data_root));
+    Ok(Some(path.display().to_string()))
+}
+
 /// 当前生效的 WE2AI 模型：托管记录指向的条目仍在且未被改动。
 pub fn managed_model(data_root: &Path) -> Option<String> {
     let record = load_record(data_root)?;

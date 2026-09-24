@@ -157,6 +157,11 @@ export interface We2aiApplyRequest {
   overwrite?: boolean;
 }
 
+export interface We2aiRemoveToolKeysOutcome {
+  removed: string[];
+  skipped: string[];
+}
+
 export interface We2aiApplyOutcome {
   model: string;
   files: string[];
@@ -267,6 +272,11 @@ export const we2aiApi = {
 
   async toolStatus(): Promise<We2aiToolStatusReport> {
     return await invoke("we2ai_tool_status");
+  },
+
+  /** 登出后按用户勾选从工具配置中移除 WE2AI 写入的 Key（方案 5.2）。 */
+  async removeToolKeys(): Promise<We2aiRemoveToolKeysOutcome> {
+    return await invoke("we2ai_remove_tool_keys");
   },
 
   async applyPlan(tool: We2aiTool): Promise<We2aiApplyPlan> {

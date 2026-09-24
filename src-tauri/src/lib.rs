@@ -1249,6 +1249,11 @@ pub fn run() {
                 app.manage(We2aiCaptchaState(Arc::new(CaptchaRegistry::new())));
                 app.manage(we2ai::keys::We2aiKeyState::default());
                 log::info!("✓ WE2AI session manager initialized");
+
+                // Unix：数据根 0700、数据库与备份 0600（方案第 8 节 P5）。
+                for failure in we2ai::mode::harden_data_root() {
+                    log::warn!("收紧 WE2AI 数据目录权限失败: {failure}");
+                }
             }
 
             // 初始化 SkillService
@@ -1531,6 +1536,7 @@ pub fn run() {
                 we2ai::commands_apply::we2ai_tool_status,
                 we2ai::commands_apply::we2ai_apply_plan,
                 we2ai::commands_apply::we2ai_apply_model,
+                we2ai::commands_apply::we2ai_remove_tool_keys,
             ],
             tauri::generate_handler![
             commands::get_providers,

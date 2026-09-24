@@ -29,6 +29,7 @@ import {
 } from "./strings";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -88,6 +89,7 @@ export function We2aiShell() {
   const [sessionChecked, setSessionChecked] = useState(false);
   const [logoutDialogOpen, setLogoutDialogOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [removeToolKeys, setRemoveToolKeys] = useState(false);
   const [retryingOffline, setRetryingOffline] = useState(false);
 
   const t = getWe2aiStrings(language);
@@ -235,10 +237,38 @@ export function We2aiShell() {
     };
   }, [offline, handleRetryNow]);
 
+  // 方案 5.2：登出弹窗勾选"同时从工具配置中移除 Key"时，登出成功后执行。
+  const removeKeysFromTools = async () => {
+    try {
+      const result = await we2aiApi.removeToolKeys();
+      if (result.removed.length > 0) {
+        toast.success(
+          formatWe2aiString(t.toolKeysRemoved, {
+            count: result.removed.length,
+          }),
+        );
+      }
+      if (result.skipped.length > 0) {
+        toast.warning(t.toolKeysRemoveSkipped, {
+          description: result.skipped.join("\n"),
+        });
+      }
+    } catch (error) {
+      toast.error(t.toolKeysRemoveFailed, {
+        description: extractErrorMessage(error) || undefined,
+      });
+    }
+  };
+
   const handleConfirmLogout = async () => {
     setLoggingOut(true);
     try {
       const outcome = await withKeyringWaitHint(we2aiApi.logout());
+      // 勾选了移除工具 Key：只要会话已登出（含本机清理失败的情形）就执行，
+      // 不能因后续走重试流程而丢掉用户的选择（Fable P5 增量终验中危项）。
+      if (removeToolKeys && outcome !== "notLoggedIn") {
+        await removeKeysFromTools();
+      }
       if (outcome === "localCleanupFailed") {
         // Codex 代码评审第 5 轮高危项 3：本地清理两项都没能成功，不能保证
         // 重启不会恢复这个会话——不能表现成"已经退出"，界面继续保持已登录
@@ -263,6 +293,7 @@ export function We2aiShell() {
     } finally {
       setLoggingOut(false);
       setLogoutDialogOpen(false);
+      setRemoveToolKeys(false);
     }
   };
 
@@ -527,6 +558,14 @@ export function We2aiShell() {
             <DialogTitle>{t.logoutConfirmTitle}</DialogTitle>
             <DialogDescription>{t.logoutConfirmDescription}</DialogDescription>
           </DialogHeader>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={removeToolKeys}
+              disabled={loggingOut}
+              onCheckedChange={(checked) => setRemoveToolKeys(checked)}
+            />
+            {t.logoutRemoveToolKeys}
+          </label>
           <DialogFooter>
             <Button
               variant="outline"

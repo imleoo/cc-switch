@@ -133,6 +133,10 @@ export interface We2aiStrings {
   logoutButton: string;
   logoutConfirmTitle: string;
   logoutConfirmDescription: string;
+  logoutRemoveToolKeys: string;
+  toolKeysRemoved: string;
+  toolKeysRemoveSkipped: string;
+  toolKeysRemoveFailed: string;
   logoutConfirmConfirm: string;
   logoutConfirmCancel: string;
   logoutSuccessRevoked: string;
@@ -275,6 +279,10 @@ const zh: We2aiStrings = {
   logoutConfirmTitle: "确认登出？",
   logoutConfirmDescription:
     "登出后需要重新登录才能继续使用。工具（Claude Code / Codex / WorkBuddy）配置中已写入的 Key 会保留，不会被删除。",
+  logoutRemoveToolKeys: "同时从工具配置中移除 Key（工具将无法继续使用 WE2AI）",
+  toolKeysRemoved: "已从 {count} 个工具配置中移除 Key",
+  toolKeysRemoveSkipped: "部分工具配置未移除",
+  toolKeysRemoveFailed: "未能从工具配置中移除 Key",
   logoutConfirmConfirm: "确认登出",
   logoutConfirmCancel: "取消",
   logoutSuccessRevoked: "已退出",
@@ -430,6 +438,11 @@ const en: We2aiStrings = {
   logoutConfirmTitle: "Sign out?",
   logoutConfirmDescription:
     "You'll need to sign in again to continue. API keys already written into Claude Code, Codex, or WorkBuddy configs will be kept, not removed.",
+  logoutRemoveToolKeys:
+    "Also remove the key from tool configs (the tools will stop using WE2AI)",
+  toolKeysRemoved: "Removed the key from {count} tool config(s)",
+  toolKeysRemoveSkipped: "Some tool configs were left unchanged",
+  toolKeysRemoveFailed: "Couldn't remove the key from tool configs",
   logoutConfirmConfirm: "Sign out",
   logoutConfirmCancel: "Cancel",
   logoutSuccessRevoked: "Signed out",

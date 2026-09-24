@@ -333,6 +333,110 @@ describe("We2aiShell session-not-persistable warning", () => {
 // Codex 代码评审第 5 轮高危项 3：本地清理（索引 + 钥匙串）两项全部失败时，
 // `we2ai_logout` 返回 `localCleanupFailed`——前端不能表现成"已经退出"，
 // 必须保持已登录界面并提示清理失败、提供重试。
+describe("We2aiShell logout removing tool keys", () => {
+  afterEach(() => {
+    server.resetHandlers();
+  });
+
+  function loggedInUntilLogout(state: { loggedOut: boolean }) {
+    return () => ({
+      loggedIn: !state.loggedOut,
+      region: state.loggedOut ? null : "international",
+      emailMasked: state.loggedOut ? null : "u****@we2ai.com",
+      keyringDegraded: false,
+      indexDegraded: false,
+      offlineRetryInSeconds: null,
+      localCleanupPending: false,
+    });
+  }
+
+  it("removes keys from tool configs only when the checkbox is ticked", async () => {
+    const state = { loggedOut: false };
+    let removeCalls = 0;
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: loggedInUntilLogout(state),
+      we2ai_logout: () => {
+        state.loggedOut = true;
+        return "revoked";
+      },
+      we2ai_remove_tool_keys: () => {
+        removeCalls += 1;
+        return {
+          removed: ["/u/.claude/settings.json", "/u/.codex/config.toml"],
+          skipped: [],
+        };
+      },
+    });
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(await screen.findByText("登出"));
+    await user.click(
+      await screen.findByRole("checkbox", { name: /同时从工具配置中移除 Key/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "确认登出" }));
+
+    await screen.findByText("已从 2 个工具配置中移除 Key");
+    expect(removeCalls).toBe(1);
+  });
+
+  it("still removes tool keys when local cleanup failed after logout", async () => {
+    let removeCalls = 0;
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: () => ({
+        loggedIn: true,
+        region: "international",
+        emailMasked: "u****@we2ai.com",
+        keyringDegraded: false,
+        indexDegraded: false,
+        offlineRetryInSeconds: null,
+        localCleanupPending: false,
+      }),
+      we2ai_logout: () => "localCleanupFailed",
+      we2ai_remove_tool_keys: () => {
+        removeCalls += 1;
+        return { removed: ["/u/.claude/settings.json"], skipped: [] };
+      },
+    });
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(await screen.findByText("登出"));
+    await user.click(
+      await screen.findByRole("checkbox", { name: /同时从工具配置中移除 Key/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "确认登出" }));
+    await screen.findByText("已从 1 个工具配置中移除 Key");
+    expect(removeCalls).toBe(1);
+  });
+
+  it("keeps tool keys by default", async () => {
+    const state = { loggedOut: false };
+    let removeCalls = 0;
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: loggedInUntilLogout(state),
+      we2ai_logout: () => {
+        state.loggedOut = true;
+        return "revoked";
+      },
+      we2ai_remove_tool_keys: () => {
+        removeCalls += 1;
+        return { removed: [], skipped: [] };
+      },
+    });
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(await screen.findByText("登出"));
+    await user.click(await screen.findByRole("button", { name: "确认登出" }));
+    await screen.findByText("登录 WE2AI");
+    expect(removeCalls).toBe(0);
+  });
+});
+
 describe("We2aiShell logout with local cleanup failure", () => {
   afterEach(() => {
     server.resetHandlers();

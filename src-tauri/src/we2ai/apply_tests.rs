@@ -89,6 +89,10 @@ fn read_json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+fn read_json_str(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
 fn read_toml(path: &Path) -> toml::Value {
     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
@@ -665,6 +669,154 @@ fn material_cleanup_marker_survives_restart_until_cleared() {
     apply::set_material_cleanup_pending(&root, false).unwrap();
     assert!(!apply::material_cleanup_pending(&root));
     apply::set_material_cleanup_pending(&root, false).unwrap();
+}
+
+/// 登出弹窗勾选"同时从工具配置中移除 Key"：只移除 WE2AI 写入的部分。
+#[test]
+#[serial]
+fn remove_tool_keys_strips_only_we2ai_credentials() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(&claude_settings(home.path()), CLAUDE_BASE);
+    write(&codex_config(home.path()), CODEX_BASE);
+    write(&wb_models(home.path()), &format!("[{USER_ENTRY}]"));
+    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
+    apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_A), &ok).unwrap();
+    workbuddy::apply_workbuddy(&root, &params("glm", KEY_A), false, &ok).unwrap();
+
+    // 仍登录时拒绝。
+    let logged_in = || false;
+    assert_eq!(
+        apply::remove_tool_keys(&root, &logged_in).unwrap_err().code,
+        apply::ERR_SESSION_CHANGED
+    );
+
+    let out = apply::remove_tool_keys(&root, &ok).unwrap();
+    assert_eq!(out.removed.len(), 3, "{out:?}");
+    assert!(out.skipped.is_empty(), "{out:?}");
+
+    let claude = read_json(&claude_settings(home.path()));
+    assert!(claude["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+    assert_eq!(claude["env"]["CUSTOM_FLAG"], "1");
+    assert_eq!(claude["hooks"], read_json_str(CLAUDE_BASE)["hooks"]);
+    let codex = read_toml(&codex_config(home.path()));
+    assert!(codex["model_providers"]["we2ai"]
+        .get("experimental_bearer_token")
+        .is_none());
+    assert_eq!(
+        codex["model_providers"]["mine"]["experimental_bearer_token"].as_str(),
+        Some("sk-mine-secret"),
+        "user's own provider token untouched"
+    );
+    let items = wb_items(home.path());
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "deepseek-v3");
+    assert!(workbuddy::load_record(&root).is_none());
+}
+
+#[test]
+#[serial]
+fn remove_tool_keys_leaves_non_we2ai_claude_and_edited_workbuddy_entries() {
+    let home = TestHome::new();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let other = r#"{"env":{"ANTHROPIC_BASE_URL":"https://other.example","ANTHROPIC_AUTH_TOKEN":"sk-other"}}"#;
+    write(&claude_settings(home.path()), other);
+    workbuddy::apply_workbuddy(&root, &params("glm", KEY_A), false, &ok).unwrap();
+    let mut items = wb_items(home.path());
+    items[0]["name"] = json!("改过");
+    write(
+        &wb_models(home.path()),
+        &serde_json::to_string(&items).unwrap(),
+    );
+
+    let out = apply::remove_tool_keys(&root, &ok).unwrap();
+    assert!(out.removed.is_empty(), "{out:?}");
+    assert_eq!(out.skipped.len(), 1, "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(claude_settings(home.path())).unwrap(),
+        other
+    );
+    assert_eq!(wb_items(home.path()).len(), 1);
+}
+
+/// 配置损坏或不可读时报告为未移除，不静默成功。
+#[test]
+#[serial]
+fn remove_tool_keys_reports_unreadable_or_corrupt_configs() {
+    let home = TestHome::new();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(&claude_settings(home.path()), "{ not json");
+    write(&codex_config(home.path()), "[[[ not toml");
+    let out = apply::remove_tool_keys(&root, &ok).unwrap();
+    assert!(out.removed.is_empty(), "{out:?}");
+    assert_eq!(out.skipped.len(), 2, "{out:?}");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = claude_settings(home.path());
+        std::fs::write(
+            &path,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://api.we2ai.com","ANTHROPIC_AUTH_TOKEN":"k"}}"#,
+        )
+        .unwrap();
+        std::fs::write(codex_config(home.path()), "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let out = apply::remove_tool_keys(&root, &ok).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(out.skipped.len(), 1, "{out:?}");
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("ANTHROPIC_AUTH_TOKEN"));
+    }
+}
+
+/// 用户把 we2ai 表改成自有端点：token 不动，并如实报告没有可移除的内容。
+#[test]
+#[serial]
+fn remove_tool_keys_skips_a_we2ai_codex_table_pointing_elsewhere() {
+    let home = TestHome::new();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let cfg = "model_provider = \"we2ai\"\n[model_providers.we2ai]\nbase_url = \"https://mine.example/v1\"\nexperimental_bearer_token = \"sk-mine\"\n";
+    write(&codex_config(home.path()), cfg);
+    let out = apply::remove_tool_keys(&root, &ok).unwrap();
+    assert!(out.removed.is_empty(), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(codex_config(home.path())).unwrap(),
+        cfg
+    );
+}
+
+/// 移除过程中重新登录：此后不再改文件，剩余项报告为未移除。
+#[test]
+#[serial]
+fn remove_tool_keys_stops_when_the_user_logs_in_midway() {
+    use std::cell::Cell;
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(&codex_config(home.path()), "");
+    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
+    apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_A), &ok).unwrap();
+    // 第一次检查（取锁后）未登录，之后变为已登录。
+    let calls = Cell::new(0);
+    let logged_out = || {
+        calls.set(calls.get() + 1);
+        calls.get() == 1
+    };
+    let out = apply::remove_tool_keys(&root, &logged_out).unwrap();
+    assert!(out.removed.is_empty(), "{out:?}");
+    assert!(read_json(&claude_settings(home.path()))["env"]["ANTHROPIC_AUTH_TOKEN"] == KEY_A);
+    assert!(
+        out.skipped.iter().any(|s| s.contains("已重新登录")),
+        "{out:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,15 @@ impl Region {
         }
     }
 
+    /// 全部区域（含当前构建不可选的），用于识别配置里指向任一 WE2AI 网关的地址。
+    pub fn all() -> [Region; 3] {
+        [
+            Region::International,
+            Region::DomesticProd,
+            Region::DomesticDev,
+        ]
+    }
+
     /// 当前构建下登录页可选择的区域列表，顺序即展示顺序。
     pub fn available_regions() -> Vec<Region> {
         [
