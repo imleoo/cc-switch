@@ -12,9 +12,15 @@ import { useTheme } from "@/components/theme-provider";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { settingsApi } from "@/lib/api/settings";
 import { WE2AI_WEBSITE_URL } from "@/config/we2ai";
-import { we2aiApi, type We2aiSessionSummary, type We2aiSettings } from "./api";
+import {
+  we2aiApi,
+  type We2aiSessionSummary,
+  type We2aiSettings,
+  type We2aiToolStatusReport,
+} from "./api";
 import { LoginPage, notifyLogoutOutcome } from "./LoginPage";
 import { ModelSquarePage } from "./ModelSquarePage";
+import { ToolStatusBar } from "./ToolStatusBar";
 import {
   getWe2aiStrings,
   formatWe2aiString,
@@ -421,6 +427,28 @@ export function We2aiShell() {
     void settingsApi.openExternal(WE2AI_WEBSITE_URL);
   };
 
+  // 顶栏工具状态（方案第 1、4.4 节）：登录后与每次写入成功后刷新。
+  const [toolStatus, setToolStatus] = useState<We2aiToolStatusReport | null>(
+    null,
+  );
+  const refreshToolStatus = useCallback(async () => {
+    try {
+      setToolStatus(await we2aiApi.toolStatus());
+    } catch {
+      // 检测失败不影响使用，保留上一次结果。
+    }
+  }, []);
+  const loggedInIdentity = session?.loggedIn
+    ? `${session.region ?? ""}:${session.emailMasked ?? ""}`
+    : null;
+  useEffect(() => {
+    if (loggedInIdentity) {
+      void refreshToolStatus();
+    } else {
+      setToolStatus(null);
+    }
+  }, [loggedInIdentity, refreshToolStatus]);
+
   // 全部 hooks 已在上方无条件声明完毕，以下按会话状态分支渲染不同视图，不再
   // 有新的 hook 调用——不违反 hooks 调用顺序规则。
   if (!sessionChecked) {
@@ -490,6 +518,8 @@ export function We2aiShell() {
           </Button>
         </div>
       </header>
+
+      <ToolStatusBar t={t} report={toolStatus} />
 
       <Dialog open={logoutDialogOpen} onOpenChange={setLogoutDialogOpen}>
         <DialogContent>
@@ -591,6 +621,8 @@ export function We2aiShell() {
                   key={`${session.region ?? ""}:${session.emailMasked ?? ""}`}
                   t={t}
                   onSessionMaybeEnded={() => void refreshSessionStatus()}
+                  toolStatus={toolStatus}
+                  onApplied={() => void refreshToolStatus()}
                 />
               </CardContent>
             </Card>

@@ -23,7 +23,36 @@ export interface We2aiStrings {
   loadingModels: string;
   noModels: string;
   modelNoTools: string;
-  applyComingSoon: string;
+  // 工具写入（方案第 4 节、第 8 节 P4）
+  toolNotInstalled: string;
+  toolBroken: string;
+  toolDownload: string;
+  toolCurrentModel: string;
+  toolNotConfigured: string;
+  ccSwitchRunningBanner: string;
+  applyConfirmTitle: string;
+  applyConfirmDescription: string;
+  applyFilesLabel: string;
+  applyFieldsLabel: string;
+  applyAdvanced: string;
+  slotSonnet: string;
+  slotOpus: string;
+  slotHaiku: string;
+  applyConfirm: string;
+  applyCancel: string;
+  applying: string;
+  applySuccess: string;
+  applyToolNotInstalled: string;
+  applyCurrent: string;
+  applyPlanFailed: string;
+  workbuddyOverwriteTitle: string;
+  workbuddyOverwriteDescription: string;
+  workbuddyOverwriteConfirm: string;
+  errorApplyTakeover: string;
+  errorApplyTakeoverDetected: string;
+  errorApplyPrecondition: string;
+  errorApplyGeneric: string;
+  errorApplyConcurrent: string;
   keyBlockedQuotaExhausted: string;
   keyBlockedExpired: string;
   keyBlockedDisabled: string;
@@ -131,7 +160,38 @@ const zh: We2aiStrings = {
   loadingModels: "正在加载可用模型",
   noModels: "这个 Key 当前没有可用的模型",
   modelNoTools: "暂无支持的工具",
-  applyComingSoon: "一键写入工具配置即将上线",
+  toolNotInstalled: "未安装",
+  toolBroken: "已安装但无法运行",
+  toolDownload: "下载",
+  toolCurrentModel: "当前：{model}",
+  toolNotConfigured: "未指定 WE2AI 模型",
+  ccSwitchRunningBanner:
+    "CC Switch 也在运行，它与 WE2AI 可能互相覆盖这些工具的配置",
+  applyConfirmTitle: "将 {model} 指定给 {tool}",
+  applyConfirmDescription: "只改写以下文件中的这些字段，其余内容保持不变",
+  applyFilesLabel: "文件",
+  applyFieldsLabel: "字段",
+  applyAdvanced: "高级：分别指定各槽位模型",
+  slotSonnet: "Sonnet 槽位",
+  slotOpus: "Opus 槽位",
+  slotHaiku: "Haiku 槽位",
+  applyConfirm: "写入并激活",
+  applyCancel: "取消",
+  applying: "正在写入",
+  applySuccess: "已将 {model} 指定给 {tool}",
+  applyToolNotInstalled: "{tool} 尚未安装，配置已写好，安装后即可使用",
+  applyCurrent: "当前使用中",
+  applyPlanFailed: "无法读取将写入的文件清单，请关闭后重试",
+  workbuddyOverwriteTitle: "覆盖 WorkBuddy 中的同名条目？",
+  workbuddyOverwriteDescription:
+    "WorkBuddy 中已有 {model} 条目，且内容与 WE2AI 上次写入的不同。",
+  workbuddyOverwriteConfirm: "覆盖为 WE2AI 配置",
+  errorApplyTakeover:
+    "CC Switch 正在代理接管此工具，请先在 CC Switch 中关闭接管",
+  errorApplyTakeoverDetected: "检测到代理接管，未生效",
+  errorApplyPrecondition: "WE2AI 记录的供应商状态异常，已停止写入",
+  errorApplyGeneric: "写入失败",
+  errorApplyConcurrent: "WorkBuddy 配置正被其他程序频繁修改，请稍后重试",
   keyBlockedQuotaExhausted: "这个 Key 的额度已用完，暂时无法调用",
   keyBlockedExpired: "这个 Key 已过期",
   keyBlockedDisabled: "这个 Key 已被停用",
@@ -242,7 +302,44 @@ const en: We2aiStrings = {
   loadingModels: "Loading available models",
   noModels: "This key has no available models right now",
   modelNoTools: "No supported tools yet",
-  applyComingSoon: "One-click tool setup is coming soon",
+  toolNotInstalled: "Not installed",
+  toolBroken: "Installed but not working",
+  toolDownload: "Download",
+  toolCurrentModel: "Current: {model}",
+  toolNotConfigured: "No WE2AI model set",
+  ccSwitchRunningBanner:
+    "CC Switch is also running. It and WE2AI may overwrite each other's tool settings.",
+  applyConfirmTitle: "Use {model} in {tool}",
+  applyConfirmDescription:
+    "Only these fields in these files are changed. Everything else stays as is.",
+  applyFilesLabel: "Files",
+  applyFieldsLabel: "Fields",
+  applyAdvanced: "Advanced: choose a model per slot",
+  slotSonnet: "Sonnet slot",
+  slotOpus: "Opus slot",
+  slotHaiku: "Haiku slot",
+  applyConfirm: "Write and activate",
+  applyCancel: "Cancel",
+  applying: "Writing",
+  applySuccess: "{tool} now uses {model}",
+  applyToolNotInstalled:
+    "{tool} isn't installed yet. The settings are ready once you install it.",
+  applyCurrent: "In use",
+  applyPlanFailed:
+    "Couldn't load the list of files to be written. Close and try again.",
+  workbuddyOverwriteTitle: "Overwrite the WorkBuddy entry?",
+  workbuddyOverwriteDescription:
+    "WorkBuddy already has a {model} entry that differs from what WE2AI last wrote.",
+  workbuddyOverwriteConfirm: "Overwrite with WE2AI settings",
+  errorApplyTakeover:
+    "CC Switch is proxy-managing this tool. Turn off takeover in CC Switch first.",
+  errorApplyTakeoverDetected:
+    "Proxy takeover detected. The change did not take effect.",
+  errorApplyPrecondition:
+    "WE2AI's provider records are in an unexpected state. Nothing was written.",
+  errorApplyGeneric: "Write failed",
+  errorApplyConcurrent:
+    "Another program keeps changing the WorkBuddy settings. Please try again later.",
   keyBlockedQuotaExhausted: "This key has used up its quota",
   keyBlockedExpired: "This key has expired",
   keyBlockedDisabled: "This key is disabled",

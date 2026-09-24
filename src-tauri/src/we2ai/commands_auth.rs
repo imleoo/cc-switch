@@ -11,7 +11,7 @@ use super::api::ApiClient;
 use super::captcha::{self, We2aiCaptchaState};
 use super::region::Region;
 use super::session::{
-    LoginOutcome, LogoutOutcome, SessionError, SessionSummary, We2aiSessionState,
+    LoginOutcome, LogoutOutcome, SessionError, SessionManager, SessionSummary, We2aiSessionState,
 };
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -291,9 +291,32 @@ pub async fn we2ai_login_phone(
 
 #[tauri::command]
 pub async fn we2ai_session_status(
+    app_handle: tauri::AppHandle,
     session: State<'_, We2aiSessionState>,
+    keys: State<'_, super::keys::We2aiKeyState>,
 ) -> Result<SessionSummary, We2aiApiError> {
-    Ok(session.0.summary())
+    let mut summary = session.0.summary();
+    // 数据库里的 Key 未清除同样属于"本机凭据未清除"，复用同一提示与重试入口；
+    // 持久标记保证重启后仍能提示（Codex P4 验收第 2 轮高危项）。
+    summary.local_cleanup_pending |= keys.material_cleanup_pending()
+        || super::apply::material_cleanup_pending(session.0.data_root());
+    // 标记写不进磁盘时，未登录状态下直接检查残留（第 3 轮高危项 2）。
+    if !summary.logged_in && !summary.local_cleanup_pending {
+        summary.local_cleanup_pending = key_material_residue(app_handle).await;
+    }
+    Ok(summary)
+}
+
+async fn key_material_residue(app_handle: tauri::AppHandle) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        app_handle
+            .try_state::<crate::store::AppState>()
+            .map(|state| super::apply::key_material_residue(state.inner()))
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -321,14 +344,74 @@ impl From<LogoutOutcome> for We2aiLogoutOutcome {
 
 #[tauri::command]
 pub async fn we2ai_logout(
+    app_handle: tauri::AppHandle,
     session: State<'_, We2aiSessionState>,
     keys: State<'_, super::keys::We2aiKeyState>,
 ) -> Result<We2aiLogoutOutcome, We2aiApiError> {
     let manager = session.0.clone();
-    let outcome = manager.logout().await;
-    // 登出后不在内存里继续保留明文 Key。
+    let outcome: We2aiLogoutOutcome = manager.logout().await.into();
+    // 登出后不在内存里继续保留明文 Key，并清除数据库行与备份里的 Key。
     keys.clear();
-    Ok(outcome.into())
+    let material_ok = clear_key_material(app_handle, manager.clone()).await;
+    record_material_pending(&keys, manager.data_root(), !material_ok);
+    Ok(logout_outcome_with_material(outcome, material_ok))
+}
+
+/// 内存标记与持久标记一起更新；持久标记写失败时内存标记仍保证本次运行提示。
+fn record_material_pending(
+    keys: &super::keys::We2aiKeyState,
+    data_root: &std::path::Path,
+    pending: bool,
+) {
+    keys.set_material_cleanup_pending(pending);
+    if let Err(e) = super::apply::set_material_cleanup_pending(data_root, pending) {
+        log::warn!("更新 Key 材料待清理标记失败: {e}");
+    }
+}
+
+async fn clear_key_material(app_handle: tauri::AppHandle, manager: SessionManager) -> bool {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let still_logged_out = move || manager.current_identity().is_none();
+        match app_handle.try_state::<crate::store::AppState>() {
+            Some(state) => super::apply::clear_local_key_material(state.inner(), &still_logged_out),
+            None => Err("应用状态不可用".to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    if let Err(e) = &result {
+        log::warn!("清除数据库中的 WE2AI Key 失败: {e}");
+    }
+    result.is_ok()
+}
+
+/// 数据库行或备份里的 Key 没清掉时不能报"已退出"：前端提示清理失败并给出重试
+/// 入口（Codex P4 验收第 1 轮高危项）。
+fn logout_outcome_with_material(
+    outcome: We2aiLogoutOutcome,
+    material_ok: bool,
+) -> We2aiLogoutOutcome {
+    match outcome {
+        We2aiLogoutOutcome::Revoked | We2aiLogoutOutcome::LocalOnly if !material_ok => {
+            We2aiLogoutOutcome::LocalCleanupFailed
+        }
+        other => other,
+    }
+}
+
+/// 重试结果：会话凭据与 Key 材料两部分都清干净才算完成。`material` 为 `None`
+/// 表示没有待清理的 Key 材料、未尝试。
+fn retry_outcome_with_material(
+    session_outcome: We2aiLogoutOutcome,
+    material: Option<bool>,
+) -> We2aiLogoutOutcome {
+    match (session_outcome, material) {
+        (_, Some(false)) => We2aiLogoutOutcome::LocalCleanupFailed,
+        (We2aiLogoutOutcome::NotLoggedIn, Some(true)) => We2aiLogoutOutcome::LocalOnly,
+        (other, _) => other,
+    }
 }
 
 /// 登出或会话终止时远端未确认、且本地清理（索引 + 钥匙串）两项都失败，
@@ -339,10 +422,23 @@ pub async fn we2ai_logout(
 /// 项 3）。
 #[tauri::command]
 pub async fn we2ai_retry_local_cleanup(
+    app_handle: tauri::AppHandle,
     session: State<'_, We2aiSessionState>,
+    keys: State<'_, super::keys::We2aiKeyState>,
 ) -> Result<We2aiLogoutOutcome, We2aiApiError> {
     let manager = session.0.clone();
-    Ok(manager.retry_local_cleanup().await.into())
+    let session_outcome: We2aiLogoutOutcome = manager.retry_local_cleanup().await.into();
+    let pending = keys.material_cleanup_pending()
+        || super::apply::material_cleanup_pending(manager.data_root())
+        || (manager.current_identity().is_none() && key_material_residue(app_handle.clone()).await);
+    let material = if pending {
+        let ok = clear_key_material(app_handle, manager.clone()).await;
+        record_material_pending(&keys, manager.data_root(), !ok);
+        Some(ok)
+    } else {
+        None
+    };
+    Ok(retry_outcome_with_material(session_outcome, material))
 }
 
 #[cfg(test)]
@@ -363,6 +459,47 @@ mod serde_shape_tests {
             requires,
             serde_json::json!({"kind": "requires2fa", "tempToken": "t", "emailMasked": "e"})
         );
+    }
+
+    #[test]
+    fn key_material_failure_turns_a_successful_logout_into_cleanup_failed() {
+        use We2aiLogoutOutcome::*;
+        assert_eq!(
+            logout_outcome_with_material(Revoked, false),
+            LocalCleanupFailed
+        );
+        assert_eq!(
+            logout_outcome_with_material(LocalOnly, false),
+            LocalCleanupFailed
+        );
+        assert_eq!(logout_outcome_with_material(Revoked, true), Revoked);
+        assert_eq!(
+            logout_outcome_with_material(NotLoggedIn, false),
+            NotLoggedIn
+        );
+        assert_eq!(
+            logout_outcome_with_material(LocalCleanupFailed, true),
+            LocalCleanupFailed
+        );
+    }
+
+    #[test]
+    fn retry_succeeds_only_when_both_parts_are_clean() {
+        use We2aiLogoutOutcome::*;
+        assert_eq!(
+            retry_outcome_with_material(NotLoggedIn, Some(true)),
+            LocalOnly
+        );
+        assert_eq!(
+            retry_outcome_with_material(LocalOnly, Some(false)),
+            LocalCleanupFailed
+        );
+        assert_eq!(
+            retry_outcome_with_material(LocalCleanupFailed, Some(true)),
+            LocalCleanupFailed
+        );
+        assert_eq!(retry_outcome_with_material(NotLoggedIn, None), NotLoggedIn);
+        assert_eq!(retry_outcome_with_material(LocalOnly, None), LocalOnly);
     }
 
     #[test]

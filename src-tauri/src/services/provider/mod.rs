@@ -5762,6 +5762,16 @@ impl ProviderService {
 
         let should_hot_switch = is_app_taken_over || live_taken_over;
 
+        // we2ai: WE2AI 的固定 id 供应商在接管状态下一律拒绝，不进入热切换、不写
+        // live 与 proxy_live_backup（方案 4.1 节"热切换拒绝"，本文件唯一改动）。
+        if should_hot_switch && crate::we2ai::apply::is_managed_provider_id(id) {
+            return Err(AppError::localized(
+                crate::we2ai::apply::TAKEOVER_LOCALIZED_KEY,
+                "CC Switch 正在代理接管此工具，请先在 CC Switch 中关闭接管",
+                "CC Switch is proxy-managing this tool. Turn off takeover in CC Switch first.",
+            ));
+        }
+
         // Block switching to unsupported official providers when proxy takeover
         // is active. Codex official account cards use native auth passthrough.
         if should_hot_switch

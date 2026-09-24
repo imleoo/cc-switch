@@ -117,6 +117,52 @@ export interface We2aiKeyModels {
   blockedReason: string | null;
 }
 
+/** 工具安装与当前生效模型（`src-tauri/src/we2ai/detect.rs`）。 */
+export interface We2aiToolStatus {
+  tool: We2aiTool;
+  installed: boolean;
+  /** 已安装但 `--version` 失败（装了却跑不起来）。 */
+  broken: boolean;
+  version: string | null;
+  downloadUrl: string;
+  /** 该工具配置当前指向 WE2AI 时的模型。 */
+  managedModel: string | null;
+}
+
+export interface We2aiToolStatusReport {
+  tools: We2aiToolStatus[];
+  /** CC Switch 也在运行，两者可能互相覆盖工具配置。 */
+  ccSwitchRunning: boolean;
+}
+
+/** 确认弹窗展示的"将写入的文件与字段"。 */
+export interface We2aiApplyPlan {
+  files: string[];
+  fields: string[];
+}
+
+/** Claude Code 三个槽位；未指定的与主模型相同。 */
+export interface We2aiClaudeSlots {
+  sonnet?: string | null;
+  opus?: string | null;
+  haiku?: string | null;
+}
+
+export interface We2aiApplyRequest {
+  tool: We2aiTool;
+  keyId: number;
+  model: string;
+  claudeSlots?: We2aiClaudeSlots;
+  /** WorkBuddy 同名条目需要确认覆盖时传 true。 */
+  overwrite?: boolean;
+}
+
+export interface We2aiApplyOutcome {
+  model: string;
+  files: string[];
+  warnings: string[];
+}
+
 /**
  * WE2AI 自有命令的前端封装。P0 阶段只有设置读写——上游 `get_settings` /
  * `save_settings` 在 WE2AI 模式下被 IPC 白名单拒绝，不能复用 `settingsApi`。
@@ -217,5 +263,24 @@ export const we2aiApi = {
 
   async keyModels(keyId: number): Promise<We2aiKeyModels> {
     return await invoke("we2ai_key_models", { keyId });
+  },
+
+  async toolStatus(): Promise<We2aiToolStatusReport> {
+    return await invoke("we2ai_tool_status");
+  },
+
+  async applyPlan(tool: We2aiTool): Promise<We2aiApplyPlan> {
+    return await invoke("we2ai_apply_plan", { tool });
+  },
+
+  /** 把模型写入工具配置并激活；Key 明文由 Rust 侧按 keyId 取出。 */
+  async applyModel(request: We2aiApplyRequest): Promise<We2aiApplyOutcome> {
+    return await invoke("we2ai_apply_model", {
+      tool: request.tool,
+      keyId: request.keyId,
+      model: request.model,
+      claudeSlots: request.claudeSlots ?? null,
+      overwrite: request.overwrite ?? false,
+    });
   },
 };

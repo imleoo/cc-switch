@@ -609,6 +609,31 @@ pub struct RemoteKeyModel {
     pub provider: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// 方案 3.2 节 B1 可选能力字段，无数据时服务端省略。
+    #[serde(default)]
+    pub supports_tool_call: Option<bool>,
+    #[serde(default)]
+    pub supports_images: Option<bool>,
+    #[serde(default)]
+    pub reasoning_efforts: Option<Vec<String>>,
+}
+
+/// 写 WorkBuddy 条目用的可选能力（方案 4.3 节字段映射）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    pub supports_tool_call: Option<bool>,
+    pub supports_images: Option<bool>,
+    pub reasoning_efforts: Option<Vec<String>>,
+}
+
+impl RemoteKeyModel {
+    pub fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            supports_tool_call: self.supports_tool_call,
+            supports_images: self.supports_images,
+            reasoning_efforts: self.reasoning_efforts.clone(),
+        }
+    }
 }
 
 fn parse_login_response(value: Value) -> Result<LoginResult, ApiCallError> {

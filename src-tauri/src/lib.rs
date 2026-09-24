@@ -1372,6 +1372,9 @@ pub fn run() {
                     restore_proxy_state_on_startup(&state).await;
                 }
 
+                // we2ai: WE2AI 模式禁用定期数据库备份——备份是整库副本，含供应商行
+                // 里的 Key；登出后备份目录须为空（方案第 8 节 P5）。
+                if we2ai::mode::startup_allowed(we2ai::mode::StartupTask::PeriodicBackup) {
                 // Periodic backup check (on startup)
                 if let Err(e) = state.db.periodic_backup_if_needed() {
                     log::warn!("Periodic backup failed on startup: {e}");
@@ -1392,6 +1395,7 @@ pub fn run() {
                         }
                     }
                 });
+                }
 
                 // Session log usage sync: 启动时同步一次，之后每 60 秒检查
                 // we2ai: WE2AI 模式禁用，不扫描用户工具的会话日志
@@ -1524,6 +1528,9 @@ pub fn run() {
                 we2ai::keys::we2ai_list_keys,
                 we2ai::keys::we2ai_select_key,
                 we2ai::keys::we2ai_key_models,
+                we2ai::commands_apply::we2ai_tool_status,
+                we2ai::commands_apply::we2ai_apply_plan,
+                we2ai::commands_apply::we2ai_apply_model,
             ],
             tauri::generate_handler![
             commands::get_providers,

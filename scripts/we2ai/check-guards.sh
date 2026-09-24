@@ -280,6 +280,7 @@ we2ai_startup_gate_calls=(
   "CommonConfigSnippets:initialize_common_config_snippets"
   "SkillsSsotMigration:migrate_skills_to_ssot"
   "CodexHistoryMigration:maybe_migrate_codex_third_party_history_provider_bucket"
+  "PeriodicBackup:periodic_backup_if_needed"
 )
 we2ai_gate_call_for_variant() {
   local variant="$1" entry
@@ -433,6 +434,21 @@ else
   ts_fields="$(printf '%s\n' "$ts_keyview" | sed -nE 's/^[[:space:]]*([A-Za-z_0-9]+)[?]?[[:space:]]*:.*/\1/p' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
   if [[ "$ts_fields" != "$expected_ts_fields" ]]; then
     err "src/we2ai/api.ts: We2aiKeyView 字段与允许清单不一致（实际：${ts_fields}；允许：${expected_ts_fields}）"
+  fi
+fi
+
+# 4.6 功能 11：上游 ProviderService::switch 的热切换拒绝（本 fork 对该文件的
+# 唯一改动）。上游同步若把这段冲掉，WE2AI 在接管状态下会走热切换，把自己的
+# 代理地址写进 CC Switch 正在接管的 live 文件。
+provider_rs=src-tauri/src/services/provider/mod.rs
+takeover_hits="$(grep -c 'crate::we2ai::apply::is_managed_provider_id(id)' "$provider_rs" || true)"
+if [[ "$takeover_hits" != "1" ]]; then
+  err "$provider_rs: 热切换拒绝判定（crate::we2ai::apply::is_managed_provider_id）应恰好出现 1 次，实际 ${takeover_hits} 次（功能 11）"
+else
+  guard_line="$(grep -n 'crate::we2ai::apply::is_managed_provider_id(id)' "$provider_rs" | cut -d: -f1)"
+  hot_line="$(grep -n 'hot_switch_provider_inner(app_type.as_str(), id)' "$provider_rs" | head -1 | cut -d: -f1)"
+  if [[ -z "$hot_line" || "$guard_line" -gt "$hot_line" ]]; then
+    err "$provider_rs: 热切换拒绝判定必须位于 hot_switch_provider_inner 调用之前（功能 11）"
   fi
 fi
 

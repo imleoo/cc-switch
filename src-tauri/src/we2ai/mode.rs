@@ -59,6 +59,9 @@ pub enum StartupTask {
     /// 迁移、统一会话开关的官方历史迁移，均会改写共享的 Codex 会话 jsonl 与
     /// state DB 文件。
     CodexHistoryMigration,
+    /// 定期数据库备份（启动时一次 + 每日定时）。备份是整库副本，含供应商行里
+    /// 的 Key。
+    PeriodicBackup,
 }
 
 /// 给定任务在 WE2AI 模式下是否允许执行。
@@ -83,7 +86,8 @@ pub fn startup_allowed(task: StartupTask) -> bool {
         | StartupTask::SessionUsageSync
         | StartupTask::CommonConfigSnippets
         | StartupTask::SkillsSsotMigration
-        | StartupTask::CodexHistoryMigration => false,
+        | StartupTask::CodexHistoryMigration
+        | StartupTask::PeriodicBackup => false,
     }
 }
 
@@ -304,6 +308,7 @@ mod tests {
             StartupTask::CommonConfigSnippets,
             StartupTask::SkillsSsotMigration,
             StartupTask::CodexHistoryMigration,
+            StartupTask::PeriodicBackup,
         ];
         for task in all_tasks {
             assert!(

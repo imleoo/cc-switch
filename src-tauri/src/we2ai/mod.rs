@@ -5,11 +5,19 @@
 //! 详见 `claudedocs/we2ai-客户端定制方案.md` 第 6 节与自定义开发功能列表.md。
 
 pub mod api;
+pub mod apply;
+#[cfg(test)]
+mod apply_tests;
 pub mod captcha;
 pub mod commands;
+pub mod commands_apply;
 pub mod commands_auth;
+pub mod detect;
+pub mod fsguard;
 pub mod keys;
 pub mod mode;
 pub mod region;
 pub mod secret_store;
 pub mod session;
+pub mod snapshot;
+pub mod workbuddy;

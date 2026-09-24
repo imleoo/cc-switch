@@ -12,8 +12,10 @@ import {
   we2aiApi,
   type We2aiKeyModels,
   type We2aiKeyView,
-  type We2aiTool,
+  type We2aiToolStatusReport,
 } from "./api";
+import { ApplyDialog, type ApplyTarget } from "./ApplyDialog";
+import { WE2AI_TOOL_LABELS } from "./toolLabels";
 import {
   formatWe2aiString,
   getWe2aiErrorMessage,
@@ -27,11 +29,7 @@ import {
  */
 const NETWORK_CODES = new Set(["TRANSIENT", "NETWORK_ERROR"]);
 
-export const WE2AI_TOOL_LABELS: Record<We2aiTool, string> = {
-  claude_code: "Claude Code",
-  codex: "Codex",
-  workbuddy: "WorkBuddy",
-};
+export { WE2AI_TOOL_LABELS };
 
 function errorCode(error: unknown): string | null {
   return isWe2aiApiError(error) ? error.code : null;
@@ -73,12 +71,19 @@ interface ModelSquarePageProps {
   t: We2aiStrings;
   /** 会话可能已失效时调用，外壳重新读取会话状态决定是否回登录页。 */
   onSessionMaybeEnded: () => void;
+  /** 工具安装与当前生效模型，用于标记"当前使用中"与安装提示。 */
+  toolStatus?: We2aiToolStatusReport | null;
+  /** 写入成功后回调，外壳据此刷新顶栏工具状态。 */
+  onApplied?: () => void;
 }
 
 export function ModelSquarePage({
   t,
   onSessionMaybeEnded,
+  toolStatus = null,
+  onApplied,
 }: ModelSquarePageProps) {
+  const [applyTarget, setApplyTarget] = useState<ApplyTarget | null>(null);
   const [keys, setKeys] = useState<We2aiKeyView[] | null>(null);
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
   const [keysError, setKeysError] = useState<string | null>(null);
@@ -327,26 +332,58 @@ export function ModelSquarePage({
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-2">
-                  {model.tools.map((tool) => (
-                    <Button
-                      key={tool}
-                      size="sm"
-                      variant="outline"
-                      disabled
-                      title={
-                        models.callable
-                          ? t.applyComingSoon
-                          : describeBlockedReason(t, models.blockedReason)
-                      }
-                    >
-                      {WE2AI_TOOL_LABELS[tool]}
-                    </Button>
-                  ))}
+                  {model.tools.map((tool) => {
+                    const inUse =
+                      toolStatus?.tools.find((s) => s.tool === tool)
+                        ?.managedModel === model.id;
+                    return (
+                      <Button
+                        key={tool}
+                        size="sm"
+                        variant={inUse ? "default" : "outline"}
+                        disabled={!models.callable || selectedKeyId === null}
+                        title={
+                          models.callable
+                            ? inUse
+                              ? t.applyCurrent
+                              : undefined
+                            : describeBlockedReason(t, models.blockedReason)
+                        }
+                        onClick={() =>
+                          setApplyTarget({ tool, model: model.id })
+                        }
+                      >
+                        {WE2AI_TOOL_LABELS[tool]}
+                        {inUse ? " ✓" : ""}
+                      </Button>
+                    );
+                  })}
                 </div>
               )}
             </li>
           ))}
         </ul>
+      )}
+
+      {selectedKeyId !== null && (
+        <ApplyDialog
+          t={t}
+          keyId={selectedKeyId}
+          target={applyTarget}
+          claudeModels={
+            models?.models
+              .filter((m) => m.tools.includes("claude_code"))
+              .map((m) => m.id) ?? []
+          }
+          toolInstalled={
+            applyTarget
+              ? (toolStatus?.tools.find((s) => s.tool === applyTarget.tool)
+                  ?.installed ?? true)
+              : true
+          }
+          onClose={() => setApplyTarget(null)}
+          onApplied={() => onApplied?.()}
+        />
       )}
     </div>
   );

@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::api::{RemoteApiKey, RemoteKeyModels};
+use super::api::{ModelCapabilities, RemoteApiKey, RemoteKeyModels};
 use super::commands_auth::We2aiApiError;
 use super::session::{SessionError, SessionIdentity, SessionManager, We2aiSessionState};
 
@@ -39,9 +39,15 @@ struct KeyCache {
     keys: Vec<RemoteApiKey>,
 }
 
+/// 最近一次 B1 结果里各模型的可选能力，与会话身份和 Key 绑定。
+type CapabilityCache = (SessionIdentity, i64, HashMap<String, ModelCapabilities>);
+
 #[derive(Default)]
 pub struct We2aiKeyState {
     cache: Mutex<Option<KeyCache>>,
+    capabilities: Mutex<Option<CapabilityCache>>,
+    /// 登出时数据库供应商行或备份里的 Key 未能清除，等待重试。
+    material_cleanup_pending: std::sync::atomic::AtomicBool,
     /// 列表拉取序号：每次拉取开始时领取，只有比已写入缓存的序号更新的结果
     /// 才能写缓存，避免较早发起、较晚完成的拉取覆盖较新的列表（Codex P3
     /// 验收第 2 轮中危项）。
@@ -71,6 +77,43 @@ impl We2aiKeyState {
     /// 清空缓存（登出后调用，避免明文 Key 在内存里多留）。
     pub fn clear(&self) {
         *self.cache.lock().unwrap() = None;
+        *self.capabilities.lock().unwrap() = None;
+    }
+
+    pub fn material_cleanup_pending(&self) -> bool {
+        self.material_cleanup_pending
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_material_cleanup_pending(&self, pending: bool) {
+        self.material_cleanup_pending
+            .store(pending, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn store_capabilities(
+        &self,
+        identity: SessionIdentity,
+        key_id: i64,
+        caps: HashMap<String, ModelCapabilities>,
+    ) {
+        *self.capabilities.lock().unwrap() = Some((identity, key_id, caps));
+    }
+
+    /// 某个 Key 下某个模型的可选能力；没有对应的 B1 结果时为 `None`（写入时
+    /// 省略能力字段）。
+    pub fn capabilities_for(
+        &self,
+        current: Option<SessionIdentity>,
+        key_id: i64,
+        model: &str,
+    ) -> Option<ModelCapabilities> {
+        let guard = self.capabilities.lock().unwrap();
+        match (&*guard, current) {
+            (Some((identity, k, caps)), Some(current)) if *identity == current && *k == key_id => {
+                caps.get(model).cloned()
+            }
+            _ => None,
+        }
     }
 
     /// 取某个 Key 的明文。只有缓存身份与当前会话身份一致才返回；身份不一致
@@ -360,6 +403,12 @@ pub async fn key_models(
     if Some(call_identity) != identity {
         return Err(SessionError::SessionChanged.into());
     }
+    let caps = remote
+        .models
+        .iter()
+        .map(|m| (m.id.clone(), m.capabilities()))
+        .collect();
+    state.store_capabilities(call_identity, key_id, caps);
     Ok(to_models_view(remote))
 }
 
@@ -563,11 +612,11 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "code": 0, "message": "success",
                 "data": {"models": [
-                    {"id": "claude-sonnet-4-5", "provider": "anthropic", "tools": ["workbuddy", "claude_code", "gemini_cli"]},
+                    {"id": "claude-sonnet-4-5", "provider": "anthropic", "tools": ["workbuddy", "claude_code", "gemini_cli"], "supports_tool_call": true, "reasoning_efforts": ["low", "high"]},
                     {"id": "gpt-5", "tools": []}
                 ], "callable": true, "blocked_reason": "IGNORED"}
             })))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -601,6 +650,27 @@ mod tests {
 
         let err = key_models(&manager, &state, 2).await.unwrap_err();
         assert_eq!(err.code, "KEY_NOT_FOUND");
+
+        // 可选能力按 Key 缓存：最近一次查询的是 Key 3，Key 1 的能力不再可取。
+        let identity = manager.current_identity();
+        assert_eq!(
+            state.capabilities_for(identity, 1, "claude-sonnet-4-5"),
+            None
+        );
+        key_models(&manager, &state, 1).await.ok();
+        let caps = state
+            .capabilities_for(identity, 1, "claude-sonnet-4-5")
+            .expect("capabilities cached for key 1");
+        assert_eq!(caps.supports_tool_call, Some(true));
+        assert_eq!(caps.supports_images, None);
+        assert_eq!(
+            caps.reasoning_efforts,
+            Some(vec!["low".to_string(), "high".to_string()])
+        );
+        assert_eq!(
+            state.capabilities_for(identity, 3, "claude-sonnet-4-5"),
+            None
+        );
     }
 
     /// 同一会话两次列表拉取乱序完成：较早发起、较晚完成的结果不覆盖较新
