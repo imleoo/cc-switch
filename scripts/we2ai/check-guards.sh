@@ -404,6 +404,38 @@ if [[ "$actual_perms" != "$expected_perms" ]]; then
 $actual_perms"
 fi
 
+# 4.5 功能 10：明文 Key 不经过 IPC。返回前端的 KeyView（Rust）与 We2aiKeyView
+# （前端）采用字段允许清单：新增任何字段（含改名、serde 重命名）都要先在这里
+# 登记并确认不是秘密（Codex P3 验收第 1 轮低危项）。
+keys_rs=src-tauri/src/we2ai/keys.rs
+expected_rs_fields="group_name id masked_key name status"
+expected_ts_fields="groupName id maskedKey name status"
+if [[ ! -f "$keys_rs" ]]; then
+  err "$keys_rs 不存在（功能 10）"
+else
+  keyview_body="$(awk '/^pub struct KeyView \{/{f=1;next} f&&/^\}/{exit} f' "$keys_rs")"
+  if [[ -z "$keyview_body" ]]; then
+    err "$keys_rs: 找不到 pub struct KeyView，无法校验明文 Key 不出 IPC"
+  else
+    rs_fields="$(printf '%s\n' "$keyview_body" | sed -nE 's/^[[:space:]]*pub[[:space:]]+([a-z_0-9]+)[[:space:]]*:.*/\1/p' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+    if [[ "$rs_fields" != "$expected_rs_fields" ]]; then
+      err "$keys_rs: KeyView 字段与允许清单不一致（实际：${rs_fields}；允许：${expected_rs_fields}）"
+    fi
+    if printf '%s\n' "$keyview_body" | grep -q 'serde('; then
+      err "$keys_rs: KeyView 字段上不允许 serde 属性（重命名会绕过字段清单）"
+    fi
+  fi
+fi
+ts_keyview="$(awk '/^export interface We2aiKeyView \{/{f=1;next} f&&/^\}/{exit} f' src/we2ai/api.ts)"
+if [[ -z "$ts_keyview" ]]; then
+  err "src/we2ai/api.ts: 找不到 We2aiKeyView 接口"
+else
+  ts_fields="$(printf '%s\n' "$ts_keyview" | sed -nE 's/^[[:space:]]*([A-Za-z_0-9]+)[?]?[[:space:]]*:.*/\1/p' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+  if [[ "$ts_fields" != "$expected_ts_fields" ]]; then
+    err "src/we2ai/api.ts: We2aiKeyView 字段与允许清单不一致（实际：${ts_fields}；允许：${expected_ts_fields}）"
+  fi
+fi
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi

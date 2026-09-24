@@ -86,6 +86,37 @@ export interface We2aiSessionSummary {
   localCleanupPending: boolean;
 }
 
+/** 客户端能写入的三个工具（B1 `tools` 字段取值）。 */
+export type We2aiTool = "claude_code" | "codex" | "workbuddy";
+
+/** Key 的脱敏视图（`src-tauri/src/we2ai/keys.rs` 的 `KeyView`），不含明文。 */
+export interface We2aiKeyView {
+  id: number;
+  name: string;
+  groupName: string | null;
+  status: "active" | "quota_exhausted" | string;
+  maskedKey: string;
+}
+
+export interface We2aiKeyList {
+  keys: We2aiKeyView[];
+  /** 记住的上次选择；没有记忆时为第一个 Key；列表为空时为 `null`。 */
+  selectedKeyId: number | null;
+}
+
+export interface We2aiModelView {
+  id: string;
+  provider: string | null;
+  tools: We2aiTool[];
+}
+
+/** SubPanel B1 结果：模型、支持的工具与 Key 级准入。 */
+export interface We2aiKeyModels {
+  models: We2aiModelView[];
+  callable: boolean;
+  blockedReason: string | null;
+}
+
 /**
  * WE2AI 自有命令的前端封装。P0 阶段只有设置读写——上游 `get_settings` /
  * `save_settings` 在 WE2AI 模式下被 IPC 白名单拒绝，不能复用 `settingsApi`。
@@ -172,5 +203,19 @@ export const we2aiApi = {
    */
   async retryLocalCleanup(): Promise<We2aiLogoutOutcome> {
     return await invoke("we2ai_retry_local_cleanup");
+  },
+
+  /** 拉取当前账号全部可用 Key（Rust 侧分页到最后一页）。 */
+  async listKeys(): Promise<We2aiKeyList> {
+    return await invoke("we2ai_list_keys");
+  },
+
+  /** 记住选中的 Key（按区域 + 账号分开存放）。 */
+  async selectKey(keyId: number): Promise<void> {
+    await invoke("we2ai_select_key", { keyId });
+  },
+
+  async keyModels(keyId: number): Promise<We2aiKeyModels> {
+    return await invoke("we2ai_key_models", { keyId });
   },
 };

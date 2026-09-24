@@ -252,6 +252,7 @@ pub struct LogoutResult {
     pub revoked: bool,
 }
 
+#[derive(Clone)]
 pub struct ApiClient {
     http: reqwest::Client,
     region: Region,
@@ -480,6 +481,37 @@ impl ApiClient {
         .await
     }
 
+    /// Key 列表一页（方案 3.3 节）。`page` 从 1 开始。
+    pub async fn list_keys(
+        &self,
+        access_token: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Paginated<RemoteApiKey>, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::GET, "/api/v1/keys")
+                .query(&[("page", page), ("page_size", page_size)])
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
+    /// B1：某个 Key 可用的模型、每个模型支持的工具与 Key 级准入结果。
+    pub async fn get_key_models(
+        &self,
+        access_token: &str,
+        key_id: i64,
+    ) -> Result<RemoteKeyModels, ApiCallError> {
+        self.send(
+            self.request(
+                reqwest::Method::GET,
+                &format!("/api/v1/desktop/keys/{key_id}/models"),
+            )
+            .bearer_auth(access_token),
+        )
+        .await
+    }
+
     /// 供已登录后受保护接口使用的通用 GET，外部按需扩展（P2 阶段仅 `get_profile`
     /// 使用受保护接口，此处保留供 session.rs 的失败分类测试复用同一套 send 逻辑）。
     #[cfg(test)]
@@ -509,6 +541,74 @@ impl ApiClient {
         )
         .await
     }
+}
+
+/// SubPanel 分页响应 `data`（`response.Paginated`）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct Paginated<T> {
+    #[serde(default = "Vec::new")]
+    pub items: Vec<T>,
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub page: i64,
+    #[serde(default)]
+    pub page_size: i64,
+    #[serde(default)]
+    pub pages: i64,
+}
+
+/// `/api/v1/keys` 的单个 Key，只解析客户端用到的字段。`key` 是明文，
+/// `Debug` 输出里隐去。
+#[derive(Clone, Deserialize)]
+pub struct RemoteApiKey {
+    pub id: i64,
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub group: Option<RemoteGroup>,
+}
+
+impl std::fmt::Debug for RemoteApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteApiKey")
+            .field("id", &self.id)
+            .field("key", &"<redacted>")
+            .field("name", &self.name)
+            .field("status", &self.status)
+            .field("group", &self.group)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteGroup {
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// B1 响应 `data`（SubPanel `DesktopKeyModelsResponse`）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteKeyModels {
+    #[serde(default)]
+    pub models: Vec<RemoteKeyModel>,
+    #[serde(default)]
+    pub callable: bool,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteKeyModel {
+    pub id: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 fn parse_login_response(value: Value) -> Result<LoginResult, ApiCallError> {

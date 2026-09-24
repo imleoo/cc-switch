@@ -8,6 +8,7 @@ pub mod api;
 pub mod captcha;
 pub mod commands;
 pub mod commands_auth;
+pub mod keys;
 pub mod mode;
 pub mod region;
 pub mod secret_store;

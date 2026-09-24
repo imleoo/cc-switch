@@ -136,7 +136,7 @@ pub fn mask_email(email: &str) -> String {
     let Some((local, domain)) = email.split_once('@') else {
         return "***".to_string();
     };
-    let keep = local.chars().count().min(2).max(1);
+    let keep = local.chars().count().clamp(1, 2);
     let visible: String = local.chars().take(keep).collect();
     format!("{visible}****@{domain}")
 }
@@ -181,6 +181,15 @@ enum SessionState {
 struct OperationContext {
     generation: u64,
     region: Region,
+}
+
+/// 对外暴露的会话身份：区域 + 用户 + 代次。代次在每次登录、恢复、登出时
+/// 变化，两个身份相等即表示同一次会话。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionIdentity {
+    pub region: Region,
+    pub user_id: i64,
+    pub generation: u64,
 }
 
 /// 会话失败分类（方案第 5.2 节"失败分类"表）。
@@ -1842,7 +1851,92 @@ impl SessionManager {
         F: Fn(String) -> Fut,
         Fut: Future<Output = Result<T, ApiCallError>>,
     {
-        let (mut token, ctx) = self.current_token_and_context()?;
+        let (token, ctx) = self.current_token_and_context()?;
+        self.run_protected(token, ctx, idempotent, call).await
+    }
+
+    /// 业务命令用的受保护调用：发起时捕获会话身份，并用**同一份**身份的
+    /// 区域构造 [`ApiClient`] 交给闭包，保证请求目标与 token 属于同一会话
+    /// （分两步取区域与 token 时，中间切换区域会把新区域 token 发往旧区域）。
+    /// 返回值附带发起时的 [`SessionIdentity`]，供调用方把结果与会话绑定。
+    pub async fn call_protected_api<T, F, Fut>(
+        &self,
+        idempotent: bool,
+        call: F,
+    ) -> Result<(T, SessionIdentity), SessionError>
+    where
+        F: Fn(ApiClient, String) -> Fut,
+        Fut: Future<Output = Result<T, ApiCallError>>,
+    {
+        let (token, ctx) = self.current_token_and_context()?;
+        let identity = self
+            .identity_for_context(ctx)
+            .ok_or(SessionError::SessionChanged)?;
+        let api = self.api_for(ctx.region);
+        let value = self
+            .run_protected(token, ctx, idempotent, |t| call(api.clone(), t))
+            .await?;
+        Ok((value, identity))
+    }
+
+    /// 当前 `Active` 会话的身份；未登录或登出中为 `None`。
+    pub fn current_identity(&self) -> Option<SessionIdentity> {
+        match &*self.current_state() {
+            SessionState::Active(s) => Some(SessionIdentity {
+                region: s.region,
+                user_id: s.user_id,
+                generation: s.generation,
+            }),
+            _ => None,
+        }
+    }
+
+    fn identity_for_context(&self, ctx: OperationContext) -> Option<SessionIdentity> {
+        self.current_identity()
+            .filter(|i| i.generation == ctx.generation && i.region == ctx.region)
+    }
+
+    /// WE2AI 数据根（`~/.we2ai`），供其他模块存放非秘密的界面记忆。
+    pub fn data_root(&self) -> &std::path::Path {
+        &self.0.data_root
+    }
+
+    /// 测试专用：直接发布一个 `Active` 会话并把请求指向 mock server，供其他
+    /// 模块（如 `keys.rs`）测试受保护调用。
+    #[cfg(test)]
+    pub(crate) fn test_seed_active(
+        &self,
+        region: Region,
+        user_id: i64,
+        access_token: &str,
+        base_url: String,
+    ) -> u64 {
+        self.set_test_base_url_override(base_url);
+        let generation = self.next_generation();
+        self.publish(SessionState::Active(ActiveSession {
+            region,
+            user_id,
+            email_masked: "u****@we2ai.com".to_string(),
+            refresh_token: "test-refresh".to_string(),
+            access_token: access_token.to_string(),
+            keyring_degraded: false,
+            index_degraded: false,
+            generation,
+        }));
+        generation
+    }
+
+    async fn run_protected<T, F, Fut>(
+        &self,
+        mut token: String,
+        ctx: OperationContext,
+        idempotent: bool,
+        call: F,
+    ) -> Result<T, SessionError>
+    where
+        F: Fn(String) -> Fut,
+        Fut: Future<Output = Result<T, ApiCallError>>,
+    {
         let mut refreshed_once = false;
         let mut backoff_attempt = 0u32;
         if token.is_empty() {

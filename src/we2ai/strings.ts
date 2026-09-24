@@ -13,8 +13,29 @@ export interface We2aiStrings {
   navMarketplace: string;
   navSettings: string;
   marketplaceTitle: string;
-  marketplaceComingSoon: string;
   marketplaceDescription: string;
+  // 模型广场（方案第 1 节、第 8 节 P3）
+  keyLabel: string;
+  keyPlaceholder: string;
+  loadingKeys: string;
+  noKeys: string;
+  refresh: string;
+  loadingModels: string;
+  noModels: string;
+  modelNoTools: string;
+  applyComingSoon: string;
+  keyBlockedQuotaExhausted: string;
+  keyBlockedExpired: string;
+  keyBlockedDisabled: string;
+  keyBlockedInsufficientBalance: string;
+  keyBlockedSubscription: string;
+  keyBlockedUsageLimit: string;
+  keyBlockedGroup: string;
+  keyBlockedIp: string;
+  keyBlockedGeneric: string;
+  keyBlockedWithCode: string;
+  errorKeyNotFound: string;
+  errorKeyListTooLarge: string;
   settingsTitle: string;
   themeLabel: string;
   themeLight: string;
@@ -101,9 +122,29 @@ const zh: We2aiStrings = {
   navMarketplace: "模型广场",
   navSettings: "设置",
   marketplaceTitle: "模型广场",
-  marketplaceComingSoon: "即将上线",
-  marketplaceDescription:
-    "模型广场正在开发中。上线后，你可以在这里选择账号下可用的模型，一键指定给 Claude Code、Codex、WorkBuddy 使用。",
+  marketplaceDescription: "选择 Key 后查看它可用的模型，以及每个模型支持的工具",
+  keyLabel: "Key",
+  keyPlaceholder: "选择一个 Key",
+  loadingKeys: "正在加载 Key 列表",
+  noKeys: "当前账号没有可用的 Key，请先在 WE2AI 网站创建并分组",
+  refresh: "刷新",
+  loadingModels: "正在加载可用模型",
+  noModels: "这个 Key 当前没有可用的模型",
+  modelNoTools: "暂无支持的工具",
+  applyComingSoon: "一键写入工具配置即将上线",
+  keyBlockedQuotaExhausted: "这个 Key 的额度已用完，暂时无法调用",
+  keyBlockedExpired: "这个 Key 已过期",
+  keyBlockedDisabled: "这个 Key 已被停用",
+  keyBlockedInsufficientBalance: "账户余额不足",
+  keyBlockedSubscription: "没有有效的订阅",
+  keyBlockedUsageLimit: "订阅用量已达上限",
+  keyBlockedGroup: "这个 Key 所在的分组不可用",
+  keyBlockedIp: "当前网络的 IP 不在这个 Key 的访问名单内",
+  keyBlockedGeneric: "这个 Key 当前无法调用",
+  keyBlockedWithCode: "这个 Key 当前无法调用（{code}）",
+  errorKeyNotFound: "这个 Key 已不在列表中，请刷新",
+  errorKeyListTooLarge:
+    "Key 数量过多，无法完整加载，请在 WE2AI 网站清理不用的 Key",
   settingsTitle: "设置",
   themeLabel: "外观",
   themeLight: "浅色",
@@ -190,9 +231,31 @@ const en: We2aiStrings = {
   navMarketplace: "Model Marketplace",
   navSettings: "Settings",
   marketplaceTitle: "Model Marketplace",
-  marketplaceComingSoon: "Coming soon",
   marketplaceDescription:
-    "The model marketplace is under development. Once available, you'll pick a model from your account here and apply it to Claude Code, Codex, or WorkBuddy in one click.",
+    "Pick a key to see the models it can use and the tools each model supports",
+  keyLabel: "Key",
+  keyPlaceholder: "Select a key",
+  loadingKeys: "Loading keys",
+  noKeys:
+    "This account has no usable keys. Create one and assign it to a group on the WE2AI website first.",
+  refresh: "Refresh",
+  loadingModels: "Loading available models",
+  noModels: "This key has no available models right now",
+  modelNoTools: "No supported tools yet",
+  applyComingSoon: "One-click tool setup is coming soon",
+  keyBlockedQuotaExhausted: "This key has used up its quota",
+  keyBlockedExpired: "This key has expired",
+  keyBlockedDisabled: "This key is disabled",
+  keyBlockedInsufficientBalance: "Your account balance is too low",
+  keyBlockedSubscription: "No active subscription",
+  keyBlockedUsageLimit: "Your subscription usage limit has been reached",
+  keyBlockedGroup: "This key's group is unavailable",
+  keyBlockedIp: "Your current IP is not allowed for this key",
+  keyBlockedGeneric: "This key can't be used right now",
+  keyBlockedWithCode: "This key can't be used right now ({code})",
+  errorKeyNotFound: "This key is no longer in the list. Please refresh.",
+  errorKeyListTooLarge:
+    "Too many keys to load completely. Remove unused keys on the WE2AI website.",
   settingsTitle: "Settings",
   themeLabel: "Appearance",
   themeLight: "Light",
@@ -345,6 +408,10 @@ export function getWe2aiErrorMessage(t: We2aiStrings, code: string): string {
       return t.errorInvalidCredentials;
     case "SESSION_PERSIST_FAILED":
       return t.errorSessionPersistFailed;
+    case "KEY_NOT_FOUND":
+      return t.errorKeyNotFound;
+    case "KEY_LIST_TOO_LARGE":
+      return t.errorKeyListTooLarge;
     default:
       return t.errorGeneric;
   }

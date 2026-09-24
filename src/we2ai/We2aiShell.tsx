@@ -14,6 +14,7 @@ import { settingsApi } from "@/lib/api/settings";
 import { WE2AI_WEBSITE_URL } from "@/config/we2ai";
 import { we2aiApi, type We2aiSessionSummary, type We2aiSettings } from "./api";
 import { LoginPage, notifyLogoutOutcome } from "./LoginPage";
+import { ModelSquarePage } from "./ModelSquarePage";
 import {
   getWe2aiStrings,
   formatWe2aiString,
@@ -571,7 +572,7 @@ export function We2aiShell() {
       )}
 
       <div className="flex-1 overflow-y-auto p-6">
-        <Tabs defaultValue="marketplace" className="mx-auto max-w-2xl">
+        <Tabs defaultValue="marketplace" className="mx-auto max-w-3xl">
           <TabsList>
             <TabsTrigger value="marketplace">{t.navMarketplace}</TabsTrigger>
             <TabsTrigger value="settings">{t.navSettings}</TabsTrigger>
@@ -581,12 +582,16 @@ export function We2aiShell() {
             <Card>
               <CardHeader>
                 <CardTitle>{t.marketplaceTitle}</CardTitle>
-                <CardDescription>{t.marketplaceComingSoon}</CardDescription>
+                <CardDescription>{t.marketplaceDescription}</CardDescription>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  {t.marketplaceDescription}
-                </p>
+                {/* 以会话身份作 key：换账号或换区域后整页重建，不沿用上个
+                    会话的 Key 列表与选择。 */}
+                <ModelSquarePage
+                  key={`${session.region ?? ""}:${session.emailMasked ?? ""}`}
+                  t={t}
+                  onSessionMaybeEnded={() => void refreshSessionStatus()}
+                />
               </CardContent>
             </Card>
           </TabsContent>

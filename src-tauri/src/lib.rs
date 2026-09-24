@@ -1247,6 +1247,7 @@ pub fn run() {
                 );
                 app.manage(We2aiSessionState(session_manager));
                 app.manage(We2aiCaptchaState(Arc::new(CaptchaRegistry::new())));
+                app.manage(we2ai::keys::We2aiKeyState::default());
                 log::info!("✓ WE2AI session manager initialized");
             }
 
@@ -1520,6 +1521,9 @@ pub fn run() {
                 we2ai::commands_auth::we2ai_session_status,
                 we2ai::commands_auth::we2ai_logout,
                 we2ai::commands_auth::we2ai_retry_local_cleanup,
+                we2ai::keys::we2ai_list_keys,
+                we2ai::keys::we2ai_select_key,
+                we2ai::keys::we2ai_key_models,
             ],
             tauri::generate_handler![
             commands::get_providers,

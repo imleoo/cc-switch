@@ -72,6 +72,10 @@ function mockShellCommands(extra: Record<string, (body: any) => JsonBodyType>) {
         return HttpResponse.json("international");
       }
       const handler = extra[command];
+      if (!handler && command === "we2ai_list_keys") {
+        // 已登录视图会挂载模型广场；本文件只测会话横幅，给一个空 Key 列表。
+        return HttpResponse.json({ keys: [], selectedKeyId: null });
+      }
       if (handler) {
         const body = await request.text();
         return HttpResponse.json(handler(body ? JSON.parse(body) : {}));

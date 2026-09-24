@@ -322,9 +322,13 @@ impl From<LogoutOutcome> for We2aiLogoutOutcome {
 #[tauri::command]
 pub async fn we2ai_logout(
     session: State<'_, We2aiSessionState>,
+    keys: State<'_, super::keys::We2aiKeyState>,
 ) -> Result<We2aiLogoutOutcome, We2aiApiError> {
     let manager = session.0.clone();
-    Ok(manager.logout().await.into())
+    let outcome = manager.logout().await;
+    // 登出后不在内存里继续保留明文 Key。
+    keys.clear();
+    Ok(outcome.into())
 }
 
 /// 登出或会话终止时远端未确认、且本地清理（索引 + 钥匙串）两项都失败，
