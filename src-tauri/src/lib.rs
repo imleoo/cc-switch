@@ -1233,6 +1233,23 @@ pub fn run() {
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
 
+            // we2ai: 登录会话管理器 + 验证码 pending 登记表（方案第 5.1、5.2 节）。
+            // 与上游 AppState 完全独立，不复用其数据库/代理等字段。
+            {
+                use we2ai::captcha::{CaptchaRegistry, We2aiCaptchaState};
+                use we2ai::secret_store::KeyringSecretStore;
+                use we2ai::session::{SessionManager, We2aiSessionState};
+
+                let session_manager = SessionManager::new(
+                    Arc::new(KeyringSecretStore),
+                    we2ai::mode::data_root(),
+                    env!("CARGO_PKG_VERSION").to_string(),
+                );
+                app.manage(We2aiSessionState(session_manager));
+                app.manage(We2aiCaptchaState(Arc::new(CaptchaRegistry::new())));
+                log::info!("✓ WE2AI session manager initialized");
+            }
+
             // 初始化 SkillService
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
@@ -1490,6 +1507,19 @@ pub fn run() {
             tauri::generate_handler![
                 we2ai::commands::we2ai_get_settings,
                 we2ai::commands::we2ai_save_settings,
+                we2ai::commands_auth::we2ai_get_public_settings,
+                we2ai::commands_auth::we2ai_available_regions,
+                we2ai::commands_auth::we2ai_get_last_region,
+                we2ai::commands_auth::we2ai_set_last_region,
+                we2ai::commands_auth::we2ai_resume_session,
+                we2ai::commands_auth::we2ai_retry_now,
+                we2ai::commands_auth::we2ai_login_email,
+                we2ai::commands_auth::we2ai_login_2fa,
+                we2ai::commands_auth::we2ai_send_sms_code,
+                we2ai::commands_auth::we2ai_login_phone,
+                we2ai::commands_auth::we2ai_session_status,
+                we2ai::commands_auth::we2ai_logout,
+                we2ai::commands_auth::we2ai_retry_local_cleanup,
             ],
             tauri::generate_handler![
             commands::get_providers,

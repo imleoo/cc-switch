@@ -118,9 +118,100 @@ fn is_upstream_whitelisted(command: &str) -> bool {
     UPSTREAM_COMMAND_WHITELIST.contains(&command)
 }
 
+/// 唯一被信任发起 IPC 调用的窗口标签。
+///
+/// **安全边界（Codex 代码评审高危项）**：Tauri 2.10.3 会向*每一个*
+/// webview 的主 frame 无条件注入 IPC 桥接脚本（`manager/webview.rs` 的
+/// `IpcJavascript` 初始化脚本，不受 `capabilities/*.json` 的 `windows`
+/// 字段影响），而 ACL 校验只在“命令属于插件”或“应用声明了自己的 ACL
+/// manifest”时才生效（`webview/mod.rs` 的 `on_message`：
+/// `if (plugin_command.is_some() || has_app_acl_manifest) ...`）。本应用
+/// `build.rs` 只调用 `tauri_build::build()`，没有为自定义命令声明 ACL，
+/// 因此 `capabilities/default.json` 的 `"windows": ["main"]` **只挡得住
+/// `plugin:*` 命令，挡不住 `we2ai_*` 等自定义命令**——`gate()` 若只看命令名
+/// 字符串，验证码窗口加载的远程页面（及其引入的第三方验证码 SDK 脚本）就能
+/// 直接调用 `we2ai_logout`、`we2ai_login_*`、`we2ai_session_status`、
+/// `set_auto_launch`、`open_external`、`install_update_and_restart` 等。
+/// 因此 `gate()` 必须在分发前先校验调用来源：窗口标签必须是 `"main"`
+/// （`captcha.rs` 的验证码窗口标签为 `"we2ai-captcha"`，天然被挡在外），且
+/// `"main"` 窗口当前加载的 URL 必须是本应用资源（见 [`is_app_local_url`]），
+/// 防止 `"main"` 未来被某处代码误导航到远程地址后仍被当作可信来源。
+const TRUSTED_WEBVIEW_LABEL: &str = "main";
+
+/// 开发构建下 `devUrl` 的端口（`tauri.conf.json` 的 `build.devUrl` 固定为
+/// `http://localhost:3000`）。改这个端口时要同步改这里。
+const DEV_SERVER_PORT: u16 = 3000;
+
+/// 判定一个 URL 是否是本应用自己的资源（而非任意远程页面）。
+///
+/// **修复记录（Opus 5 代码评审阻断项，v1 实现有严重 bug）**：v1 只在
+/// `cfg!(debug_assertions)` 为真时放行 `http://` scheme，且只认
+/// `localhost`/`127.0.0.1`——这忽略了 Tauri 2 在 Windows/Android 上的
+/// **生产构建**默认就是用 `http://tauri.localhost`（不是 `https`）：
+/// `WindowManager::tauri_protocol_url()`（`manager/mod.rs:331-337`）在
+/// `cfg!(windows) || cfg!(target_os = "android")` 时返回
+/// `{http,https}://tauri.localhost`，由 `useHttpsScheme` 配置项决定
+/// `http`/`https`（本项目 `tauri.conf.json` 未设置该项，默认 `false` →
+/// `http`）；`tauri://localhost` 只用于 macOS/Linux。v1 上线会导致 Windows
+/// 正式版主窗口（真实地址 `http://tauri.localhost/...`）的**全部** IPC 调用
+/// 被 `gate()` 拒绝，应用在 Windows 上不可用。
+///
+/// 修复后按 scheme+host 精确匹配（**不区分当前编译目标平台**，接受下列
+/// 全部形态的并集）：
+/// - `tauri://localhost`：macOS/Linux 生产构建的地址。
+/// - `http://tauri.localhost` 或 `https://tauri.localhost`：Windows/Android
+///   生产构建的地址（分别对应 `useHttpsScheme=false`/`true`；本项目当前是
+///   `false`，两个都放行是为了不因为将来打开这个开关而需要再改这里）。
+///   在其他平台上收到这个 host 同样放行，不构成安全放宽——`.localhost` 是
+///   IANA 保留的特殊用途域名（RFC 6761），真实互联网上的第三方不可能注册到
+///   这个精确 host，接受"平台并集"只是省掉按 `cfg!(windows)` 分支的复杂度。
+/// - `http://localhost:3000` 或 `http://127.0.0.1:3000`（端口精确匹配
+///   [`DEV_SERVER_PORT`]）：仅 `debug_build` 为真时放行，对应 `tauri dev`
+///   加载的 `devUrl`；release 构建不放行任何 `http://localhost` 形态的地址，
+///   避免这条开发期例外被打包进正式产物。
+/// - 其余（含 host 只是"看起来像"、加了后缀/前缀的仿冒域名）一律拒绝。
+///
+/// 拆成 `is_app_local_url`（真实调用，`debug_build` 取编译期
+/// `cfg!(debug_assertions)`）与内部的构建类型显式传参版本，是为了让单测能
+/// 同时覆盖"debug 构建"与"release 构建"两种判定结果——`cfg!(debug_assertions)`
+/// 本身是编译期常量，没法在同一个测试二进制里让它先真后假。
+fn is_app_local_url(url: &tauri::Url) -> bool {
+    is_app_local_url_for_build(url, cfg!(debug_assertions))
+}
+
+fn is_app_local_url_for_build(url: &tauri::Url, debug_build: bool) -> bool {
+    match (url.scheme(), url.host_str()) {
+        ("tauri", Some("localhost")) => true,
+        // 要求端口为 None（即没有显式端口，或显式端口恰好是该 scheme 的默认
+        // 端口——`url` crate 会把后者规范化掉，`port()` 同样返回 `None`）。
+        // `http://tauri.localhost:8080` 这种带非默认端口的地址不是 Tauri 生产
+        // 构建会产生的真实地址，只可能是仿冒/中间人（Codex 代码评审第 3 轮
+        // 低危项 1）。
+        ("http" | "https", Some("tauri.localhost")) => url.port().is_none(),
+        ("http", Some("localhost") | Some("127.0.0.1")) => {
+            debug_build && url.port() == Some(DEV_SERVER_PORT)
+        }
+        _ => false,
+    }
+}
+
+/// 调用来源是否可信：窗口标签为 `"main"` 且当前 URL 是本应用资源。
+fn is_trusted_invoke_source<R: tauri::Runtime>(webview: &tauri::Webview<R>) -> bool {
+    if webview.label() != TRUSTED_WEBVIEW_LABEL {
+        return false;
+    }
+    match webview.url() {
+        Ok(url) => is_app_local_url(&url),
+        Err(_) => false,
+    }
+}
+
 /// 构造 WE2AI 模式下的 IPC 分发器：`we2ai_*` 交给 `we2ai_handler`，
 /// 上游白名单命令交给 `upstream_handler`，其余一律 `reject` 并返回 `true`
 /// （避免框架在 `false` 返回后再报一次 command not found）。
+///
+/// 分发前先校验 [`is_trusted_invoke_source`]——不可信来源（如验证码窗口）
+/// 一律拒绝，即便命令名本身在白名单内。
 ///
 /// 用法：
 /// ```ignore
@@ -140,6 +231,17 @@ where
 {
     move |invoke: tauri::ipc::Invoke<R>| {
         let command = invoke.message.command().to_string();
+        if !is_trusted_invoke_source(invoke.message.webview_ref()) {
+            let webview = invoke.message.webview();
+            log::warn!(
+                "[WE2AI] IPC 命令 {command} 来自不受信的窗口（label={:?}），已拒绝",
+                webview.label()
+            );
+            invoke
+                .resolver
+                .reject(format!("命令 `{command}` 不允许从当前窗口调用"));
+            return true;
+        }
         if is_we2ai_command(&command) {
             we2ai_handler(invoke)
         } else if is_upstream_whitelisted(&command) {
@@ -315,6 +417,300 @@ mod tests {
         assert!(
             rejected.is_err(),
             "expected a non-whitelisted command to be rejected, got {rejected:?}"
+        );
+    }
+
+    /// 表驱动：平台 × 构建类型 → 期望的"本地地址"判定（Opus 5 代码评审阻断
+    /// 项修复的回归测试）。`debug_build` 显式传参而不是依赖
+    /// `cfg!(debug_assertions)`，这样才能在同一个测试二进制里同时断言
+    /// "debug 下真"和"release 下假"两种结果。
+    #[test]
+    fn is_app_local_url_table_driven_platform_and_build_matrix() {
+        struct Case {
+            desc: &'static str,
+            url: &'static str,
+            debug_build: bool,
+            expected: bool,
+        }
+        let cases = [
+            // macOS / Linux 生产构建。
+            Case {
+                desc: "macOS/Linux prod, release",
+                url: "tauri://localhost/",
+                debug_build: false,
+                expected: true,
+            },
+            Case {
+                desc: "macOS/Linux prod, debug",
+                url: "tauri://localhost/index.html",
+                debug_build: true,
+                expected: true,
+            },
+            // Windows/Android 生产构建：默认 useHttpsScheme=false → http。
+            Case {
+                desc: "Windows prod (http, useHttpsScheme=false), release",
+                url: "http://tauri.localhost/index.html",
+                debug_build: false,
+                expected: true,
+            },
+            Case {
+                desc: "Windows prod (http), debug",
+                url: "http://tauri.localhost/",
+                debug_build: true,
+                expected: true,
+            },
+            // Windows/Android 若打开 useHttpsScheme=true。
+            Case {
+                desc: "Windows prod (https, useHttpsScheme=true), release",
+                url: "https://tauri.localhost/",
+                debug_build: false,
+                expected: true,
+            },
+            // 开发服务器：仅 debug 放行，且端口必须精确匹配 devUrl。
+            Case {
+                desc: "dev server, debug build",
+                url: "http://localhost:3000/",
+                debug_build: true,
+                expected: true,
+            },
+            Case {
+                desc: "dev server host as 127.0.0.1, debug build",
+                url: "http://127.0.0.1:3000/",
+                debug_build: true,
+                expected: true,
+            },
+            Case {
+                desc: "dev server address compiled into a release build must not be trusted",
+                url: "http://localhost:3000",
+                debug_build: false,
+                expected: false,
+            },
+            Case {
+                desc: "debug build but wrong port must not match devUrl",
+                url: "http://localhost:8080/",
+                debug_build: true,
+                expected: false,
+            },
+            // 仿冒/远程地址。
+            Case {
+                desc: "host with .evil.com suffix must not match tauri.localhost",
+                url: "http://tauri.localhost.evil.com/",
+                debug_build: false,
+                expected: false,
+            },
+            Case {
+                desc: "arbitrary https remote host",
+                url: "https://evil.com/",
+                debug_build: false,
+                expected: false,
+            },
+            Case {
+                desc: "arbitrary https remote host, debug build",
+                url: "https://evil.com/",
+                debug_build: true,
+                expected: false,
+            },
+            Case {
+                desc: "tauri scheme with wrong host",
+                url: "tauri://evil.com/",
+                debug_build: false,
+                expected: false,
+            },
+            // Codex 代码评审第 3 轮低危项 3：补充更刁钻的仿冒形态，逐个用
+            // `url` crate（2.5.8）的真实解析结果核实，而不是假设。
+            Case {
+                // userinfo 部分是 "tauri.localhost"，真正的 host 是
+                // "evil.com"（`url::Url::host_str()` 已验证）——`@` 之前的
+                // 部分只是用户名，浏览器/`url` crate 都不会把它当 host。
+                desc: "userinfo trick: tauri.localhost@evil.com must resolve to host evil.com and be rejected",
+                url: "http://tauri.localhost@evil.com/",
+                debug_build: false,
+                expected: false,
+            },
+            Case {
+                // http/https 是 WHATWG "special scheme"，host 会被规范化成
+                // 小写（`url::Url::host_str()` 验证返回 "tauri.localhost"），
+                // 应当放行。
+                desc: "uppercase host on a special scheme is lowercased by the URL parser and must be allowed",
+                url: "http://TAURI.LOCALHOST/",
+                debug_build: false,
+                expected: true,
+            },
+            Case {
+                // 结尾多一个点（FQDN 记法）：`url` crate 保留这个点
+                // （`host_str()` 验证返回 "tauri.localhost."，与
+                // "tauri.localhost" 不相等），必须拒绝。
+                desc: "trailing dot (FQDN notation) must not match tauri.localhost",
+                url: "http://tauri.localhost./",
+                debug_build: false,
+                expected: false,
+            },
+            Case {
+                // host 里的 "%2e" 会被 URL 解析器当作百分号编码的 "."
+                // 解码（`host_str()` 验证解码后返回 "tauri.localhost"），最终
+                // 和字面量 "http://tauri.localhost/" 是同一个 host，因此按
+                // 实际解析结果放行——这不是可被利用的旁路：真正发请求时用的
+                // 也是这个已解码后的 host，不存在"匹配用一个值、连接用另一个
+                // 值"的不一致。
+                desc: "percent-encoded dot in host decodes to the literal host before matching (asserted against the actual url crate behavior)",
+                url: "http://tauri%2elocalhost/",
+                debug_build: false,
+                expected: true,
+            },
+            Case {
+                // "tauri" 是自定义（非 special）scheme，WHATWG URL 标准不会
+                // 对非 special scheme 的 host 做大小写规范化，`host_str()`
+                // 验证返回原样大写的 "LOCALHOST"，与 "localhost" 不相等，
+                // 必须拒绝。
+                desc: "custom scheme host casing is preserved (not lowercased) and must not match",
+                url: "tauri://LOCALHOST",
+                debug_build: false,
+                expected: false,
+            },
+            Case {
+                // 带显式非默认端口：修复后的实现要求 `url.port()` 为
+                // `None`，带端口一律拒绝（Codex 代码评审第 3 轮低危项 1）。
+                desc: "tauri.localhost with an explicit non-default port must be rejected",
+                url: "http://tauri.localhost:8080/",
+                debug_build: false,
+                expected: false,
+            },
+        ];
+
+        for case in cases {
+            let url: tauri::Url = case.url.parse().expect("valid test URL");
+            assert_eq!(
+                is_app_local_url_for_build(&url, case.debug_build),
+                case.expected,
+                "case failed: {} ({})",
+                case.desc,
+                case.url
+            );
+        }
+    }
+
+    /// `is_app_local_url()`（真实调用路径）必须把 `cfg!(debug_assertions)`
+    /// 转发给内部函数，而不是写死某个值——否则上面的表驱动测试验证的是另一
+    /// 个函数，跟真正在 `gate()` 里跑的逻辑脱节。
+    #[test]
+    fn is_app_local_url_forwards_current_build_type() {
+        let url: tauri::Url = "http://localhost:3000/".parse().unwrap();
+        assert_eq!(
+            is_app_local_url(&url),
+            is_app_local_url_for_build(&url, cfg!(debug_assertions))
+        );
+    }
+
+    /// 安全边界回归测试（Codex 代码评审高危项 1）：`gate()` 必须先校验调用
+    /// 来源窗口，即便命令名本身在白名单/`we2ai_*` 前缀内，非 `"main"` 窗口
+    /// （如验证码窗口 `we2ai-captcha`）发起的调用也必须被拒绝——否则远程验证
+    /// 码页面及其第三方 SDK 脚本能直接调用 `we2ai_session_status` 之类的
+    /// 命令（Tauri 2.10.3 向所有 webview 无条件注入 IPC 桥接脚本，见
+    /// [`is_trusted_invoke_source`] 文档注释的证据链）。
+    #[test]
+    fn gate_rejects_invokes_from_non_main_windows_even_for_whitelisted_commands() {
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+        use tauri::WebviewWindowBuilder;
+
+        #[tauri::command]
+        fn we2ai_probe() -> &'static str {
+            "handled-by-we2ai"
+        }
+        #[tauri::command]
+        fn get_init_error() -> &'static str {
+            "handled-by-upstream"
+        }
+
+        let app = mock_builder()
+            .invoke_handler(gate(
+                tauri::generate_handler![we2ai_probe],
+                tauri::generate_handler![get_init_error],
+            ))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+
+        // 模拟验证码窗口：非 "main" 标签（真实实现见 captcha.rs，标签固定为
+        // "we2ai-captcha"），加载的 URL 与 label 无关——即便凑巧是本地协议，
+        // 标签校验本身就必须先拒绝。
+        let captcha_webview = WebviewWindowBuilder::new(&app, "we2ai-captcha", Default::default())
+            .build()
+            .expect("build mock captcha webview window");
+
+        let invoke = |cmd: &str| {
+            get_ipc_response(
+                &captcha_webview,
+                InvokeRequest {
+                    cmd: cmd.into(),
+                    callback: CallbackFn(0),
+                    error: CallbackFn(1),
+                    url: "http://tauri.localhost".parse().unwrap(),
+                    body: InvokeBody::default(),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+        };
+
+        let we2ai_result = invoke("we2ai_probe");
+        assert!(
+            we2ai_result.is_err(),
+            "we2ai_* command from a non-main window must be rejected, got {we2ai_result:?}"
+        );
+
+        let upstream_result = invoke("get_init_error");
+        assert!(
+            upstream_result.is_err(),
+            "whitelisted upstream command from a non-main window must be rejected, got {upstream_result:?}"
+        );
+    }
+
+    /// 同一个安全边界的第二层：即便窗口标签是 `"main"`，若其当前 URL 不是
+    /// 本应用资源（例如被误导航到远程地址），也必须被拒绝。
+    #[test]
+    fn gate_rejects_invokes_from_main_window_navigated_to_a_remote_url() {
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+        #[tauri::command]
+        fn we2ai_probe() -> &'static str {
+            "handled-by-we2ai"
+        }
+
+        let app = mock_builder()
+            .invoke_handler(gate(
+                tauri::generate_handler![we2ai_probe],
+                tauri::generate_handler![],
+            ))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+
+        let remote_main = WebviewWindowBuilder::new(
+            &app,
+            "main",
+            WebviewUrl::External("https://evil.example.com".parse().unwrap()),
+        )
+        .build()
+        .expect("build mock main webview window pointed at a remote URL");
+
+        let result = get_ipc_response(
+            &remote_main,
+            InvokeRequest {
+                cmd: "we2ai_probe".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "https://evil.example.com".parse().unwrap(),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        );
+        assert!(
+            result.is_err(),
+            "a \"main\"-labelled window navigated to a remote URL must not be trusted, got {result:?}"
         );
     }
 

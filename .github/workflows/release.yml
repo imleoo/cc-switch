@@ -69,6 +69,10 @@ jobs:
             flatpak-builder \
             elfutils \
             xdg-utils
+          # we2ai: keyring crate 的 Linux 后端（sync-secret-service，见
+          # src-tauri/Cargo.toml）依赖 dbus 系 crate 在构建期通过 pkg-config
+          # 链接系统 libdbus-1，没有这个头文件/库会在链接阶段直接构建失败。
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev
           # GTK/GLib stack for gdk-3.0, glib-2.0, gio-2.0
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev \

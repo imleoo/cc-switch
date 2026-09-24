@@ -82,12 +82,17 @@ hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
 sys-locale = "0.3"
+rand = "0.8"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "2.0.1", features = ["v2_16"] }
+# we2ai: refresh_token 系统钥匙串存储（方案第 5.2 节）。v3 系列 MSRV 1.75，
+# 与本 crate 声明的 rust-version = "1.85.0" 兼容；v4 系列（feature 名已改为
+# `apple-native-keyring-store` 等）MSRV 1.88，高于本 crate 声明版本，暂不采用。
+keyring = { version = "3.6", features = ["sync-secret-service"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 libc = "0.2"
@@ -99,6 +104,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_UI_Shell",
 ] }
+keyring = { version = "3.6", features = ["windows-native"] }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
 rquickjs = { version = "0.8", features = ["bindgen"] }
@@ -106,6 +112,7 @@ rquickjs = { version = "0.8", features = ["bindgen"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSColor"] }
+keyring = { version = "3.6", features = ["apple-native"] }
 
 # Optimize release binary size to help reduce AppImage footprint
 [profile.release]
@@ -119,6 +126,10 @@ strip = "symbols"
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"
+# we2ai: 登录会话（api.rs/session.rs）的 HTTP 错误形态解码、失败分类、单飞
+# refresh、登出等测试用真实 HTTP mock server 驱动 reqwest 客户端，而不是只测
+# 纯函数。
+wiremock = "0.6"
 # we2ai: 仅测试期启用 tauri 的 mock 运行时（tauri::test），用于对
 # we2ai::mode::gate() 做真实的 IPC 分发测试，而不只是测底层判定纯函数。
 tauri = { version = "2.8.2", features = ["test"] }

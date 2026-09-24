@@ -297,15 +297,25 @@ we2ai_gate_call_for_variant() {
 # 深度回到 0 记结束行。
 we2ai_block_range_from() {
   local target="$1"
+  local file="${2:-src-tauri/src/lib.rs}"
   awk -v target="$target" '
+    # 计数前先把字符串字面量整体挖空，避免日志/文案里的花括号（如
+    # `log::info!("{}"）` 或提示文案 `"...{name}..."`）被误当成代码结构，
+    # 从而算错块的起止行。只处理双引号字符串，`\\.` 吃掉转义字符（含 `\"`）。
+    function strip_strings(line,    out) {
+      out = line
+      gsub(/"([^"\\]|\\.)*"/, "", out)
+      return out
+    }
     NR < target { next }
     {
-      n = gsub(/\{/, "{"); depth += n
-      n = gsub(/\}/, "}"); depth -= n
+      line = strip_strings($0)
+      n = gsub(/\{/, "{", line); depth += n
+      n = gsub(/\}/, "}", line); depth -= n
       if (!started && depth > 0) { started = 1; start = NR }
       if (started && depth <= 0) { print start","NR; exit }
     }
-  ' src-tauri/src/lib.rs
+  ' "$file"
 }
 startup_task_variants="$(we2ai_startup_task_variants)"
 if [[ -z "$startup_task_variants" ]]; then
@@ -340,6 +350,36 @@ else
       err "src-tauri/src/lib.rs:${block_start}-${block_end}: StartupTask::${variant} 对应的调用 '${gate_call}' 没有出现在这个 if 门控块内——门控条件和被门控的调用必须写在同一个 if 块里，调用被挪到 if 外时这条检查要能抓到"
     fi
   done < <(printf '%s\n' "$startup_task_variants")
+fi
+
+# 4.3f gate() 必须先校验调用来源窗口标签，再分发命令（自定义开发功能列表.md
+# 第 9 节 / 方案第 6.2 节安全边界：Tauri 2.10.3 向所有 webview 无条件注入 IPC
+# 桥接脚本，capabilities 的 windows=["main"] 只挡插件命令，挡不住自定义命令，
+# 验证码窗口等非 main 窗口若不在 gate() 里被拦，可以直接调用 we2ai_* 命令）。
+# 只做静态结构检查：函数体内存在窗口来源校验的调用，且该调用出现在真正把
+# 请求交给 we2ai_handler/upstream_handler 的分发行之前。真正验证"非 main
+# 窗口确实被拒绝"的是 cargo test 里的
+# gate_rejects_invokes_from_non_main_windows_even_for_whitelisted_commands /
+# gate_rejects_invokes_from_main_window_navigated_to_a_remote_url。
+gate_start_line="$(grep -n '^pub fn gate<' src-tauri/src/we2ai/mode.rs | head -1 | cut -d: -f1)"
+if [[ -z "$gate_start_line" ]]; then
+  err "src-tauri/src/we2ai/mode.rs: 找不到 pub fn gate< 定义"
+else
+  gate_block_range="$(we2ai_block_range_from "$gate_start_line" src-tauri/src/we2ai/mode.rs)"
+  if [[ -z "$gate_block_range" ]]; then
+    err "src-tauri/src/we2ai/mode.rs:${gate_start_line}: 未能定位 gate() 函数体的花括号范围"
+  else
+    gate_start="${gate_block_range%%,*}"
+    gate_end="${gate_block_range##*,}"
+    gate_body="$(sed -n "${gate_start},${gate_end}p" src-tauri/src/we2ai/mode.rs)"
+    trust_check_line="$(printf '%s\n' "$gate_body" | grep -n 'is_trusted_invoke_source(' | head -1 | cut -d: -f1)"
+    dispatch_line="$(printf '%s\n' "$gate_body" | grep -n 'we2ai_handler(invoke)' | head -1 | cut -d: -f1)"
+    if [[ -z "$trust_check_line" ]]; then
+      err "src-tauri/src/we2ai/mode.rs:${gate_start}-${gate_end}: gate() 函数体内没有调用窗口来源校验（is_trusted_invoke_source），验证码等非 main 窗口可能绕过 IPC 白名单直接调用 we2ai_* 命令"
+    elif [[ -n "$dispatch_line" && "$trust_check_line" -gt "$dispatch_line" ]]; then
+      err "src-tauri/src/we2ai/mode.rs:${gate_start}-${gate_end}: gate() 里 is_trusted_invoke_source() 校验出现在分发给 we2ai_handler 之后，必须先校验来源再分发"
+    fi
+  fi
 fi
 
 # 4.4 capabilities 权限集与登记清单一致（未开放 store、fs）

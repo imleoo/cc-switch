@@ -129,6 +129,10 @@ jobs:
             || sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
           sudo apt-get install -y --no-install-recommends libsoup-3.0-dev \
             || sudo apt-get install -y --no-install-recommends libsoup2.4-dev
+          # we2ai: keyring crate 的 Linux 后端（sync-secret-service）在构建期
+          # 通过 pkg-config 链接系统 libdbus-1，没有这个头文件/库会在链接
+          # 阶段直接构建失败，见 release.yml 同一处改动的注释。
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev
 
       - name: Cache Cargo registry and build
         uses: actions/cache@v5

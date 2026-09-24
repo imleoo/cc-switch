@@ -767,179 +767,21 @@ pub fn create_tray_menu(
     // Pre-compute proxy running state (used to disable official providers in tray menu)
     let is_proxy_running = futures::executor::block_on(app_state.proxy_service.is_running());
 
-    // we2ai: WE2AI 模式隐藏托盘的供应商切换子菜单（方案第 6.2 节）。
+    // we2ai: WE2AI 模式隐藏托盘的供应商切换子菜单（方案第 6.2 节）。门控只包
+    // 一行调用，菜单构建本体搬进 `build_provider_and_profile_switch_menu`，
+    // 使这段原本 ~170 行的整体缩进改动收窄为一次函数调用，上游同步时可直接
+    // 逐行比对被抽出的函数体，不受门控 if 缩进层级影响。
     if !crate::we2ai::mode::enabled() {
-        // 每个应用类型折叠为子菜单，避免供应商过多时菜单过长
-        for section in TRAY_SECTIONS.iter() {
-            if !visible_apps.is_visible(&section.app_type) {
-                continue;
-            }
-
-            let app_type_str = section.app_type.as_str();
-            let providers = app_state.db.get_all_providers(app_type_str)?;
-
-            let current_id =
-                crate::settings::get_effective_current_provider(&app_state.db, &section.app_type)?
-                    .unwrap_or_default();
-
-            if providers.is_empty() {
-                // 空供应商：显示禁用的菜单项
-                let label = format!("{} {}", section.header_label, tray_texts.no_providers_label);
-                let empty_item =
-                    MenuItem::with_id(app, section.empty_id, &label, false, None::<&str>).map_err(
-                        |e| AppError::Message(format!("创建{}空提示失败: {e}", section.log_name)),
-                    )?;
-                menu_builder = menu_builder.item(&empty_item);
-            } else {
-                let current_provider = providers.get(&current_id);
-                let submenu_label = match current_provider {
-                    Some(p) => {
-                        let suffix = format_usage_suffix(
-                            &app_state.usage_cache,
-                            &section.app_type,
-                            p,
-                            &current_id,
-                        )
-                        .unwrap_or_default();
-                        format!("{} · {}{}", section.header_label, p.name, suffix)
-                    }
-                    None => section.header_label.to_string(),
-                };
-                let submenu_id = format!("submenu_{}", app_type_str);
-
-                // Check if this app is under proxy takeover (for disabling official providers)
-                let is_app_taken_over = is_proxy_running
-                    && (futures::executor::block_on(app_state.db.get_live_backup(app_type_str))
-                        .ok()
-                        .flatten()
-                        .is_some()
-                        || app_state
-                            .proxy_service
-                            .detect_takeover_in_live_config_for_app(&section.app_type));
-
-                let mut submenu_builder = SubmenuBuilder::with_id(app, &submenu_id, &submenu_label);
-
-                for (id, provider) in sort_providers(&providers) {
-                    let is_current = current_id == *id;
-                    let is_official_blocked = is_app_taken_over
-                        && provider.category.as_deref() == Some("official")
-                        && !crate::services::provider::official_provider_supports_proxy_takeover(
-                            &section.app_type,
-                            provider,
-                        );
-                    let label = if is_official_blocked {
-                        format!("{} \u{26D4}", &provider.name) // ⛔ emoji
-                    } else {
-                        provider.name.clone()
-                    };
-                    let item = CheckMenuItem::with_id(
-                        app,
-                        format!("{}{}", section.prefix, id),
-                        &label,
-                        !is_official_blocked, // disabled when blocked
-                        is_current,
-                        None::<&str>,
-                    )
-                    .map_err(|e| {
-                        AppError::Message(format!("创建{}菜单项失败: {e}", section.log_name))
-                    })?;
-                    submenu_builder = submenu_builder.item(&item);
-                }
-
-                let submenu = submenu_builder.build().map_err(|e| {
-                    AppError::Message(format!("构建{}子菜单失败: {e}", section.log_name))
-                })?;
-                section_handles.insert(section.app_type.clone(), submenu.clone());
-                menu_builder = menu_builder.item(&submenu);
-            }
-
-            menu_builder = menu_builder.separator();
-        }
-
-        // 项目 Profile 子菜单：项目列表全应用共享，按分组嵌套子菜单各自勾选/应用
-        // （组内应用可见且存在项目时才显示该组）
-        {
-            use crate::services::profile::ProfileScope;
-
-            let any_scope_visible = ProfileScope::ALL.iter().any(|scope| {
-                scope
-                    .apps()
-                    .iter()
-                    .any(|app_type| visible_apps.is_visible(app_type))
-            });
-            let profiles = if any_scope_visible {
-                app_state.db.get_all_profiles()?
-            } else {
-                Vec::new()
-            };
-
-            let mut scope_submenus = Vec::new();
-            for scope in ProfileScope::ALL {
-                if profiles.is_empty()
-                    || !scope
-                        .apps()
-                        .iter()
-                        .any(|app_type| visible_apps.is_visible(app_type))
-                {
-                    continue;
-                }
-                let current_profile_id = app_state
-                    .db
-                    .get_current_profile_id(scope.as_str())?
-                    .unwrap_or_default();
-                // 分组标签用产品名，不进 i18n
-                let scope_label = match scope {
-                    ProfileScope::Claude => "Claude Code",
-                    ProfileScope::ClaudeDesktop => "Claude Desktop",
-                    ProfileScope::Codex => "Codex",
-                };
-                let mut scope_builder = SubmenuBuilder::with_id(
-                    app,
-                    format!("submenu_profiles_{}", scope.as_str()),
-                    scope_label,
-                );
-                for profile in &profiles {
-                    let item = CheckMenuItem::with_id(
-                        app,
-                        format!("profile_{}_{}", scope.as_str(), profile.id),
-                        &profile.name,
-                        true,
-                        current_profile_id == profile.id,
-                        None::<&str>,
-                    )
-                    .map_err(|e| AppError::Message(format!("创建项目菜单项失败: {e}")))?;
-                    scope_builder = scope_builder.item(&item);
-                }
-                let none_item = CheckMenuItem::with_id(
-                    app,
-                    format!("profile_none_{}", scope.as_str()),
-                    tray_texts.no_project_label,
-                    true,
-                    current_profile_id.is_empty(),
-                    None::<&str>,
-                )
-                .map_err(|e| AppError::Message(format!("创建不使用项目菜单项失败: {e}")))?;
-                let scope_submenu = scope_builder
-                    .separator()
-                    .item(&none_item)
-                    .build()
-                    .map_err(|e| AppError::Message(format!("构建项目分组子菜单失败: {e}")))?;
-                scope_submenus.push(scope_submenu);
-            }
-
-            if !scope_submenus.is_empty() {
-                let mut profiles_builder =
-                    SubmenuBuilder::with_id(app, "submenu_profiles", tray_texts.projects_label);
-                for scope_submenu in &scope_submenus {
-                    profiles_builder = profiles_builder.item(scope_submenu);
-                }
-                let profiles_submenu = profiles_builder
-                    .build()
-                    .map_err(|e| AppError::Message(format!("构建项目子菜单失败: {e}")))?;
-                menu_builder = menu_builder.item(&profiles_submenu).separator();
-            }
-        }
-    } // we2ai: 供应商/项目切换子菜单门控结束
+        menu_builder = build_provider_and_profile_switch_menu(
+            app,
+            app_state,
+            &tray_texts,
+            &visible_apps,
+            is_proxy_running,
+            menu_builder,
+            &mut section_handles,
+        )?;
+    }
 
     let lightweight_item = CheckMenuItem::with_id(
         app,
@@ -968,6 +810,193 @@ pub fn create_tray_menu(
         .unwrap_or_else(|p| p.into_inner()) = section_handles;
 
     Ok(menu)
+}
+
+/// 供应商/项目切换子菜单构建：仅在非 WE2AI 模式下被 `create_tray_menu` 调用
+/// （方案第 6.2 节，托盘隐藏该子菜单）。抽成独立函数只是为了让门控 `if` 只包
+/// 一行调用，不改变任何行为——函数体是原地从 `create_tray_menu` 搬出的，逐行
+/// 与上游对比即可核对无回退。
+fn build_provider_and_profile_switch_menu<'m>(
+    app: &tauri::AppHandle,
+    app_state: &AppState,
+    tray_texts: &TrayTexts,
+    visible_apps: &crate::settings::VisibleApps,
+    is_proxy_running: bool,
+    mut menu_builder: MenuBuilder<'m, tauri::Wry, tauri::AppHandle>,
+    section_handles: &mut std::collections::HashMap<AppType, Submenu<tauri::Wry>>,
+) -> Result<MenuBuilder<'m, tauri::Wry, tauri::AppHandle>, AppError> {
+    // 每个应用类型折叠为子菜单，避免供应商过多时菜单过长
+    for section in TRAY_SECTIONS.iter() {
+        if !visible_apps.is_visible(&section.app_type) {
+            continue;
+        }
+
+        let app_type_str = section.app_type.as_str();
+        let providers = app_state.db.get_all_providers(app_type_str)?;
+
+        let current_id =
+            crate::settings::get_effective_current_provider(&app_state.db, &section.app_type)?
+                .unwrap_or_default();
+
+        if providers.is_empty() {
+            // 空供应商：显示禁用的菜单项
+            let label = format!("{} {}", section.header_label, tray_texts.no_providers_label);
+            let empty_item = MenuItem::with_id(app, section.empty_id, &label, false, None::<&str>)
+                .map_err(|e| {
+                    AppError::Message(format!("创建{}空提示失败: {e}", section.log_name))
+                })?;
+            menu_builder = menu_builder.item(&empty_item);
+        } else {
+            let current_provider = providers.get(&current_id);
+            let submenu_label = match current_provider {
+                Some(p) => {
+                    let suffix = format_usage_suffix(
+                        &app_state.usage_cache,
+                        &section.app_type,
+                        p,
+                        &current_id,
+                    )
+                    .unwrap_or_default();
+                    format!("{} · {}{}", section.header_label, p.name, suffix)
+                }
+                None => section.header_label.to_string(),
+            };
+            let submenu_id = format!("submenu_{}", app_type_str);
+
+            // Check if this app is under proxy takeover (for disabling official providers)
+            let is_app_taken_over = is_proxy_running
+                && (futures::executor::block_on(app_state.db.get_live_backup(app_type_str))
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    || app_state
+                        .proxy_service
+                        .detect_takeover_in_live_config_for_app(&section.app_type));
+
+            let mut submenu_builder = SubmenuBuilder::with_id(app, &submenu_id, &submenu_label);
+
+            for (id, provider) in sort_providers(&providers) {
+                let is_current = current_id == *id;
+                let is_official_blocked = is_app_taken_over
+                    && provider.category.as_deref() == Some("official")
+                    && !crate::services::provider::official_provider_supports_proxy_takeover(
+                        &section.app_type,
+                        provider,
+                    );
+                let label = if is_official_blocked {
+                    format!("{} \u{26D4}", &provider.name) // ⛔ emoji
+                } else {
+                    provider.name.clone()
+                };
+                let item = CheckMenuItem::with_id(
+                    app,
+                    format!("{}{}", section.prefix, id),
+                    &label,
+                    !is_official_blocked, // disabled when blocked
+                    is_current,
+                    None::<&str>,
+                )
+                .map_err(|e| {
+                    AppError::Message(format!("创建{}菜单项失败: {e}", section.log_name))
+                })?;
+                submenu_builder = submenu_builder.item(&item);
+            }
+
+            let submenu = submenu_builder.build().map_err(|e| {
+                AppError::Message(format!("构建{}子菜单失败: {e}", section.log_name))
+            })?;
+            section_handles.insert(section.app_type.clone(), submenu.clone());
+            menu_builder = menu_builder.item(&submenu);
+        }
+
+        menu_builder = menu_builder.separator();
+    }
+
+    // 项目 Profile 子菜单：项目列表全应用共享，按分组嵌套子菜单各自勾选/应用
+    // （组内应用可见且存在项目时才显示该组）
+    {
+        use crate::services::profile::ProfileScope;
+
+        let any_scope_visible = ProfileScope::ALL.iter().any(|scope| {
+            scope
+                .apps()
+                .iter()
+                .any(|app_type| visible_apps.is_visible(app_type))
+        });
+        let profiles = if any_scope_visible {
+            app_state.db.get_all_profiles()?
+        } else {
+            Vec::new()
+        };
+
+        let mut scope_submenus = Vec::new();
+        for scope in ProfileScope::ALL {
+            if profiles.is_empty()
+                || !scope
+                    .apps()
+                    .iter()
+                    .any(|app_type| visible_apps.is_visible(app_type))
+            {
+                continue;
+            }
+            let current_profile_id = app_state
+                .db
+                .get_current_profile_id(scope.as_str())?
+                .unwrap_or_default();
+            // 分组标签用产品名，不进 i18n
+            let scope_label = match scope {
+                ProfileScope::Claude => "Claude Code",
+                ProfileScope::ClaudeDesktop => "Claude Desktop",
+                ProfileScope::Codex => "Codex",
+            };
+            let mut scope_builder = SubmenuBuilder::with_id(
+                app,
+                format!("submenu_profiles_{}", scope.as_str()),
+                scope_label,
+            );
+            for profile in &profiles {
+                let item = CheckMenuItem::with_id(
+                    app,
+                    format!("profile_{}_{}", scope.as_str(), profile.id),
+                    &profile.name,
+                    true,
+                    current_profile_id == profile.id,
+                    None::<&str>,
+                )
+                .map_err(|e| AppError::Message(format!("创建项目菜单项失败: {e}")))?;
+                scope_builder = scope_builder.item(&item);
+            }
+            let none_item = CheckMenuItem::with_id(
+                app,
+                format!("profile_none_{}", scope.as_str()),
+                tray_texts.no_project_label,
+                true,
+                current_profile_id.is_empty(),
+                None::<&str>,
+            )
+            .map_err(|e| AppError::Message(format!("创建不使用项目菜单项失败: {e}")))?;
+            let scope_submenu = scope_builder
+                .separator()
+                .item(&none_item)
+                .build()
+                .map_err(|e| AppError::Message(format!("构建项目分组子菜单失败: {e}")))?;
+            scope_submenus.push(scope_submenu);
+        }
+
+        if !scope_submenus.is_empty() {
+            let mut profiles_builder =
+                SubmenuBuilder::with_id(app, "submenu_profiles", tray_texts.projects_label);
+            for scope_submenu in &scope_submenus {
+                profiles_builder = profiles_builder.item(scope_submenu);
+            }
+            let profiles_submenu = profiles_builder
+                .build()
+                .map_err(|e| AppError::Message(format!("构建项目子菜单失败: {e}")))?;
+            menu_builder = menu_builder.item(&profiles_submenu).separator();
+        }
+    }
+
+    Ok(menu_builder)
 }
 
 /// 就地更新各 app 分区子菜单的标题（usage 后缀变化时走这条），

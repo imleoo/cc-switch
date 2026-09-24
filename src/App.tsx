@@ -178,8 +178,18 @@ const getInitialView = (): View => {
 
 function App() {
   // we2ai: WE2AI 模式下只渲染精简壳，其余上游视图与其触发的 IPC 调用全部不
-  // 挂载。WE2AI_MODE 恒为编译期常量，同一挂载实例的分支永远一致，不违反
-  // hooks 调用顺序规则。
+  // 挂载。
+  //
+  // rules-of-hooks 例外说明：这是一次 early return，其后仍有大量
+  // `useState`/`useEffect` 等 hooks 调用，静态规则（eslint-plugin-react-hooks
+  // 的 `rules-of-hooks`）通常会认为这类"条件分支之后调用 hooks"的写法违反
+  // "每次渲染 hooks 调用顺序必须一致"的前提。这里之所以安全：`WE2AI_MODE`
+  // 是本 fork 的编译期常量（恒为 `true`，见 `src/config/we2ai.ts`），同一个
+  // `App` 组件实例在其整个生命周期内、每一次渲染都会走同一条分支——要么永远
+  // 提前返回 `We2aiShell`、要么（上游/`WE2AI_MODE=false` 的测试场景）永远往
+  // 下执行完整的上游 hooks 序列，两者不会在同一挂载实例上交替出现，因此该
+  // 组件实际的 hooks 调用顺序在其生命周期内保持稳定，不触发规则要防止的
+  // "同一实例前后两次渲染 hooks 数量/顺序不同"这一真实 bug。
   if (WE2AI_MODE) {
     return <We2aiShell />;
   }

@@ -43,8 +43,11 @@ describe("We2aiShell IPC whitelist", () => {
     expect(WE2AI_MODE).toBe(true);
 
     const invokedCommands: string[] = [];
-    // We2aiShell 只会用到这几个命令；用通配符兜底记录并返回通用成功响应，
-    // 任何超出预期的命令都会被下面的白名单断言捕获。
+    // We2aiShell（含未登录时渲染的 LoginPage）只会用到这几个命令；用通配符
+    // 兜底记录并返回通用成功响应，任何超出预期的命令都会被下面的白名单断言
+    // 捕获。未登录场景下 `we2ai_resume_session` 显式返回 `"needLogin"`（真实
+    // 三态结果之一，见 `commands_auth.rs` 的 `We2aiResumeOutcome`），而不是
+    // 依赖通配符兜底的 `null`。
     server.use(
       http.post(`${TAURI_ENDPOINT}/*`, ({ request }) => {
         const command = request.url.slice(`${TAURI_ENDPOINT}/`.length);
@@ -61,6 +64,15 @@ describe("We2aiShell IPC whitelist", () => {
         if (command === "get_auto_launch_status") {
           return HttpResponse.json(false);
         }
+        if (command === "we2ai_available_regions") {
+          return HttpResponse.json(["international", "domestic_prod"]);
+        }
+        if (command === "we2ai_get_last_region") {
+          return HttpResponse.json(null);
+        }
+        if (command === "we2ai_resume_session") {
+          return HttpResponse.json("needLogin");
+        }
         return HttpResponse.json(null);
       }),
     );
@@ -73,12 +85,13 @@ describe("We2aiShell IPC whitelist", () => {
       </ThemeProvider>,
     );
 
-    // We2aiShell 品牌顶栏文案，确认 WE2AI_MODE 分支真的渲染了 We2aiShell，
-    // 而不是上游的供应商管理界面。
-    expect(await screen.findByText("WE2AI")).toBeInTheDocument();
+    // 未登录时 We2aiShell 渲染 LoginPage（登录页标题含品牌名），确认
+    // WE2AI_MODE 分支真的渲染了 we2ai 模块树，而不是上游的供应商管理界面。
+    expect(await screen.findByText("登录 WE2AI")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(invokedCommands).toContain("we2ai_get_settings");
+      expect(invokedCommands).toContain("we2ai_resume_session");
     });
 
     for (const command of invokedCommands) {
