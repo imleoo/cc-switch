@@ -312,6 +312,11 @@ pub fn apply_workbuddy(
             // 托管记录没写上：把 models.json 恢复到写入前，避免出现"文件里有
             // WE2AI 条目、记录却指向旧条目"的不一致。
             let mut snap = models_snapshot.clone();
+            // 走到这里说明 atomic_write_private 已经成功写过一次（models.json
+            // 已经不是快照那份内容了），一定要标记"已尝试写入"，否则新的
+            // "未标记则不覆盖外部改动"规则会让这次本该执行的回滚被当成
+            // "外部改动"而拒绝恢复（P6 二轮 Opus 复核高危项 1a）。
+            snap.mark_write_attempted();
             snap.record_h1();
             let restore = snap.restore();
             let _ = super::fsguard::tighten_file(&path);

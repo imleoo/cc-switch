@@ -459,29 +459,49 @@ pub const CLAUDE_API_KEY_ACCOUNT: &str = "tool:claude:ANTHROPIC_API_KEY";
 /// 内容——用户的 Key 绝不能被静默销毁（P6 方案决定 2）。已保存的值不会被
 /// "本次 live 没有该字段"覆盖为空；live 有值时无论是否与已保存的值相同都
 /// 直接覆盖为最新值（幂等，不需要先读旧值比较）。
-fn preserve_users_claude_api_key(
+/// Claude：在任何快照捕获之前，读一次 live 文件当前的 `env.ANTHROPIC_API_KEY`
+/// （若非空）保存到系统钥匙串，返回保存的值供 [`merged_claude_settings`]
+/// 核对漂移。**必须在 `FileSnapshot::capture` 之前调用**：这里的钥匙串写入
+/// 可能阻塞在系统授权弹窗上，放在快照之前能让快照的 H0 天然反映弹窗结束
+/// 后的最新内容，不会把弹窗期间的外部编辑误判成需要保护的旧状态（P6 二轮
+/// Opus 复核高危项 1b）。读取或解析失败在这里不报告——统一交给随后
+/// `merged_claude_settings` 的同一份读取路径报告，不重复处理坏文件。
+fn preserve_and_read_users_claude_api_key(
+    path: &Path,
     secret_store: &dyn SecretStore,
-    live_key: Option<&str>,
-) -> Result<(), ApplyError> {
-    let Some(key) = live_key.filter(|k| !k.is_empty()) else {
-        return Ok(());
-    };
-    secret_store
-        .set(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT, key)
-        .map_err(|e| {
-            ApplyError::new(
-                ERR_FAILED,
-                format!("保存用户自己的 ANTHROPIC_API_KEY 到系统钥匙串失败，未写入：{e}"),
-            )
+) -> Result<Option<String>, ApplyError> {
+    let key = std::fs::read_to_string(path).ok().and_then(|text| {
+        serde_json::from_str::<Value>(&text).ok().and_then(|v| {
+            v.pointer("/env/ANTHROPIC_API_KEY")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
         })
+    });
+    if let Some(k) = &key {
+        secret_store
+            .set(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT, k)
+            .map_err(|e| {
+                ApplyError::new(
+                    ERR_FAILED,
+                    format!("保存用户自己的 ANTHROPIC_API_KEY 到系统钥匙串失败，未写入：{e}"),
+                )
+            })?;
+    }
+    Ok(key)
 }
 
-/// 读当前 Claude live 作为基底，只覆盖托管 env，删除冲突的 `ANTHROPIC_API_KEY`
-/// （删除前先保存到系统钥匙串，见 [`preserve_users_claude_api_key`]）。
+/// 读当前 Claude live 作为基底，只覆盖托管 env，删除 `ANTHROPIC_API_KEY`。
+/// `saved_key` 是 [`preserve_and_read_users_claude_api_key`] 在快照之前读到
+/// 并已存入钥匙串的值：这里重新读到的 `ANTHROPIC_API_KEY` 若非空且与
+/// `saved_key` 不同，说明文件在"保存到钥匙串"与"这次真正读取"之间的极短
+/// 窗口里又被改过（例如钥匙串授权弹窗其间用户又编辑了一次），此时那份新
+/// 值从未被保存，直接中止、不写入任何内容，比静默丢弃更安全（P6 二轮
+/// Opus 复核高危项 1b）。
 fn merged_claude_settings(
     path: &Path,
     params: &ApplyParams,
-    secret_store: &dyn SecretStore,
+    saved_key: Option<&str>,
 ) -> Result<Value, ApplyError> {
     let mut base = match std::fs::read_to_string(path) {
         Ok(text) if text.trim().is_empty() => json!({}),
@@ -507,10 +527,18 @@ fn merged_claude_settings(
         *env = json!({});
     }
     let env = env.as_object_mut().expect("env is object");
-    preserve_users_claude_api_key(
-        secret_store,
-        env.get("ANTHROPIC_API_KEY").and_then(Value::as_str),
-    )?;
+    let current_key = env
+        .get("ANTHROPIC_API_KEY")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    if let Some(current) = current_key {
+        if saved_key != Some(current) {
+            return Err(ApplyError::new(
+                ERR_FAILED,
+                "检测到 Claude 配置在授权期间被修改，请重试".to_string(),
+            ));
+        }
+    }
     env.remove("ANTHROPIC_API_KEY");
     for (k, v) in claude_managed_env(params) {
         env.insert(k.to_string(), Value::String(v));
@@ -1162,7 +1190,12 @@ fn cleanup_stale_claude_key(
     secret_store
         .delete(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT)
         .err()
-        .map(|e| format!("陈旧的 ANTHROPIC_API_KEY 钥匙串残留未能清理：{e}"))
+        .map(|e| {
+            format!(
+                "陈旧的 ANTHROPIC_API_KEY 钥匙串残留未能清理：{e}\
+                 ；下次执行“恢复官方”或登出恢复时会自动重试清理"
+            )
+        })
 }
 
 /// 只有 `env.ANTHROPIC_BASE_URL` 仍指向 WE2AI 网关、且未检测到 CC Switch 代理
@@ -1195,12 +1228,11 @@ fn restore_claude(
             keychain_cleanup_failed: None,
         });
     }
-    // 先读钥匙串（可能长时间阻塞），再读 live 文件。
-    let saved_key = match secret_store.get(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT) {
-        Ok(v) => v.filter(|k| !k.is_empty()),
-        Err(e) => return Err(format!("读取保存的 ANTHROPIC_API_KEY 失败（{e}），未恢复")),
-    };
 
+    // 先读 live 文件，钥匙串留到真正需要时才碰（Codex P6 二轮验收中危项
+    // 2）：文件不存在、或存在但未指向 WE2AI 且本来就没有 Key，都不需要弹
+    // 系统钥匙串授权窗，登出批量恢复时尤其明显——三个工具里没指定过的那
+    // 些不该白白触发一次钥匙串访问。
     let path = crate::config::get_claude_settings_path();
     let original_bytes = match std::fs::read(&path) {
         Ok(b) => b,
@@ -1225,12 +1257,35 @@ fn restore_claude(
         .and_then(Value::as_str)
         .is_some_and(is_we2ai_gateway_root);
     if !points_to_we2ai {
-        let keychain_cleanup_failed =
-            cleanup_stale_claude_key(&value, saved_key.as_deref(), secret_store);
+        // 只有 live 里确实有非空的 ANTHROPIC_API_KEY 才有必要查一次钥匙串
+        // （判断是不是能顺手清理的陈旧残留）；否则完全不碰钥匙串。
+        let live_has_key = value
+            .pointer("/env/ANTHROPIC_API_KEY")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty());
+        let keychain_cleanup_failed = if live_has_key {
+            let saved_key = match secret_store
+                .get(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT)
+            {
+                Ok(v) => v.filter(|k| !k.is_empty()),
+                Err(e) => return Err(format!("读取保存的 ANTHROPIC_API_KEY 失败（{e}），未恢复")),
+            };
+            cleanup_stale_claude_key(&value, saved_key.as_deref(), secret_store)
+        } else {
+            None
+        };
         return Ok(ClaudeRestoreResult::Unchanged {
             keychain_cleanup_failed,
         });
     }
+
+    // 指向 WE2AI，真正要恢复：现在才读钥匙串（可能长时间阻塞在系统授权
+    // 弹窗上）。等待期间发生的外部编辑/CC Switch 接管/会话变化，都由写入
+    // 前的复查（与最初读到的 `original_bytes` 逐字节比对）兜底。
+    let saved_key = match secret_store.get(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT) {
+        Ok(v) => v.filter(|k| !k.is_empty()),
+        Err(e) => return Err(format!("读取保存的 ANTHROPIC_API_KEY 失败（{e}），未恢复")),
+    };
     let env = match value.get_mut("env").and_then(Value::as_object_mut) {
         Some(env) => env,
         None => {
@@ -1289,7 +1344,10 @@ fn restore_claude(
             .delete(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT)
             .err()
             .map(|e| {
-                format!("已写回用户的 ANTHROPIC_API_KEY，但未能从系统钥匙串删除保存的副本：{e}")
+                format!(
+                    "已写回用户的 ANTHROPIC_API_KEY，但未能从系统钥匙串删除保存的副本：{e}\
+                     ；下次执行“恢复官方”或登出恢复时会自动重试清理"
+                )
             })
     } else {
         None
@@ -1387,16 +1445,30 @@ fn restore_codex(
     if !points_to_we2ai {
         return Ok(None);
     }
-    // toml_edit 把"某个 key 前面的注释"存成该 key 自己的 leading decor；直接
-    // `remove()` 会把这段用户自己写的注释一起丢掉。删除前按文件原始顺序摘出
-    // 两个待删键各自的注释（可能只有一个有、也可能都有）。
+    // toml_edit 把"某个 key 前面的注释"存成该 key 自己的 leading decor、
+    // "同一行值后面的注释"（`model = "x" # note`）存成那个值的 decor
+    // suffix；直接 `remove()` 两者都会跟着丢。删除前按文件原始顺序、且
+    // "该键的 leading 注释在前、trailing 注释在后"摘出两个待删键各自的
+    // 注释（P6 二轮 Codex 验收中危项 3：早期版本只收集了 leading，漏了
+    // `model = "x" # note` 这种写在同一行的注释）。
     let mut removed_comments = Vec::new();
-    for (key, _) in doc.iter_mut() {
-        if key.get() == "model_provider" || key.get() == "model" {
-            if let Some(p) = key.leaf_decor().prefix().and_then(|p| p.as_str()) {
-                if !p.trim().is_empty() {
-                    removed_comments.push(p.to_string());
-                }
+    for (key, item) in doc.iter_mut() {
+        if key.get() != "model_provider" && key.get() != "model" {
+            continue;
+        }
+        if let Some(p) = key.leaf_decor().prefix().and_then(|p| p.as_str()) {
+            if !p.trim().is_empty() {
+                removed_comments.push(p.to_string());
+            }
+        }
+        if let Some(suffix) = item
+            .as_value()
+            .and_then(|v| v.decor().suffix())
+            .and_then(|p| p.as_str())
+        {
+            let trimmed = suffix.trim();
+            if !trimmed.is_empty() {
+                removed_comments.push(format!("{trimmed}\n"));
             }
         }
     }
@@ -1519,6 +1591,16 @@ pub fn apply_provider_tool(
         ensure_codex_login_preservation()?;
     }
 
+    // Claude：钥匙串写入可能阻塞在系统授权弹窗上，必须在捕获任何文件快照
+    // 之前完成——这样快照的 H0 天然反映弹窗结束后的最新内容，不会把弹窗
+    // 期间发生的外部编辑误判成需要保护的旧状态（P6 二轮 Opus 复核高危项
+    // 1b）。
+    let claude_saved_key = if tool == ProviderTool::ClaudeCode {
+        preserve_and_read_users_claude_api_key(&claude_settings, secret_store)?
+    } else {
+        None
+    };
+
     let db = DbSnapshot::capture(state, tool)?;
     let paths = live_files(tool, &claude_settings);
     let mut files = Vec::with_capacity(paths.len());
@@ -1532,7 +1614,9 @@ pub fn apply_provider_tool(
     let fail = |files: &[FileSnapshot], err: ApplyError| rollback(state, &db, files, true, err);
 
     let merged = match tool {
-        ProviderTool::ClaudeCode => merged_claude_settings(&claude_settings, params, secret_store),
+        ProviderTool::ClaudeCode => {
+            merged_claude_settings(&claude_settings, params, claude_saved_key.as_deref())
+        }
         ProviderTool::Codex => {
             merged_codex_config(&crate::codex_config::get_codex_config_path(), params).map(
                 |config| json!({ "auth": { "OPENAI_API_KEY": params.api_key }, "config": config }),
@@ -1568,6 +1652,14 @@ pub fn apply_provider_tool(
     }
     if let Err(e) = hook!(BeforeSwitch) {
         return Err(fail(&files, ApplyError::new(ERR_FAILED, e)));
+    }
+
+    // 从这里开始才真正可能触碰 live 文件（上游 switch 管道与紧接着 WE2AI
+    // 自己对 Codex 的追加写入）。标记之前的任何失败都不该把这段准备期间
+    // 发生的外部编辑当成"我们的半写状态"去回滚覆盖（P6 二轮 Opus 复核
+    // 高危项 1a，见 `snapshot.rs::FileSnapshot::mark_write_attempted`）。
+    for f in files.iter_mut() {
+        f.mark_write_attempted();
     }
 
     let switch_result = match hook!(Switch) {

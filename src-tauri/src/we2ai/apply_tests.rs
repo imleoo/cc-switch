@@ -1340,6 +1340,62 @@ fn restore_codex_comment_moves_when_only_model_is_commented() {
     );
 }
 
+/// 同一行末尾的注释（`model = "gpt-5" # trailing note`）也要保留，不能只顾
+/// 键前面的 leading 注释（P6 三轮 Codex 验收中危项 3）。
+#[test]
+#[serial]
+fn restore_codex_preserves_a_trailing_comment_on_the_same_line_as_model() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let cfg = "model_provider = \"we2ai\"\nmodel = \"gpt-5\" # trailing note\napproval_policy = \"on-request\"\n\n[model_providers.we2ai]\nname = \"WE2AI\"\nbase_url = \"https://api.we2ai.com/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"sk-x\"\n";
+    write(&codex_config(home.path()), cfg);
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    let text = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    assert_eq!(
+        text.matches("trailing note").count(),
+        1,
+        "comment must appear exactly once:\n{text}"
+    );
+    assert!(
+        text.contains("# trailing note\napproval_policy = \"on-request\""),
+        "trailing comment must be preserved as its own line before the new first key:\n{text}"
+    );
+}
+
+/// 恢复两次不会重复注释：第二次因为 `model_provider` 已经不在了，天然是
+/// 空转（`Ok(None)`），文件逐字节不变（P6 三轮 Codex 验收中危项 3）。
+#[test]
+#[serial]
+fn restoring_codex_twice_does_not_duplicate_comments() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let cfg = "# c1\nmodel_provider = \"we2ai\"\nmodel = \"gpt-5\" # trailing note\napproval_policy = \"on-request\"\n\n[model_providers.we2ai]\nname = \"WE2AI\"\nbase_url = \"https://api.we2ai.com/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"sk-x\"\n";
+    write(&codex_config(home.path()), cfg);
+    let first = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert_eq!(first.restored.len(), 1, "{first:?}");
+    let after_first = std::fs::read_to_string(codex_config(home.path())).unwrap();
+
+    let second = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert!(second.restored.is_empty(), "{second:?}");
+    let after_second = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    assert_eq!(
+        after_first, after_second,
+        "a second restore must be a no-op and must not duplicate any comment"
+    );
+    for comment in ["c1", "trailing note"] {
+        assert_eq!(
+            after_second.matches(comment).count(),
+            1,
+            "{comment} must still appear exactly once after a second restore:\n{after_second}"
+        );
+    }
+}
+
 /// 两个键都有注释，且恢复后新的第一个键自己也有注释：三段注释按原始顺序
 /// 拼接，都保留，谁的都不丢（Codex 复核中危项 2）。
 #[test]
@@ -1524,13 +1580,159 @@ impl<F: Fn() + Send + Sync> SecretStore for SecretStoreWithGetSideEffect<'_, F> 
     }
 }
 
-/// 修复前的顺序是"读 live 文件 → 阻塞钥匙串 get() → 写回读文件时的旧快照"：
-/// 弹窗停留期间用户对 settings.json 做的编辑会被静默覆盖丢失。修复后钥匙串
-/// get() 挪到读 live 文件**之前**，编辑发生在 get() 里时，随后的读取自然会
-/// 拿到编辑后的最新内容，不会被覆盖。
+/// 同上，但包在 `set()` 上（用于验证 Claude apply 侧"钥匙串写入挪到快照
+/// 之前"的保护，P6 三轮 Opus 复核高危项 1b）。
+struct SecretStoreWithSetSideEffect<'a, F: Fn() + Send + Sync> {
+    inner: &'a InMemorySecretStore,
+    on_set: F,
+}
+
+impl<F: Fn() + Send + Sync> SecretStore for SecretStoreWithSetSideEffect<'_, F> {
+    fn get(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
+        self.inner.get(service, account)
+    }
+    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), SecretStoreError> {
+        (self.on_set)();
+        self.inner.set(service, account, secret)
+    }
+    fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
+        self.inner.delete(service, account)
+    }
+}
+
+/// P6 三轮 Opus 复核高危项 1b：Claude apply 在捕获任何快照之前先读一次
+/// live 的 `ANTHROPIC_API_KEY` 并存入钥匙串（可能阻塞在系统授权弹窗上）；
+/// 弹窗停留期间发生的编辑，会被随后才进行的快照捕获自然拿到，不会被
+/// "写回弹窗之前的旧快照"覆盖丢失。
 #[test]
 #[serial]
-fn restore_claude_reads_the_keychain_before_the_live_file_so_concurrent_edits_survive() {
+fn claude_apply_reads_the_keychain_before_capturing_the_snapshot_so_concurrent_edits_survive() {
+    let home = TestHome::new();
+    let state = state();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    let path_for_hook = path.clone();
+    let wrapper = SecretStoreWithSetSideEffect {
+        inner: &store,
+        on_set: move || {
+            let mut value = read_json(&path_for_hook);
+            value["env"]["EDITED_WHILE_WAITING"] = json!("yes");
+            write(&path_for_hook, &serde_json::to_string(&value).unwrap());
+        },
+    };
+    let out = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &wrapper,
+    )
+    .unwrap();
+    assert_eq!(out.model, "m");
+    let after = read_json(&path);
+    assert_eq!(
+        after["env"]["EDITED_WHILE_WAITING"], "yes",
+        "edit made while the blocking keychain set() was pending must survive: {after}"
+    );
+    assert_eq!(after["env"]["ANTHROPIC_BASE_URL"], GATEWAY);
+    assert!(after["env"].get("ANTHROPIC_API_KEY").is_none(), "{after}");
+    assert!(store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT));
+}
+
+/// 钥匙串保存失败：`preserve_and_read_users_claude_api_key` 在任何快照被
+/// 捕获之前就直接返回错误，`apply_provider_tool` 里没有任何回滚可做——文件
+/// 必须保持外部编辑（`set()` 的副作用）留下的样子，不能被"回滚到一个从未
+/// 存在过的快照"（P6 三轮 Opus 复核高危项 1b）。
+#[test]
+#[serial]
+fn claude_apply_does_not_revert_an_edit_made_while_a_failing_keychain_save_was_blocking() {
+    let home = TestHome::new();
+    let state = state();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    let path_for_hook = path.clone();
+    let wrapper = SecretStoreWithSetSideEffect {
+        inner: &store,
+        on_set: move || {
+            let mut value = read_json(&path_for_hook);
+            value["env"]["EDITED_WHILE_WAITING"] = json!("yes");
+            write(&path_for_hook, &serde_json::to_string(&value).unwrap());
+        },
+    };
+    store.set_fail_set(true);
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &wrapper,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, apply::ERR_FAILED, "{err}");
+    let after = read_json(&path);
+    assert_eq!(
+        after["env"]["EDITED_WHILE_WAITING"], "yes",
+        "must stay exactly as the concurrent edit left it: {after}"
+    );
+    assert_eq!(after["env"]["ANTHROPIC_API_KEY"], "sk-user-own");
+    assert_eq!(
+        db_view(&state, AppType::Claude, apply::CLAUDE_PROVIDER_ID),
+        (None, None, false, None)
+    );
+}
+
+/// 钥匙串保存成功，但同一次 `set()` 副作用又把 live 的 Key 改成了另一个值
+/// （模拟：用户在授权弹窗其间又编辑了一次）：`merged_claude_settings` 随后
+/// 重新读到的值与已保存的值不一致，直接中止、不写入任何内容（P6 三轮
+/// Opus 复核高危项 1b）。
+#[test]
+#[serial]
+fn claude_apply_aborts_without_writing_when_the_api_key_changes_again_while_keychain_set_was_blocking(
+) {
+    let home = TestHome::new();
+    let state = state();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    let path_for_hook = path.clone();
+    let wrapper = SecretStoreWithSetSideEffect {
+        inner: &store,
+        on_set: move || {
+            let mut value = read_json(&path_for_hook);
+            value["env"]["ANTHROPIC_API_KEY"] = json!("sk-changed-again");
+            write(&path_for_hook, &serde_json::to_string(&value).unwrap());
+        },
+    };
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &wrapper,
+    )
+    .unwrap_err();
+    assert!(err.message.contains("授权期间被修改"), "{err}");
+    let after = read_json(&path);
+    assert_eq!(
+        after["env"]["ANTHROPIC_API_KEY"], "sk-changed-again",
+        "must not write; file stays as the second edit left it: {after}"
+    );
+    assert_eq!(
+        db_view(&state, AppType::Claude, apply::CLAUDE_PROVIDER_ID),
+        (None, None, false, None)
+    );
+}
+
+/// `restore_claude` 与 apply 不同，是"先读 live 文件、只在确实需要时才碰
+/// 钥匙串"（P6 三轮 Opus 复核中危项 2：不能让登出批量恢复对着从未指定过
+/// 的工具也触发一次钥匙串访问）。因此钥匙串等待期间发生的外部编辑，由
+/// 写入前的字节比对复查拦下——不写、不删钥匙串条目、报告为未恢复，而不
+/// 是像 apply 那样自然拿到最新内容。
+#[test]
+#[serial]
+fn restore_claude_aborts_without_writing_when_live_is_edited_during_its_own_keychain_read() {
     let home = TestHome::new();
     let state = state();
     let root = data_root(home.path());
@@ -1549,35 +1751,34 @@ fn restore_claude_reads_the_keychain_before_the_live_file_so_concurrent_edits_su
     assert!(store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT));
 
     let path_for_hook = path.clone();
+    let written: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let written_ref = &written;
     let wrapper = SecretStoreWithGetSideEffect {
         inner: &store,
         on_get: move || {
             let mut value = read_json(&path_for_hook);
             value["env"]["EDITED_WHILE_WAITING"] = json!("yes");
-            write(&path_for_hook, &serde_json::to_string(&value).unwrap());
+            let text = serde_json::to_string(&value).unwrap();
+            write(&path_for_hook, &text);
+            *written_ref.lock().unwrap() = Some(text);
         },
     };
     let out = apply::restore_official(&state, &root, &wrapper, &[RestoreTool::ClaudeCode], &ok);
-    assert_eq!(out.restored.len(), 1, "{out:?}");
-    let after = read_json(&path);
-    assert_eq!(
-        after["env"]["EDITED_WHILE_WAITING"], "yes",
-        "edit made during the blocking keychain call must survive, not be clobbered by a stale snapshot: {after}"
+    let expected = written.lock().unwrap().clone().expect("hook must have run");
+    assert!(out.restored.is_empty(), "{out:?}");
+    assert!(
+        out.skipped.iter().any(|s| s.contains("检测到其他程序修改")),
+        "{out:?}"
     );
-    assert_eq!(after["env"]["ANTHROPIC_API_KEY"], "sk-user-own");
-    for key in [
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    ] {
-        assert!(
-            after["env"].get(key).is_none(),
-            "{key} not removed: {after}"
-        );
-    }
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        expected,
+        "must not overwrite the concurrent edit"
+    );
+    assert!(
+        store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT),
+        "keychain entry must remain since nothing was written"
+    );
 }
 
 /// 写入前的复查发现"调用方已不再允许继续"（如登出恢复流程里用户又重新
@@ -1631,8 +1832,13 @@ fn restore_claude_does_not_write_when_session_changes_during_keychain_read() {
     );
 }
 
-/// 写入前的复查发现 CC Switch 刚开始代理接管（钥匙串授权弹窗停留期间发生）：
-/// 不写，钥匙串条目原样保留。
+/// 写入前的复查发现 CC Switch 刚开始代理接管（钥匙串授权弹窗停留期间发生，
+/// 表现为 live 文件字节变化）：不写，钥匙串条目原样保留。这里命中的是三项
+/// 复查里最先做的字节比对（字节已经不同，不需要再看接管判定），报告的是
+/// 通用的"检测到其他程序修改"，不是接管专用文案——`restore_codex` 侧的
+/// 独立接管判定同样存在，只是在字节比对已经能覆盖的场景里不会被单独触发
+/// 到，见 `restore_official_does_not_touch_claude_live_under_cc_switch_takeover`
+/// 覆盖"live 从一开始就是接管状态"（不涉及字节变化）的情形。
 #[test]
 #[serial]
 fn restore_claude_does_not_write_when_cc_switch_takeover_starts_during_keychain_read() {
@@ -1677,7 +1883,7 @@ fn restore_claude_does_not_write_when_cc_switch_takeover_starts_during_keychain_
         "keychain entry must remain since nothing was written"
     );
     assert!(
-        out.skipped.iter().any(|s| s.contains("CC Switch 代理接管")),
+        out.skipped.iter().any(|s| s.contains("检测到其他程序修改")),
         "{out:?}"
     );
 }
@@ -1719,6 +1925,121 @@ fn restore_codex_does_not_write_when_session_changes_before_write() {
         out.skipped.iter().any(|s| s.contains("登录状态已变化")),
         "{out:?}"
     );
+}
+
+/// 包一层 `InMemorySecretStore`，统计 `get()` 被调用的次数——用于验证
+/// `restore_claude` 只在确实需要时才碰钥匙串（P6 三轮 Opus 复核中危项 2）。
+struct CountingSecretStore<'a> {
+    inner: &'a InMemorySecretStore,
+    get_calls: std::sync::atomic::AtomicU32,
+}
+
+impl<'a> CountingSecretStore<'a> {
+    fn new(inner: &'a InMemorySecretStore) -> Self {
+        Self {
+            inner,
+            get_calls: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    fn get_call_count(&self) -> u32 {
+        self.get_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl SecretStore for CountingSecretStore<'_> {
+    fn get(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
+        self.get_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get(service, account)
+    }
+    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), SecretStoreError> {
+        self.inner.set(service, account, secret)
+    }
+    fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
+        self.inner.delete(service, account)
+    }
+}
+
+/// `settings.json` 不存在：登出批量恢复对着从未指定过 Claude Code 的机器
+/// 不该触发任何钥匙串访问（P6 三轮 Opus 复核中危项 2）。
+#[test]
+#[serial]
+fn restore_claude_does_not_touch_the_keychain_when_settings_file_is_missing() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let inner = InMemorySecretStore::new();
+    let counting = CountingSecretStore::new(&inner);
+    let out = apply::restore_official(&state, &root, &counting, &[RestoreTool::ClaudeCode], &ok);
+    assert!(out.restored.is_empty() && out.skipped.is_empty(), "{out:?}");
+    assert_eq!(counting.get_call_count(), 0);
+}
+
+/// `settings.json` 存在但不指向 WE2AI、且没有 `ANTHROPIC_API_KEY`：同样不
+/// 需要碰钥匙串（没有陈旧残留可能需要清理）。
+#[test]
+#[serial]
+fn restore_claude_does_not_touch_the_keychain_when_pointing_elsewhere_without_an_api_key() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(
+        &claude_settings(home.path()),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"https://other.example"}}"#,
+    );
+    let inner = InMemorySecretStore::new();
+    let counting = CountingSecretStore::new(&inner);
+    let out = apply::restore_official(&state, &root, &counting, &[RestoreTool::ClaudeCode], &ok);
+    assert!(out.restored.is_empty(), "{out:?}");
+    assert_eq!(counting.get_call_count(), 0);
+}
+
+/// `settings.json` 不指向 WE2AI，但存在非空的 `ANTHROPIC_API_KEY`：需要查
+/// 一次钥匙串，判断是不是能顺手清理的陈旧残留（P6 三轮 Opus 复核中危项 2）。
+#[test]
+#[serial]
+fn restore_claude_touches_the_keychain_when_pointing_elsewhere_with_an_api_key() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(
+        &claude_settings(home.path()),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"https://other.example","ANTHROPIC_API_KEY":"sk-other"}}"#,
+    );
+    let inner = InMemorySecretStore::new();
+    let counting = CountingSecretStore::new(&inner);
+    let out = apply::restore_official(&state, &root, &counting, &[RestoreTool::ClaudeCode], &ok);
+    assert!(out.restored.is_empty(), "{out:?}");
+    assert!(counting.get_call_count() >= 1, "{out:?}");
+}
+
+/// 指向 WE2AI、真正要恢复：一定会查一次钥匙串。
+#[test]
+#[serial]
+fn restore_claude_touches_the_keychain_when_actually_restoring() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let inner = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &inner,
+    )
+    .unwrap();
+    let counting = CountingSecretStore::new(&inner);
+    let out = apply::restore_official(&state, &root, &counting, &[RestoreTool::ClaudeCode], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    assert!(counting.get_call_count() >= 1, "{out:?}");
 }
 
 // ---------------------------------------------------------------------------

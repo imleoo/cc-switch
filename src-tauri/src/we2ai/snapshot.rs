@@ -41,6 +41,8 @@ pub struct FileSnapshot {
     original: Option<Vec<u8>>,
     h0: Hash,
     h1: Option<Hash>,
+    /// 是否已经真正开始尝试写入这个文件（见 [`Self::mark_write_attempted`]）。
+    write_attempted: bool,
 }
 
 impl FileSnapshot {
@@ -56,7 +58,18 @@ impl FileSnapshot {
             original,
             h0,
             h1: None,
+            write_attempted: false,
         })
+    }
+
+    /// 标记"从这一刻起会真正尝试写入这个文件"（例如即将调用上游 `switch`
+    /// 管道，或 WE2AI 自己紧接着要写入）。在标记之前，`restore()` 遇到与
+    /// H0 不同的当前内容一律视为外部程序的改动、不覆盖——快照捕获之后、
+    /// 真正动笔写入之前可能有一段耗时的准备工作（如阻塞在系统钥匙串授权
+    /// 弹窗上），这段时间里发生的外部编辑不是我们造成的半写状态，不该被
+    /// "没有 H1 就按部分写入回滚"的规则误伤（P6 二轮 Opus 复核高危项 1a）。
+    pub fn mark_write_attempted(&mut self) {
+        self.write_attempted = true;
     }
 
     pub fn existed(&self) -> bool {
@@ -90,6 +103,11 @@ impl FileSnapshot {
         };
         if current == self.h0 {
             return RestoreResult::Unchanged;
+        }
+        if !self.write_attempted {
+            // 从未真正尝试写入：现在的差异只可能来自外部程序，不是我们的
+            // 半写状态，不能覆盖（P6 二轮 Opus 复核高危项 1a）。
+            return RestoreResult::ExternalModified;
         }
         if let Some(h1) = self.h1 {
             if current != h1 {
@@ -131,6 +149,8 @@ mod tests {
 
         let mut a = FileSnapshot::capture(&existing).unwrap();
         let mut b = FileSnapshot::capture(&created).unwrap();
+        a.mark_write_attempted();
+        b.mark_write_attempted();
         std::fs::write(&existing, "ours").unwrap();
         std::fs::write(&created, "ours").unwrap();
         a.record_h1();
@@ -148,6 +168,7 @@ mod tests {
         let f = tmp.path().join("config.toml");
         std::fs::write(&f, "old").unwrap();
         let mut snap = FileSnapshot::capture(&f).unwrap();
+        snap.mark_write_attempted();
         std::fs::write(&f, "ours").unwrap();
         snap.record_h1();
         std::fs::write(&f, "someone else").unwrap();
@@ -156,15 +177,33 @@ mod tests {
     }
 
     #[test]
-    fn without_h1_any_change_is_treated_as_a_partial_write() {
+    fn without_h1_a_change_after_a_write_was_attempted_is_treated_as_a_partial_write() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("config.toml");
+        std::fs::write(&f, "old").unwrap();
+        let mut snap = FileSnapshot::capture(&f).unwrap();
+        assert_eq!(snap.restore(), RestoreResult::Unchanged);
+        snap.mark_write_attempted();
+        std::fs::write(&f, "partial").unwrap();
+        assert_eq!(snap.restore(), RestoreResult::Restored);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "old");
+    }
+
+    /// P6 二轮 Opus 复核高危项 1a：从未标记"尝试写入"（例如失败发生在快照
+    /// 之后、真正开始写之前的准备阶段）时，即便没有 H1，外部改动也绝不能
+    /// 被当成"我们的半写状态"覆盖掉。
+    #[test]
+    fn without_a_write_attempt_an_external_change_is_never_overwritten() {
         let tmp = TempDir::new().unwrap();
         let f = tmp.path().join("config.toml");
         std::fs::write(&f, "old").unwrap();
         let snap = FileSnapshot::capture(&f).unwrap();
-        assert_eq!(snap.restore(), RestoreResult::Unchanged);
-        std::fs::write(&f, "partial").unwrap();
-        assert_eq!(snap.restore(), RestoreResult::Restored);
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "old");
+        std::fs::write(&f, "edited by someone else while we were still preparing").unwrap();
+        assert_eq!(snap.restore(), RestoreResult::ExternalModified);
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "edited by someone else while we were still preparing"
+        );
     }
 
     #[cfg(unix)]
@@ -176,6 +215,7 @@ mod tests {
         std::fs::write(&f, "old").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut snap = FileSnapshot::capture(&f).unwrap();
+        snap.mark_write_attempted();
         std::fs::write(&f, "ours").unwrap();
         snap.record_h1();
         assert_eq!(snap.restore(), RestoreResult::Restored);
