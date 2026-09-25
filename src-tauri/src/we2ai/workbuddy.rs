@@ -223,6 +223,11 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     /// 测试钩子：写托管记录时注入失败。
     static FAIL_RECORD_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// 测试钩子：models.json 已经写盘、H1 已经从内存字节记下之后，写托管
+    /// 记录之前执行（模拟这个窗口里发生的外部改写，P6 四轮 Opus 复核高危
+    /// 项 2）。
+    static AFTER_WRITE_BEFORE_RECORD: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -236,9 +241,15 @@ pub(crate) fn set_fail_record_write(fail: bool) {
 }
 
 #[cfg(test)]
+pub(crate) fn set_after_write_before_record(f: impl FnMut() + 'static) {
+    AFTER_WRITE_BEFORE_RECORD.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+}
+
+#[cfg(test)]
 pub(crate) fn clear_test_hooks() {
     BEFORE_FINAL_COMPARE.with(|h| *h.borrow_mut() = None);
     FAIL_RECORD_WRITE.with(|c| c.set(false));
+    AFTER_WRITE_BEFORE_RECORD.with(|h| *h.borrow_mut() = None);
 }
 
 pub fn apply_workbuddy(
@@ -257,7 +268,7 @@ pub fn apply_workbuddy(
     for _ in 0..MAX_ATTEMPTS {
         // 每次重算都重新取快照：回滚只能恢复到"本次写入前"的内容，不能用第一次
         // 读取的旧内容覆盖期间其他程序的修改（Codex P4 验收第 1 轮高危项）。
-        let models_snapshot = FileSnapshot::capture(&path).map_err(|e| {
+        let mut models_snapshot = FileSnapshot::capture(&path).map_err(|e| {
             ApplyError::new(ERR_FAILED, format!("读取 {} 失败：{e}", path.display()))
         })?;
         let read_hash = models_snapshot.h0();
@@ -291,8 +302,25 @@ pub fn apply_workbuddy(
         if current != read_hash {
             continue;
         }
+        // 即将真正尝试写入：此刻 current == read_hash（H0），标记写入尝试
+        // 记下的 H_pre 因此等于 H0，不会干扰后续基于 H1 的正常判定（见
+        // `FileSnapshot::mark_write_attempted` 文档）。
+        models_snapshot.mark_write_attempted();
         crate::config::atomic_write_private(&path, &bytes)
             .map_err(|e| ApplyError::new(ERR_FAILED, e.to_string()))?;
+        // 直接用刚刚写盘的字节记录 H1，不重新读盘：写入与记录之间如果重新
+        // 读盘，一旦外部程序在这个窗口抢先改写了文件，读到的会是外部内容
+        // 而不是我们真正写下的内容，H1 就会被外部编辑"认领"，导致后续恢复
+        // 把这次外部编辑误判成"我们写的、可以安全回滚"而覆盖掉
+        // （P6 四轮 Opus 复核高危项 2）。
+        models_snapshot.record_h1_from_bytes(&bytes);
+
+        #[cfg(test)]
+        AFTER_WRITE_BEFORE_RECORD.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f();
+            }
+        });
 
         let new_record = ManagedRecord {
             id: params.model.clone(),
@@ -311,14 +339,7 @@ pub fn apply_workbuddy(
         if let Err(e) = record_result {
             // 托管记录没写上：把 models.json 恢复到写入前，避免出现"文件里有
             // WE2AI 条目、记录却指向旧条目"的不一致。
-            let mut snap = models_snapshot.clone();
-            // 走到这里说明 atomic_write_private 已经成功写过一次（models.json
-            // 已经不是快照那份内容了），一定要标记"已尝试写入"，否则新的
-            // "未标记则不覆盖外部改动"规则会让这次本该执行的回滚被当成
-            // "外部改动"而拒绝恢复（P6 二轮 Opus 复核高危项 1a）。
-            snap.mark_write_attempted();
-            snap.record_h1();
-            let restore = snap.restore();
+            let restore = models_snapshot.restore();
             let _ = super::fsguard::tighten_file(&path);
             let suffix = match restore {
                 RestoreResult::Restored | RestoreResult::Unchanged => String::new(),

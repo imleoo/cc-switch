@@ -2250,6 +2250,105 @@ fn codex_failures_at_each_stage_restore_the_whole_snapshot() {
     }
 }
 
+/// P6 四轮 Opus 复核高危项 1：`mark_write_attempted()` 会给这次 apply 涉及
+/// 的全部文件统一打标记，但"已标记"不代表这个文件真的被写过——`switch`
+/// 可能在触碰任何 live 文件之前就失败（如保存本地 current 失败）。标记
+/// 之前（`Stage::BeforeSwitch` 钩子里）发生的外部编辑必须原样保留，不能
+/// 被"没有 H1 就当部分写入回滚"的旧逻辑覆盖掉。
+#[test]
+#[serial]
+fn claude_apply_keeps_an_external_edit_made_before_the_write_attempt_mark_when_switch_fails_immediately(
+) {
+    let home = TestHome::new();
+    let state = state();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let path_for_hook = path.clone();
+    apply::set_test_hook(move |stage| {
+        if stage == Stage::BeforeSwitch {
+            // 这次编辑发生在 mark_write_attempted() 之前（BeforeSwitch 钩子
+            // 成功返回后才会标记）。
+            let mut value = read_json(&path_for_hook);
+            value["env"]["EDITED_BEFORE_MARK"] = json!("yes");
+            write(&path_for_hook, &serde_json::to_string(&value).unwrap());
+        }
+        if stage == Stage::Switch {
+            return Err("boom".into());
+        }
+        Ok(())
+    });
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
+    // rollback() 把 `RestoreResult::ExternalModified` 当成"外部修改，未回滚"
+    // 上报，错误码升级为 ERR_EXTERNAL（与 `external_write_before_rollback_is_not_overwritten`
+    // 是同一条既有路径）——这正是本用例要验证的：文件没有被覆盖回旧快照。
+    assert_eq!(err.code, apply::ERR_EXTERNAL, "{err}");
+    let after = read_json(&path);
+    assert_eq!(
+        after["env"]["EDITED_BEFORE_MARK"], "yes",
+        "an edit made before mark_write_attempted() must survive a failure that never actually wrote this file: {after}"
+    );
+}
+
+const CHATGPT_AUTH_REFRESHED: &str = r#"{"OPENAI_API_KEY":null,"tokens":{"id_token":"x.y.z","access_token":"at2","refresh_token":"rt2","account_id":"acc"},"last_refresh":"2026-09-25T12:00:00Z"}"#;
+
+/// P6 四轮 Opus 复核高危项 1：Codex 保留 ChatGPT 登录时 `auth.json` 从不被
+/// `switch` 写入，但仍然和其他文件一起被 `mark_write_attempted()` 标记。
+/// 标记前 `auth.json` 因为 Codex 自己刷新令牌而改变内容，随后 `switch`
+/// 正常执行（真的写了 `config.toml`），但更后面的阶段失败：`auth.json`
+/// 必须保留刷新后的内容，`config.toml` 正常回滚到 apply 之前的样子。
+#[test]
+#[serial]
+fn codex_apply_keeps_a_refreshed_auth_json_while_rolling_back_config_toml_on_a_later_stage_failure()
+{
+    let home = TestHome::new();
+    let state = state();
+    write(&codex_config(home.path()), CODEX_BASE);
+    write(&codex_auth(home.path()), CHATGPT_AUTH);
+    let auth_path_for_hook = codex_auth(home.path());
+    apply::set_test_hook(move |stage| {
+        if stage == Stage::BeforeSwitch {
+            // 模拟 Codex 自己在这期间刷新了 ChatGPT 令牌；这次改动发生在
+            // mark_write_attempted() 之前。
+            write(&auth_path_for_hook, CHATGPT_AUTH_REFRESHED);
+        }
+        if stage == Stage::AfterLiveWrite {
+            // 这一步在 switch 真正写完 config.toml、且已经对全部文件调用过
+            // record_h1() 之后才失败。
+            return Err("boom".into());
+        }
+        Ok(())
+    });
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
+    // auth.json 报 `ExternalModified`（rollback() 升级为 ERR_EXTERNAL），
+    // config.toml 仍然按正常快照恢复——两者是同一次 rollback() 里各自独立
+    // 判定的结果，参见 `rollback()` 对 `files` 逐项 `.restore()` 的实现。
+    assert_eq!(err.code, apply::ERR_EXTERNAL, "{err}");
+    assert_eq!(
+        std::fs::read_to_string(codex_auth(home.path())).unwrap(),
+        CHATGPT_AUTH_REFRESHED,
+        "auth.json was never written by switch; the refresh made before the write-attempt mark must survive"
+    );
+    assert_eq!(
+        std::fs::read_to_string(codex_config(home.path())).unwrap(),
+        CODEX_BASE,
+        "config.toml was actually written by switch and must be rolled back"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // WorkBuddy
 // ---------------------------------------------------------------------------
@@ -2498,6 +2597,34 @@ fn workbuddy_record_failure_after_a_concurrent_edit_keeps_the_other_edit() {
     let items = wb_items(home.path());
     assert_eq!(items.len(), 1, "our entry rolled back");
     assert_eq!(items[0]["name"], "changed by WorkBuddy");
+}
+
+/// P6 四轮 Opus 复核高危项 2：models.json 已经写盘之后（H1 已经从内存字节
+/// 记下，不是重新读盘得到的）、写托管记录之前，被外部程序改写；随后托管
+/// 记录写入失败触发回滚。旧实现在这个失败分支里才重新读盘记 H1，会把外部
+/// 编辑误认成"就是我们写的内容"并覆盖掉；修复后 H1 从一开始就固定成我们
+/// 真正写下的字节，回滚必须识别出这是外部改动、不覆盖。
+#[test]
+#[serial]
+fn workbuddy_record_failure_after_an_edit_made_right_after_our_write_keeps_the_external_content() {
+    let home = TestHome::new();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(&wb_models(home.path()), &format!("[{USER_ENTRY}]"));
+    let path = wb_models(home.path());
+    workbuddy::set_after_write_before_record(move || {
+        // 这一刻 models.json 已经是我们写入的内容（含新增的 WE2AI 条目），
+        // 外部程序在这里抢先改写，发生在 H1 被记录**之后**。
+        std::fs::write(&path, "[{\"written_by\":\"someone_else\"}]").unwrap();
+    });
+    workbuddy::set_fail_record_write(true);
+    let err = workbuddy::apply_workbuddy(&root, &params("m1", KEY_A), false, &ok).unwrap_err();
+    assert!(err.message.contains("已被其他程序修改，未回滚"), "{err}");
+    let text = std::fs::read_to_string(wb_models(home.path())).unwrap();
+    assert_eq!(
+        text, "[{\"written_by\":\"someone_else\"}]",
+        "external edit made right after our write must survive, not be treated as ours: {text}"
+    );
 }
 
 #[test]
