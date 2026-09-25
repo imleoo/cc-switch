@@ -21,6 +21,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::fsguard;
+use super::secret_store::{self, SecretStore};
 use super::snapshot::{FileSnapshot, RestoreResult};
 use crate::app_config::AppType;
 use crate::provider::Provider;
@@ -423,22 +424,65 @@ fn clear_db_current(state: &AppState, app: &str) -> Result<(), crate::error::App
 // 合并基底
 // ---------------------------------------------------------------------------
 
+/// Claude 托管 env 键的唯一列表：`claude_managed_env` 取值、
+/// [`restore_claude`] 移除字段都从这里派生，不重复维护第二份清单（P6 方案
+/// 决定 1）。
+const CLAUDE_MANAGED_ENV_KEYS: [&str; 6] = [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+];
+
 fn claude_managed_env(params: &ApplyParams) -> Vec<(&'static str, String)> {
-    vec![
-        (
-            "ANTHROPIC_BASE_URL",
-            params.gateway_root.trim_end_matches('/').to_string(),
-        ),
-        ("ANTHROPIC_AUTH_TOKEN", params.api_key.clone()),
-        ("ANTHROPIC_MODEL", params.model.clone()),
-        ("ANTHROPIC_DEFAULT_SONNET_MODEL", params.slot(|s| &s.sonnet)),
-        ("ANTHROPIC_DEFAULT_OPUS_MODEL", params.slot(|s| &s.opus)),
-        ("ANTHROPIC_DEFAULT_HAIKU_MODEL", params.slot(|s| &s.haiku)),
-    ]
+    let values = [
+        params.gateway_root.trim_end_matches('/').to_string(),
+        params.api_key.clone(),
+        params.model.clone(),
+        params.slot(|s| &s.sonnet),
+        params.slot(|s| &s.opus),
+        params.slot(|s| &s.haiku),
+    ];
+    CLAUDE_MANAGED_ENV_KEYS.into_iter().zip(values).collect()
 }
 
-/// 读当前 Claude live 作为基底，只覆盖托管 env，删除冲突的 `ANTHROPIC_API_KEY`。
-fn merged_claude_settings(path: &Path, params: &ApplyParams) -> Result<Value, ApplyError> {
+/// 系统钥匙串里保存"用户自己的 Claude `ANTHROPIC_API_KEY`"的固定 account。
+/// 与登录会话的 account（`{region}:{user_id}`，第二段恒为数字）格式不同，
+/// 不会冲突；同一 `service`（[`secret_store::SERVICE_NAME`]）下按 account
+/// 区分条目（P6 方案决定 2）。
+pub const CLAUDE_API_KEY_ACCOUNT: &str = "tool:claude:ANTHROPIC_API_KEY";
+
+/// apply 前保存用户自己的 `env.ANTHROPIC_API_KEY`（若存在且非空）到系统钥匙
+/// 串，供将来"恢复官方配置"时写回。保存失败则整次 apply 中止、不写入任何
+/// 内容——用户的 Key 绝不能被静默销毁（P6 方案决定 2）。已保存的值不会被
+/// "本次 live 没有该字段"覆盖为空；live 有值时无论是否与已保存的值相同都
+/// 直接覆盖为最新值（幂等，不需要先读旧值比较）。
+fn preserve_users_claude_api_key(
+    secret_store: &dyn SecretStore,
+    live_key: Option<&str>,
+) -> Result<(), ApplyError> {
+    let Some(key) = live_key.filter(|k| !k.is_empty()) else {
+        return Ok(());
+    };
+    secret_store
+        .set(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT, key)
+        .map_err(|e| {
+            ApplyError::new(
+                ERR_FAILED,
+                format!("保存用户自己的 ANTHROPIC_API_KEY 到系统钥匙串失败，未写入：{e}"),
+            )
+        })
+}
+
+/// 读当前 Claude live 作为基底，只覆盖托管 env，删除冲突的 `ANTHROPIC_API_KEY`
+/// （删除前先保存到系统钥匙串，见 [`preserve_users_claude_api_key`]）。
+fn merged_claude_settings(
+    path: &Path,
+    params: &ApplyParams,
+    secret_store: &dyn SecretStore,
+) -> Result<Value, ApplyError> {
     let mut base = match std::fs::read_to_string(path) {
         Ok(text) if text.trim().is_empty() => json!({}),
         Ok(text) => serde_json::from_str::<Value>(&text).map_err(|e| {
@@ -463,6 +507,10 @@ fn merged_claude_settings(path: &Path, params: &ApplyParams) -> Result<Value, Ap
         *env = json!({});
     }
     let env = env.as_object_mut().expect("env is object");
+    preserve_users_claude_api_key(
+        secret_store,
+        env.get("ANTHROPIC_API_KEY").and_then(Value::as_str),
+    )?;
     env.remove("ANTHROPIC_API_KEY");
     for (k, v) in claude_managed_env(params) {
         env.insert(k.to_string(), Value::String(v));
@@ -914,16 +962,6 @@ pub fn key_material_residue(state: &AppState) -> bool {
     }
 }
 
-/// 登出弹窗勾选"同时从工具配置中移除 Key"时的结果（方案 5.2）。
-#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoveToolKeysOutcome {
-    /// 已移除 Key 的文件。
-    pub removed: Vec<String>,
-    /// 未能移除的项及原因（如 WorkBuddy 条目被手工修改过）。
-    pub skipped: Vec<String>,
-}
-
 fn is_we2ai_gateway_root(url: &str) -> bool {
     let url = url.trim_end_matches('/');
     super::region::Region::all()
@@ -931,127 +969,536 @@ fn is_we2ai_gateway_root(url: &str) -> bool {
         .any(|r| r.base_url().trim_end_matches('/') == url)
 }
 
-/// 从三个工具的 live 配置里移除 WE2AI 写入的 Key：只动指向 WE2AI 的部分——
-/// Claude 仅当 `env.ANTHROPIC_BASE_URL` 是 WE2AI 网关时删 `ANTHROPIC_AUTH_TOKEN`；
-/// Codex 删 `[model_providers.we2ai].experimental_bearer_token`；WorkBuddy 删除
-/// 托管记录指向且未被手改的条目。只在未登录时执行，持 apply 锁。
-pub fn remove_tool_keys(
-    data_root: &Path,
-    still_logged_out: &dyn Fn() -> bool,
-) -> Result<RemoveToolKeysOutcome, ApplyError> {
-    let _lock = apply_lock();
-    if !still_logged_out() {
-        return Err(ApplyError::new(
-            ERR_SESSION_CHANGED,
-            "当前已登录，未移除工具配置中的 Key",
-        ));
+// ---------------------------------------------------------------------------
+// 恢复官方配置（P6，取代功能 12 的 remove_tool_keys：不再只删 Key，而是移除
+// WE2AI 为该工具写入的一切，让工具回到"WE2AI 从未碰过"的状态）。
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreTool {
+    ClaudeCode,
+    Codex,
+    Workbuddy,
+}
+
+impl RestoreTool {
+    fn label(self) -> &'static str {
+        match self {
+            RestoreTool::ClaudeCode => "Claude Code",
+            RestoreTool::Codex => "Codex",
+            RestoreTool::Workbuddy => "WorkBuddy",
+        }
     }
-    let mut outcome = RemoveToolKeysOutcome::default();
-    // 工具文件里的 WE2AI Key 只能由 apply 写入，apply 与本函数共用 apply 锁，
-    // 所以这里删除的一定是登出前写入的 Key。每次写文件前仍复查一次未登录：
-    // 用户在移除过程中重新登录时就此停止，剩余项报告为未移除（Codex P5 验收
-    // 第 2 轮中危项 2）。
-    let relogged = |outcome: &mut RemoveToolKeysOutcome, path: &Path| -> bool {
-        if still_logged_out() {
-            false
-        } else {
+}
+
+/// 确认弹窗里展示的"恢复将移除的文件与字段"——独立于 [`plan_for`]（那份是
+/// apply 会*写入*什么，`env.ANTHROPIC_API_KEY（删除）` 与 Codex 模型目录文件
+/// 对恢复场景完全说反了：恢复不删 API Key，是把它写回；也从不碰模型目录
+/// 文件）。Claude 的字段列表直接从 [`CLAUDE_MANAGED_ENV_KEYS`] 派生，不重复
+/// 维护第二份键清单。
+pub fn restore_plan_for(tool: RestoreTool) -> ApplyPlan {
+    match tool {
+        RestoreTool::ClaudeCode => ApplyPlan {
+            files: vec![crate::config::get_claude_settings_path()
+                .display()
+                .to_string()],
+            fields: CLAUDE_MANAGED_ENV_KEYS
+                .iter()
+                .map(|k| format!("env.{k}（移除）"))
+                .chain(std::iter::once(
+                    "env.ANTHROPIC_API_KEY（如之前保存过用户自己的 Key，则写回）".to_string(),
+                ))
+                .collect(),
+        },
+        RestoreTool::Codex => ApplyPlan {
+            files: vec![crate::codex_config::get_codex_config_path()
+                .display()
+                .to_string()],
+            fields: vec![
+                "model_provider（移除）".into(),
+                "model（移除）".into(),
+                format!("[model_providers.{CODEX_MODEL_PROVIDER}]（移除）"),
+                "auth.json（ChatGPT 登录）不受影响".into(),
+            ],
+        },
+        RestoreTool::Workbuddy => ApplyPlan {
+            files: vec![super::workbuddy::models_path().display().to_string()],
+            fields: vec!["WE2AI 条目（移除）".into()],
+        },
+    }
+}
+
+/// "恢复官方"的结果：`we2ai_restore_official`（取代功能 12 的旧移除 Key 命令）。
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreOfficialOutcome {
+    /// 已恢复（移除了 WE2AI 写入内容）的文件。
+    pub restored: Vec<String>,
+    /// 本来就没有可做的事，不是失败：未指向 WE2AI、或正被 CC Switch 代理
+    /// 接管（Opus 复核高危项 1：与 `skipped` 混在一起会让"三个工具只指定了
+    /// 一个"这种正常情况在登出恢复时始终弹出警告 toast，是假警报）。
+    pub unchanged: Vec<String>,
+    /// 未恢复的项及失败原因（读取/解析失败、WorkBuddy 条目被手工修改、
+    /// 会话已变化、数据库清理失败、钥匙串读取失败等）。
+    pub skipped: Vec<String>,
+}
+
+/// 恢复某个工具的官方配置：移除 WE2AI 写入的一切，用户其余配置原样保留。
+/// 与 [`apply_provider_tool`] 共用 [`apply_lock`]（进行中的 apply 先完成，
+/// 恢复再动手，不会撞见半写状态）。`still_allowed` 由调用方决定"是否继续
+/// 处理剩余工具"：登出流程传入"是否仍是当时那个（已登出）身份"，一旦
+/// 用户中途重新登录 / 换号就停止（沿用功能 12 `remove_tool_keys` 的
+/// "登出流程重新登录即停止"语义）；顶栏"恢复官方"按钮等登录态下的直接
+/// 调用传入"当前身份是否仍与发起时相同"，本身不要求未登录，但同样在会话
+/// 变化时停止，不假设"一直允许"。不整体要求登出，因为方案已明确本命令
+/// "无论是否登录都可用"。
+pub fn restore_official(
+    state: &AppState,
+    data_root: &Path,
+    secret_store: &dyn SecretStore,
+    tools: &[RestoreTool],
+    still_allowed: &dyn Fn() -> bool,
+) -> RestoreOfficialOutcome {
+    let _lock = apply_lock();
+    let mut outcome = RestoreOfficialOutcome::default();
+    for &tool in tools {
+        if !still_allowed() {
             outcome
                 .skipped
-                .push(format!("{}：已重新登录，未继续移除", path.display()));
-            true
+                .push(format!("{}：登录状态已变化，未继续恢复", tool.label()));
+            continue;
         }
-    };
-    // 读取或解析失败（文件不存在除外）要报告，不能静默当作"没有 Key"（第 2 轮
-    // 中危项 1）。
-    let read_text = |outcome: &mut RemoveToolKeysOutcome, path: &Path| -> Option<String> {
-        match std::fs::read_to_string(path) {
-            Ok(t) => Some(t),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                outcome
-                    .skipped
-                    .push(format!("{}：读取失败（{e}），未移除", path.display()));
-                None
-            }
-        }
-    };
-
-    let claude = crate::config::get_claude_settings_path();
-    if let Some(text) = read_text(&mut outcome, &claude) {
-        match serde_json::from_str::<Value>(&text) {
-            Err(e) => outcome.skipped.push(format!(
-                "{}：不是有效的 JSON（{e}），未移除",
-                claude.display()
-            )),
-            Ok(mut value) => {
-                let points_to_we2ai = value
-                    .pointer("/env/ANTHROPIC_BASE_URL")
-                    .and_then(Value::as_str)
-                    .is_some_and(is_we2ai_gateway_root);
-                let removed = points_to_we2ai
-                    && value
-                        .get_mut("env")
-                        .and_then(Value::as_object_mut)
-                        .is_some_and(|env| env.remove("ANTHROPIC_AUTH_TOKEN").is_some());
-                if removed && !relogged(&mut outcome, &claude) {
-                    match serde_json::to_string_pretty(&value) {
-                        Err(e) => outcome.skipped.push(format!("{}: {e}", claude.display())),
-                        Ok(text) => {
-                            match crate::config::atomic_write_private(&claude, text.as_bytes()) {
-                                Ok(()) => outcome.removed.push(claude.display().to_string()),
-                                Err(e) => {
-                                    outcome.skipped.push(format!("{}: {e}", claude.display()))
-                                }
-                            }
+        match tool {
+            RestoreTool::ClaudeCode => {
+                match restore_claude(state, secret_store, still_allowed) {
+                    Ok(ClaudeRestoreResult::Restored {
+                        path,
+                        keychain_delete_failed,
+                    }) => {
+                        outcome.restored.push(path);
+                        if let Some(e) = keychain_delete_failed {
+                            outcome.skipped.push(format!("Claude Code：{e}"));
                         }
                     }
-                }
-            }
-        }
-    }
-
-    let codex = crate::codex_config::get_codex_config_path();
-    if let Some(text) = read_text(&mut outcome, &codex) {
-        match text.parse::<toml_edit::DocumentMut>() {
-            Err(e) => outcome.skipped.push(format!(
-                "{}：不是有效的 TOML（{e}），未移除",
-                codex.display()
-            )),
-            Ok(mut doc) => {
-                // 与 Claude 一致：只有该表仍指向 WE2AI 网关才删（用户若把 we2ai
-                // 表改成自有端点，不动它的 token）。
-                let removed = doc
-                    .get_mut("model_providers")
-                    .and_then(|p| p.as_table_like_mut())
-                    .and_then(|p| p.get_mut(CODEX_MODEL_PROVIDER))
-                    .and_then(|t| t.as_table_like_mut())
-                    .filter(|t| {
-                        t.get("base_url")
-                            .and_then(|v| v.as_str())
-                            .and_then(|u| u.trim_end_matches('/').strip_suffix("/v1"))
-                            .is_some_and(is_we2ai_gateway_root)
-                    })
-                    .and_then(|t| t.remove("experimental_bearer_token"))
-                    .is_some();
-                if removed && !relogged(&mut outcome, &codex) {
-                    match crate::config::atomic_write_private(&codex, doc.to_string().as_bytes()) {
-                        Ok(()) => outcome.removed.push(codex.display().to_string()),
-                        Err(e) => outcome.skipped.push(format!("{}: {e}", codex.display())),
+                    Ok(ClaudeRestoreResult::Unchanged {
+                        keychain_cleanup_failed,
+                    }) => {
+                        outcome.unchanged.push(
+                            "Claude Code：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复".into(),
+                        );
+                        if let Some(e) = keychain_cleanup_failed {
+                            outcome.skipped.push(format!("Claude Code：{e}"));
+                        }
                     }
+                    Err(reason) => outcome.skipped.push(reason),
+                }
+                // DB 清理与 live 文件恢复是否成功无关：即使 live 没动（未
+                // 指向 WE2AI）或本次恢复失败，也照常清理——这个 DB 完全是
+                // WE2AI 私有数据（`~/.we2ai`），顶栏工具状态读的是 live 文件
+                // 不是 DB，清理与否不影响"该工具是否还能重试恢复"。
+                if let Err(e) = cleanup_db_for_app(state, AppType::Claude, CLAUDE_PROVIDER_ID) {
+                    outcome
+                        .skipped
+                        .push(format!("Claude Code：WE2AI 数据库清理失败：{e}"));
+                }
+            }
+            RestoreTool::Codex => {
+                match restore_codex(state, still_allowed) {
+                    Ok(Some(path)) => outcome.restored.push(path),
+                    Ok(None) => outcome
+                        .unchanged
+                        .push("Codex：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复".into()),
+                    Err(reason) => outcome.skipped.push(reason),
+                }
+                if let Err(e) = cleanup_db_for_app(state, AppType::Codex, CODEX_PROVIDER_ID) {
+                    outcome
+                        .skipped
+                        .push(format!("Codex：WE2AI 数据库清理失败：{e}"));
+                }
+            }
+            RestoreTool::Workbuddy => match super::workbuddy::remove_managed_entry(data_root) {
+                Ok(Some(path)) => outcome.restored.push(path),
+                Ok(None) => outcome
+                    .unchanged
+                    .push("WorkBuddy：未指向 WE2AI，无需恢复".into()),
+                Err(reason) => outcome.skipped.push(reason),
+            },
+        }
+    }
+    outcome
+}
+
+/// [`restore_claude`] 的结果：成功恢复（可能带一条"钥匙串条目删不掉"的
+/// 附加提示）或本来就没有可做的事（可能带一条"陈旧钥匙串残留清不掉"的
+/// 附加提示）。两条附加提示都是真失败，调用方塞进 `skipped`；主结果各自
+/// 塞进 `restored`/`unchanged`（Codex 复核中危项 3）。
+enum ClaudeRestoreResult {
+    Restored {
+        path: String,
+        keychain_delete_failed: Option<String>,
+    },
+    Unchanged {
+        keychain_cleanup_failed: Option<String>,
+    },
+}
+
+/// 未指向 WE2AI 的"什么都不用做"路径里，顺手清理陈旧的钥匙串残留：只有当
+/// 钥匙串里存的值与 live 当前的 `ANTHROPIC_API_KEY` 完全一致时才删除（说明
+/// 用户的 Key 已经安全地留在 live 里，钥匙串那份纯属多余的历史残留，例如
+/// 上次恢复写回成功但删钥匙串失败）；删除失败报告为失败，成功不产生任何
+/// 消息（Codex 复核中危项 3）。
+fn cleanup_stale_claude_key(
+    live: &Value,
+    saved_key: Option<&str>,
+    secret_store: &dyn SecretStore,
+) -> Option<String> {
+    let saved_key = saved_key?;
+    let live_key = live
+        .pointer("/env/ANTHROPIC_API_KEY")
+        .and_then(Value::as_str);
+    if live_key != Some(saved_key) {
+        return None;
+    }
+    secret_store
+        .delete(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT)
+        .err()
+        .map(|e| format!("陈旧的 ANTHROPIC_API_KEY 钥匙串残留未能清理：{e}"))
+}
+
+/// 只有 `env.ANTHROPIC_BASE_URL` 仍指向 WE2AI 网关、且未检测到 CC Switch 代理
+/// 接管才动手：移除全部托管 env 键（[`CLAUDE_MANAGED_ENV_KEYS`]），其余字段
+/// 原样保留；若系统钥匙串里存有之前 apply 时保存的用户自己的 Key 且当前
+/// `env` 没有 `ANTHROPIC_API_KEY`，写回该 Key，文件写入成功后才删除钥匙串
+/// 条目（方案决定：先写文件、成功后再删钥匙串，避免文件写失败导致 Key
+/// material 两头都没有；删除失败不算恢复失败，文件已经写好，只是额外报告
+/// 一条提示）。恢复后即便 `env` 变成空对象也不删除这个对象本身，保持结构
+/// 最小改动（方案决定 1）。
+///
+/// **TOCTOU 防护**（Codex 复核高危项 1）：钥匙串读取可能阻塞在系统授权
+/// 弹窗上，等待期间 live 文件可能被外部程序（用户手改、CC Switch 开始
+/// 接管）改写。因此：① 钥匙串读取放在读 live 文件**之前**，缩短"读到的
+/// live 内容"到"真正决定要不要写"之间的窗口；② 写入前重新读一次文件字节
+/// 与最初解析时逐字节比对、重新判一次接管、重新调一次 `still_allowed()`，
+/// 命中任一项都不写、钥匙串条目原样保留、报告未恢复。这个复查缩小但不能
+/// 消除"比对"与"写入"之间的窗口——方案第 4.1 节"只做尽力检测"同样适用
+/// 于恢复路径，是已知限制，见 `自定义开发功能列表.md` 功能 17。
+fn restore_claude(
+    state: &AppState,
+    secret_store: &dyn SecretStore,
+    still_allowed: &dyn Fn() -> bool,
+) -> Result<ClaudeRestoreResult, String> {
+    if state
+        .proxy_service
+        .detect_takeover_in_live_config_for_app(&AppType::Claude)
+    {
+        return Ok(ClaudeRestoreResult::Unchanged {
+            keychain_cleanup_failed: None,
+        });
+    }
+    // 先读钥匙串（可能长时间阻塞），再读 live 文件。
+    let saved_key = match secret_store.get(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT) {
+        Ok(v) => v.filter(|k| !k.is_empty()),
+        Err(e) => return Err(format!("读取保存的 ANTHROPIC_API_KEY 失败（{e}），未恢复")),
+    };
+
+    let path = crate::config::get_claude_settings_path();
+    let original_bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ClaudeRestoreResult::Unchanged {
+                keychain_cleanup_failed: None,
+            })
+        }
+        Err(e) => return Err(format!("{}：读取失败（{e}），未恢复", path.display())),
+    };
+    let mut value: Value = match serde_json::from_slice(&original_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(format!(
+                "{}：不是有效的 JSON（{e}），未恢复",
+                path.display()
+            ))
+        }
+    };
+    let points_to_we2ai = value
+        .pointer("/env/ANTHROPIC_BASE_URL")
+        .and_then(Value::as_str)
+        .is_some_and(is_we2ai_gateway_root);
+    if !points_to_we2ai {
+        let keychain_cleanup_failed =
+            cleanup_stale_claude_key(&value, saved_key.as_deref(), secret_store);
+        return Ok(ClaudeRestoreResult::Unchanged {
+            keychain_cleanup_failed,
+        });
+    }
+    let env = match value.get_mut("env").and_then(Value::as_object_mut) {
+        Some(env) => env,
+        None => {
+            return Ok(ClaudeRestoreResult::Unchanged {
+                keychain_cleanup_failed: None,
+            })
+        }
+    };
+    for key in CLAUDE_MANAGED_ENV_KEYS {
+        env.remove(key);
+    }
+    let mut restored_saved_key = false;
+    if !env.contains_key("ANTHROPIC_API_KEY") {
+        if let Some(key) = &saved_key {
+            env.insert("ANTHROPIC_API_KEY".into(), Value::String(key.clone()));
+            restored_saved_key = true;
+        }
+    }
+    let text =
+        serde_json::to_string_pretty(&value).map_err(|e| format!("{}: {e}", path.display()))?;
+
+    // 写入前复查：文件是否被外部改写、CC Switch 是否刚开始接管、调用方是否
+    // 仍允许继续——命中任一项都不写，钥匙串条目保留。
+    match std::fs::read(&path) {
+        Ok(current) if current == original_bytes => {}
+        _ => {
+            return Err(format!(
+                "{}：检测到其他程序修改，未恢复，请重试",
+                path.display()
+            ))
+        }
+    }
+    if state
+        .proxy_service
+        .detect_takeover_in_live_config_for_app(&AppType::Claude)
+    {
+        return Err(format!(
+            "{}：检测到 CC Switch 代理接管，未恢复",
+            path.display()
+        ));
+    }
+    if !still_allowed() {
+        return Err(format!("{}：登录状态已变化，未恢复", path.display()));
+    }
+
+    crate::config::atomic_write_private(&path, text.as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let _ = fsguard::tighten_file(&path);
+    let keychain_delete_failed = if restored_saved_key {
+        // 只有文件写入成功后才删钥匙串条目：写文件失败时保留，避免用户的
+        // Key 两头都没有（既不在钥匙串也没写回文件）。删除本身失败不算
+        // 恢复失败（文件已经写回 Key），但要报告，否则钥匙串会一直留着
+        // 一份陈旧副本——留给下次恢复调用时的 `cleanup_stale_claude_key`
+        // 重试清理。
+        secret_store
+            .delete(secret_store::SERVICE_NAME, CLAUDE_API_KEY_ACCOUNT)
+            .err()
+            .map(|e| {
+                format!("已写回用户的 ANTHROPIC_API_KEY，但未能从系统钥匙串删除保存的副本：{e}")
+            })
+    } else {
+        None
+    };
+    Ok(ClaudeRestoreResult::Restored {
+        path: path.display().to_string(),
+        keychain_delete_failed,
+    })
+}
+
+/// 收集将被删除的顶层键（`model_provider`、`model`）各自的 leading 注释
+/// （按它们在文件中的原始出现顺序拼接，不假设固定先后），删除后接到表里
+/// 新的第一个位置上：若那是一个普通键值对，就前置到它自己的 leading 注释
+/// 前面（不覆盖、不丢弃它原有的注释）；若那是一张表（含隐式表——`toml_edit`
+/// 对隐式表自身的 leading 注释不会渲染，实测确认过，见开发笔记）或已经没有
+/// 任何顶层条目，就前置到文档级的 leading 文本上（同样不覆盖已有内容）。
+/// 三种情形（只注释一个键、两个键都有注释且新首键自己也有注释、恢复后只剩
+/// 表）都有对应单测锁定行为（Codex 复核中危项 2）。
+fn attach_removed_codex_comment(doc: &mut toml_edit::DocumentMut, combined: &str) {
+    if combined.is_empty() {
+        return;
+    }
+    let mut attached_to_key = false;
+    if let Some((mut first_key, item)) = doc.iter_mut().next() {
+        if !item.is_table() {
+            let existing = first_key
+                .leaf_decor()
+                .prefix()
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .to_string();
+            first_key
+                .leaf_decor_mut()
+                .set_prefix(format!("{combined}{existing}"));
+            attached_to_key = true;
+        }
+    }
+    if !attached_to_key {
+        let existing = doc
+            .as_table()
+            .decor()
+            .prefix()
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string();
+        doc.as_table_mut()
+            .decor_mut()
+            .set_prefix(format!("{combined}{existing}"));
+    }
+}
+
+/// 只有顶层 `model_provider == "we2ai"`、且未检测到 CC Switch 代理接管才
+/// 动手（理由同 [`restore_claude`]）：移除顶层 `model_provider`、`model`；
+/// `[model_providers.we2ai]` 表只在其 `base_url` 仍是 WE2AI 网关时才整张
+/// 删除（用户若把这张表改成自有端点，token 与整张表都不动，与旧
+/// `remove_tool_keys` 对 Codex 的判定一致）；`model_providers` 变空则一并
+/// 删除该表。`auth.json`（ChatGPT 官方登录）从不触碰。写入前的 TOCTOU 复查
+/// 与 [`restore_claude`] 相同（Codex 复核高危项 1）。
+fn restore_codex(
+    state: &AppState,
+    still_allowed: &dyn Fn() -> bool,
+) -> Result<Option<String>, String> {
+    if state
+        .proxy_service
+        .detect_takeover_in_live_config_for_app(&AppType::Codex)
+    {
+        return Ok(None);
+    }
+    let path = crate::codex_config::get_codex_config_path();
+    let original_bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}：读取失败（{e}），未恢复", path.display())),
+    };
+    let text = match std::str::from_utf8(&original_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(format!(
+                "{}：不是有效的 UTF-8（{e}），未恢复",
+                path.display()
+            ))
+        }
+    };
+    let mut doc: toml_edit::DocumentMut = match text.parse() {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(format!(
+                "{}：不是有效的 TOML（{e}），未恢复",
+                path.display()
+            ))
+        }
+    };
+    let points_to_we2ai =
+        doc.get("model_provider").and_then(|v| v.as_str()) == Some(CODEX_MODEL_PROVIDER);
+    if !points_to_we2ai {
+        return Ok(None);
+    }
+    // toml_edit 把"某个 key 前面的注释"存成该 key 自己的 leading decor；直接
+    // `remove()` 会把这段用户自己写的注释一起丢掉。删除前按文件原始顺序摘出
+    // 两个待删键各自的注释（可能只有一个有、也可能都有）。
+    let mut removed_comments = Vec::new();
+    for (key, _) in doc.iter_mut() {
+        if key.get() == "model_provider" || key.get() == "model" {
+            if let Some(p) = key.leaf_decor().prefix().and_then(|p| p.as_str()) {
+                if !p.trim().is_empty() {
+                    removed_comments.push(p.to_string());
                 }
             }
         }
     }
-
-    let wb = super::workbuddy::models_path();
-    if !relogged(&mut outcome, &wb) {
-        match super::workbuddy::remove_managed_entry(data_root) {
-            Ok(Some(path)) => outcome.removed.push(path),
-            Ok(None) => {}
-            Err(reason) => outcome.skipped.push(reason),
+    doc.remove("model_provider");
+    doc.remove("model");
+    attach_removed_codex_comment(&mut doc, &removed_comments.concat());
+    if let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(|p| p.as_table_like_mut())
+    {
+        let table_points_to_we2ai = providers
+            .get(CODEX_MODEL_PROVIDER)
+            .and_then(|t| t.as_table_like())
+            .and_then(|t| t.get("base_url"))
+            .and_then(|v| v.as_str())
+            .and_then(|u| u.trim_end_matches('/').strip_suffix("/v1"))
+            .is_some_and(is_we2ai_gateway_root);
+        if table_points_to_we2ai {
+            providers.remove(CODEX_MODEL_PROVIDER);
+        }
+        if providers.is_empty() {
+            doc.remove("model_providers");
         }
     }
-    Ok(outcome)
+    let new_text = doc.to_string();
+
+    match std::fs::read(&path) {
+        Ok(current) if current == original_bytes => {}
+        _ => {
+            return Err(format!(
+                "{}：检测到其他程序修改，未恢复，请重试",
+                path.display()
+            ))
+        }
+    }
+    if state
+        .proxy_service
+        .detect_takeover_in_live_config_for_app(&AppType::Codex)
+    {
+        return Err(format!(
+            "{}：检测到 CC Switch 代理接管，未恢复",
+            path.display()
+        ));
+    }
+    if !still_allowed() {
+        return Err(format!("{}：登录状态已变化，未恢复", path.display()));
+    }
+
+    crate::config::atomic_write_private(&path, new_text.as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let _ = fsguard::tighten_file(&path);
+    Ok(Some(path.display().to_string()))
+}
+
+/// WE2AI 自己的数据库对某个 app 的收尾：清空固定 id 供应商行的
+/// `settings_config`、清空该 app 的 DB current 标记；`proxy_live_backup`
+/// 只在其内容仍能匹配到 WE2AI 网关（即备份的是 WE2AI 自己那份 live，通常
+/// 出现在"CC Switch 接管前 live 恰好是 WE2AI"的场景）时才删除——其余情况
+/// 保留，那是 CC Switch 对其他供应商的合法备份，恢复官方配置不应该动它
+/// （方案决定，字面依据见 P6 任务说明）。DB 完全是 WE2AI 私有数据根
+/// （`~/.we2ai`）内的数据，与真实 CC Switch 的 `~/.cc-switch` 数据库无关，
+/// 因此这里的清理与"live 是否仍指向 WE2AI"无关，总是执行。
+fn cleanup_db_for_app(state: &AppState, app: AppType, id: &str) -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(e) = clear_db_current(state, app.as_str()) {
+        errors.push(format!("current 标记: {e}"));
+    }
+    match state.db.get_provider_by_id(id, app.as_str()) {
+        Ok(Some(row)) if row.settings_config != json!({}) => {
+            if let Err(e) = state
+                .db
+                .update_provider_settings_config(app.as_str(), id, &json!({}))
+            {
+                errors.push(format!("供应商行: {e}"));
+            }
+        }
+        Ok(_) => {}
+        Err(e) => errors.push(format!("读取供应商行: {e}")),
+    }
+    match futures::executor::block_on(state.db.get_live_backup(app.as_str())) {
+        Ok(Some(backup)) if backup_config_is_we2ai(&backup.original_config) => {
+            if let Err(e) = futures::executor::block_on(state.db.delete_live_backup(app.as_str())) {
+                errors.push(format!("代理备份: {e}"));
+            }
+        }
+        Ok(_) => {}
+        Err(e) => errors.push(format!("读取代理备份: {e}")),
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("、"))
+    }
+}
+
+/// `proxy_live_backup.original_config` 是否是 WE2AI 自己那份配置：粗略按
+/// "文本中含有任一区域的 WE2AI 网关地址"判断（Claude/Codex 的备份内容结构
+/// 不同，不值得为此各写一套精确解析）。
+fn backup_config_is_we2ai(config: &str) -> bool {
+    super::region::Region::all()
+        .iter()
+        .any(|r| config.contains(r.base_url().trim_end_matches('/')))
 }
 
 pub fn apply_provider_tool(
@@ -1059,6 +1506,7 @@ pub fn apply_provider_tool(
     tool: ProviderTool,
     params: &ApplyParams,
     still_current: &dyn Fn() -> bool,
+    secret_store: &dyn SecretStore,
 ) -> Result<ApplyOutcome, ApplyError> {
     let _lock = apply_lock();
     ensure_session_current(still_current)?;
@@ -1084,7 +1532,7 @@ pub fn apply_provider_tool(
     let fail = |files: &[FileSnapshot], err: ApplyError| rollback(state, &db, files, true, err);
 
     let merged = match tool {
-        ProviderTool::ClaudeCode => merged_claude_settings(&claude_settings, params),
+        ProviderTool::ClaudeCode => merged_claude_settings(&claude_settings, params, secret_store),
         ProviderTool::Codex => {
             merged_codex_config(&crate::codex_config::get_codex_config_path(), params).map(
                 |config| json!({ "auth": { "OPENAI_API_KEY": params.api_key }, "config": config }),

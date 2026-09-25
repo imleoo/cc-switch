@@ -1901,6 +1901,14 @@ impl SessionManager {
         &self.0.data_root
     }
 
+    /// 系统钥匙串抽象的克隆句柄（`Arc` 廉价克隆）。供 `apply.rs` 保存/恢复
+    /// 用户自己的 Claude `ANTHROPIC_API_KEY`（P6：恢复官方配置），复用登录
+    /// 会话已经注入的同一个 `SecretStore` 实现（生产为系统钥匙串，测试为
+    /// `InMemorySecretStore`），不单独再造一套注入路径。
+    pub fn secret_store(&self) -> Arc<dyn SecretStore> {
+        self.0.secret_store.clone()
+    }
+
     /// 测试专用：直接发布一个 `Active` 会话并把请求指向 mock server，供其他
     /// 模块（如 `keys.rs`）测试受保护调用。
     #[cfg(test)]

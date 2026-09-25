@@ -1536,7 +1536,8 @@ pub fn run() {
                 we2ai::commands_apply::we2ai_tool_status,
                 we2ai::commands_apply::we2ai_apply_plan,
                 we2ai::commands_apply::we2ai_apply_model,
-                we2ai::commands_apply::we2ai_remove_tool_keys,
+                we2ai::commands_apply::we2ai_restore_official,
+                we2ai::commands_apply::we2ai_restore_plan,
             ],
             tauri::generate_handler![
             commands::get_providers,

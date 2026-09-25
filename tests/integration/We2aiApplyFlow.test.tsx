@@ -11,7 +11,7 @@ import {
 } from "@/we2ai/api";
 import { ModelSquarePage } from "@/we2ai/ModelSquarePage";
 import { ToolStatusBar } from "@/we2ai/ToolStatusBar";
-import { getWe2aiStrings } from "@/we2ai/strings";
+import { formatWe2aiString, getWe2aiStrings } from "@/we2ai/strings";
 
 const t = getWe2aiStrings("zh");
 
@@ -319,5 +319,164 @@ describe("ToolStatusBar", () => {
       <ToolStatusBar t={t} report={{ ...status, ccSwitchRunning: true }} />,
     );
     expect(screen.getByText(t.ccSwitchRunningBanner)).toBeInTheDocument();
+  });
+
+  // P6：顶栏"恢复官方"按钮只出现在已指定 WE2AI 模型的工具行上，点击后弹窗
+  // 确认，确认后调用 restoreOfficial 并只传当前这一个工具。
+  it("only shows the restore action for tools with a WE2AI model, and restores just that tool", async () => {
+    vi.spyOn(we2aiApi, "restorePlan").mockResolvedValue({
+      files: ["/home/u/.claude/settings.json"],
+      fields: [
+        "env.ANTHROPIC_BASE_URL（移除）",
+        "env.ANTHROPIC_API_KEY（如之前保存过用户自己的 Key，则写回）",
+      ],
+    });
+    const restoreOfficial = vi
+      .spyOn(we2aiApi, "restoreOfficial")
+      .mockResolvedValue({
+        restored: ["/home/u/.claude/settings.json"],
+        unchanged: [],
+        skipped: [],
+      });
+    const onRestored = vi.fn();
+    render(
+      <ThemeProvider
+        defaultTheme="system"
+        storageKey="we2ai-tool-status-test-theme"
+      >
+        <ToolStatusBar t={t} report={status} onRestored={onRestored} />
+        <Toaster />
+      </ThemeProvider>,
+    );
+
+    const claude = screen.getByTestId("we2ai-tool-claude_code");
+    expect(
+      within(claude).getByRole("button", { name: t.restoreOfficialAction }),
+    ).toBeInTheDocument();
+    const codex = screen.getByTestId("we2ai-tool-codex");
+    expect(
+      within(codex).queryByRole("button", { name: t.restoreOfficialAction }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(
+      within(claude).getByRole("button", { name: t.restoreOfficialAction }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText("/home/u/.claude/settings.json"),
+    ).toBeInTheDocument();
+    // 恢复计划的语义是"移除/写回"，不能出现 apply 计划里"删除"用户自己
+    // Key 的措辞（Opus 复核中危项 2）。
+    expect(within(dialog).queryByText(/删除/)).not.toBeInTheDocument();
+    await userEvent.click(
+      within(dialog).getByRole("button", {
+        name: t.restoreOfficialConfirmConfirm,
+      }),
+    );
+
+    await waitFor(() => expect(restoreOfficial).toHaveBeenCalledTimes(1));
+    expect(restoreOfficial).toHaveBeenCalledWith(["claude_code"]);
+    await waitFor(() => expect(onRestored).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText(formatWe2aiString(t.toolsRestored, { count: 1 })),
+    ).toBeInTheDocument();
+  });
+
+  // Opus 复核中危项 4：快速切换"打开 A → 关闭 → 打开 B"时，A 的
+  // restorePlan 响应可能比 B 的更晚到达，不能覆盖掉 B 正在展示的弹窗。
+  it("ignores a stale restorePlan response from a previously opened tool", async () => {
+    const reportWithBoth: We2aiToolStatusReport = {
+      ...status,
+      tools: status.tools.map((tool) =>
+        tool.tool === "codex" ? { ...tool, managedModel: "gpt-5" } : tool,
+      ),
+    };
+    let resolveClaudePlan: (plan: {
+      files: string[];
+      fields: string[];
+    }) => void;
+    const claudePlanPromise = new Promise<{
+      files: string[];
+      fields: string[];
+    }>((resolve) => {
+      resolveClaudePlan = resolve;
+    });
+    vi.spyOn(we2aiApi, "restorePlan").mockImplementation(async (tool) => {
+      if (tool === "claude_code") {
+        return claudePlanPromise;
+      }
+      return {
+        files: ["/home/u/.codex/config.toml"],
+        fields: ["model_provider（移除）"],
+      };
+    });
+
+    render(
+      <ThemeProvider
+        defaultTheme="system"
+        storageKey="we2ai-tool-status-stale-plan-theme"
+      >
+        <ToolStatusBar t={t} report={reportWithBoth} />
+        <Toaster />
+      </ThemeProvider>,
+    );
+
+    const claude = screen.getByTestId("we2ai-tool-claude_code");
+    const codex = screen.getByTestId("we2ai-tool-codex");
+
+    // 打开 Claude Code（其 restorePlan 一直挂起不 resolve），关闭，再打开
+    // Codex（立即 resolve）。
+    await userEvent.click(
+      within(claude).getByRole("button", { name: t.restoreOfficialAction }),
+    );
+    await screen.findByRole("dialog");
+    await userEvent.click(screen.getByRole("button", { name: t.applyCancel }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    await userEvent.click(
+      within(codex).getByRole("button", { name: t.restoreOfficialAction }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("/home/u/.codex/config.toml");
+
+    // Claude 的响应现在才姗姗来迟——不能覆盖掉正在展示的 Codex 计划。
+    resolveClaudePlan!({
+      files: ["/home/u/.claude/settings.json"],
+      fields: ["env.ANTHROPIC_BASE_URL（移除）"],
+    });
+    await waitFor(() =>
+      expect(
+        within(dialog).getByText("/home/u/.codex/config.toml"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(dialog).queryByText("/home/u/.claude/settings.json"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the confirm button disabled when the restore plan fails to load", async () => {
+    vi.spyOn(we2aiApi, "restorePlan").mockRejectedValue(new Error("boom"));
+    render(
+      <ThemeProvider
+        defaultTheme="system"
+        storageKey="we2ai-tool-status-plan-failed-theme"
+      >
+        <ToolStatusBar t={t} report={status} />
+        <Toaster />
+      </ThemeProvider>,
+    );
+    const claude = screen.getByTestId("we2ai-tool-claude_code");
+    await userEvent.click(
+      within(claude).getByRole("button", { name: t.restoreOfficialAction }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText(t.applyPlanFailed);
+    expect(
+      within(dialog).getByRole("button", {
+        name: t.restoreOfficialConfirmConfirm,
+      }),
+    ).toBeDisabled();
   });
 });

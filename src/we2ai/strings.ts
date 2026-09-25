@@ -30,6 +30,12 @@ export interface We2aiStrings {
   toolCurrentModel: string;
   toolNotConfigured: string;
   ccSwitchRunningBanner: string;
+  // 恢复官方配置（方案 P6，顶栏单工具入口）
+  restoreOfficialAction: string;
+  restoreOfficialConfirmTitle: string;
+  restoreOfficialConfirmDescription: string;
+  restoreOfficialConfirmConfirm: string;
+  restoring: string;
   applyConfirmTitle: string;
   applyConfirmDescription: string;
   applyFilesLabel: string;
@@ -133,10 +139,12 @@ export interface We2aiStrings {
   logoutButton: string;
   logoutConfirmTitle: string;
   logoutConfirmDescription: string;
-  logoutRemoveToolKeys: string;
-  toolKeysRemoved: string;
-  toolKeysRemoveSkipped: string;
-  toolKeysRemoveFailed: string;
+  logoutRestoreOfficial: string;
+  toolsRestored: string;
+  toolsRestoreSkipped: string;
+  toolsRestoreFailed: string;
+  /** 没有任何工具需要恢复（本来就没指向 WE2AI），不是警告也不是失败。 */
+  toolsRestoreNoop: string;
   logoutConfirmConfirm: string;
   logoutConfirmCancel: string;
   logoutSuccessRevoked: string;
@@ -171,6 +179,12 @@ const zh: We2aiStrings = {
   toolNotConfigured: "未指定 WE2AI 模型",
   ccSwitchRunningBanner:
     "CC Switch 也在运行，它与 WE2AI 可能互相覆盖这些工具的配置",
+  restoreOfficialAction: "恢复官方",
+  restoreOfficialConfirmTitle: "恢复 {tool} 的官方配置？",
+  restoreOfficialConfirmDescription:
+    "将从下列文件中移除 WE2AI 写入的这些字段，其余内容保持不变",
+  restoreOfficialConfirmConfirm: "恢复",
+  restoring: "正在恢复",
   applyConfirmTitle: "将 {model} 指定给 {tool}",
   applyConfirmDescription: "只改写以下文件中的这些字段，其余内容保持不变",
   applyFilesLabel: "文件",
@@ -279,10 +293,11 @@ const zh: We2aiStrings = {
   logoutConfirmTitle: "确认登出？",
   logoutConfirmDescription:
     "登出后需要重新登录才能继续使用。工具（Claude Code / Codex / WorkBuddy）配置中已写入的 Key 会保留，不会被删除。",
-  logoutRemoveToolKeys: "同时从工具配置中移除 Key（工具将无法继续使用 WE2AI）",
-  toolKeysRemoved: "已从 {count} 个工具配置中移除 Key",
-  toolKeysRemoveSkipped: "部分工具配置未移除",
-  toolKeysRemoveFailed: "未能从工具配置中移除 Key",
+  logoutRestoreOfficial: "同时恢复工具的官方配置（移除 WE2AI 写入的内容）",
+  toolsRestored: "已恢复 {count} 个工具的官方配置",
+  toolsRestoreSkipped: "部分工具的官方配置未恢复",
+  toolsRestoreFailed: "未能恢复工具的官方配置",
+  toolsRestoreNoop: "工具未指向 WE2AI，无需恢复",
   logoutConfirmConfirm: "确认登出",
   logoutConfirmCancel: "取消",
   logoutSuccessRevoked: "已退出",
@@ -317,6 +332,12 @@ const en: We2aiStrings = {
   toolNotConfigured: "No WE2AI model set",
   ccSwitchRunningBanner:
     "CC Switch is also running. It and WE2AI may overwrite each other's tool settings.",
+  restoreOfficialAction: "Restore official",
+  restoreOfficialConfirmTitle: "Restore the official config for {tool}?",
+  restoreOfficialConfirmDescription:
+    "These fields written by WE2AI will be removed from the files below. Everything else stays as is.",
+  restoreOfficialConfirmConfirm: "Restore",
+  restoring: "Restoring",
   applyConfirmTitle: "Use {model} in {tool}",
   applyConfirmDescription:
     "Only these fields in these files are changed. Everything else stays as is.",
@@ -438,11 +459,12 @@ const en: We2aiStrings = {
   logoutConfirmTitle: "Sign out?",
   logoutConfirmDescription:
     "You'll need to sign in again to continue. API keys already written into Claude Code, Codex, or WorkBuddy configs will be kept, not removed.",
-  logoutRemoveToolKeys:
-    "Also remove the key from tool configs (the tools will stop using WE2AI)",
-  toolKeysRemoved: "Removed the key from {count} tool config(s)",
-  toolKeysRemoveSkipped: "Some tool configs were left unchanged",
-  toolKeysRemoveFailed: "Couldn't remove the key from tool configs",
+  logoutRestoreOfficial:
+    "Also restore the official config for tools (remove what WE2AI wrote)",
+  toolsRestored: "Restored the official config for {count} tool(s)",
+  toolsRestoreSkipped: "The official config for some tools wasn't restored",
+  toolsRestoreFailed: "Couldn't restore the official config for tools",
+  toolsRestoreNoop: "The tool wasn't pointed at WE2AI; nothing to restore",
   logoutConfirmConfirm: "Sign out",
   logoutConfirmCancel: "Cancel",
   logoutSuccessRevoked: "Signed out",

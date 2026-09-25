@@ -41,6 +41,16 @@ fn error(code: &str, message: impl Into<String>) -> We2aiApiError {
     }
 }
 
+impl From<We2aiToolArg> for apply::RestoreTool {
+    fn from(tool: We2aiToolArg) -> Self {
+        match tool {
+            We2aiToolArg::ClaudeCode => apply::RestoreTool::ClaudeCode,
+            We2aiToolArg::Codex => apply::RestoreTool::Codex,
+            We2aiToolArg::Workbuddy => apply::RestoreTool::Workbuddy,
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn we2ai_tool_status(
     session: State<'_, We2aiSessionState>,
@@ -50,19 +60,44 @@ pub async fn we2ai_tool_status(
     Ok(detect::tool_status(region, manager.data_root().to_path_buf()).await)
 }
 
-/// 登出弹窗勾选"同时从工具配置中移除 Key"时，登出成功后调用（方案 5.2）。
+/// 恢复某个/某些工具的官方配置：移除 WE2AI 为其写入的一切（P6，取代功能 12
+/// 的旧移除 Key 命令）。登出弹窗勾选"同时恢复工具的官方配置"时
+/// 在登出成功后调用；顶栏"恢复官方"按钮直接对单个工具调用，登录态下也可用。
+///
+/// `still_allowed` 捕获调用发起时的会话身份（可能是 `None`，即未登录），
+/// 只要执行期间身份没变就继续处理剩余工具——登出后立即调用时身份恒为
+/// `None`，直到用户重新登录才会变化；登录态下调用时則在用户中途登出/切换
+/// 账号时停止，语义上延续旧 `remove_tool_keys` 的"登出流程重新登录即停止"，
+/// 同时覆盖登录态下调用这个更宽的场景。
 #[tauri::command]
-pub async fn we2ai_remove_tool_keys(
+pub async fn we2ai_restore_official(
+    app_handle: tauri::AppHandle,
     session: State<'_, We2aiSessionState>,
-) -> Result<apply::RemoveToolKeysOutcome, We2aiApiError> {
+    tools: Vec<We2aiToolArg>,
+) -> Result<apply::RestoreOfficialOutcome, We2aiApiError> {
     let manager = session.0.clone();
     let data_root = manager.data_root().to_path_buf();
-    tauri::async_runtime::spawn_blocking(move || {
-        let still_logged_out = move || manager.current_identity().is_none();
-        apply::remove_tool_keys(&data_root, &still_logged_out).map_err(We2aiApiError::from)
-    })
+    let secret_store = manager.secret_store();
+    let identity = manager.current_identity();
+    let checker = manager.clone();
+    let restore_tools: Vec<apply::RestoreTool> = tools.into_iter().map(Into::into).collect();
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<apply::RestoreOfficialOutcome, We2aiApiError> {
+            let state = app_handle
+                .try_state::<AppState>()
+                .ok_or_else(|| error("APP_STATE_UNAVAILABLE", "应用状态不可用"))?;
+            let still_allowed = move || checker.current_identity() == identity;
+            Ok(apply::restore_official(
+                state.inner(),
+                &data_root,
+                secret_store.as_ref(),
+                &restore_tools,
+                &still_allowed,
+            ))
+        },
+    )
     .await
-    .map_err(|e| error("APPLY_FAILED", format!("移除任务执行失败: {e}")))?
+    .map_err(|e| error("APPLY_FAILED", format!("恢复任务执行失败: {e}")))?
 }
 
 #[tauri::command]
@@ -75,6 +110,14 @@ pub fn we2ai_apply_plan(tool: We2aiToolArg) -> ApplyPlan {
             fields: workbuddy::plan_fields(),
         },
     }
+}
+
+/// 恢复官方确认弹窗展示的"将移除的文件与字段"（P6，Opus 复核中危项 2）。
+/// 与 [`we2ai_apply_plan`] 是两份独立的计划——那份是"将写入什么"，
+/// `env.ANTHROPIC_API_KEY（删除）` 与 Codex 模型目录文件对恢复场景是反的。
+#[tauri::command]
+pub fn we2ai_restore_plan(tool: We2aiToolArg) -> ApplyPlan {
+    apply::restore_plan_for(tool.into())
 }
 
 #[tauri::command]
@@ -111,6 +154,7 @@ pub async fn we2ai_apply_model(
         capabilities: keys.capabilities_for(Some(identity), key_id, &model),
     };
     let data_root = manager.data_root().to_path_buf();
+    let secret_store = manager.secret_store();
     let overwrite = overwrite.unwrap_or(false);
     let checker = manager.clone();
 
@@ -135,6 +179,7 @@ pub async fn we2ai_apply_model(
                         provider_tool,
                         &params,
                         &still_current,
+                        secret_store.as_ref(),
                     )?
                 }
             };

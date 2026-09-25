@@ -91,7 +91,7 @@ export function We2aiShell() {
   const [sessionChecked, setSessionChecked] = useState(false);
   const [logoutDialogOpen, setLogoutDialogOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [removeToolKeys, setRemoveToolKeys] = useState(false);
+  const [restoreOfficialOnLogout, setRestoreOfficialOnLogout] = useState(false);
   const [retryingOffline, setRetryingOffline] = useState(false);
 
   const t = getWe2aiStrings(language);
@@ -239,24 +239,36 @@ export function We2aiShell() {
     };
   }, [offline, handleRetryNow]);
 
-  // 方案 5.2：登出弹窗勾选"同时从工具配置中移除 Key"时，登出成功后执行。
-  const removeKeysFromTools = async () => {
+  // P6：登出弹窗勾选"同时恢复工具的官方配置"时，登出成功后执行——对全部
+  // 三个工具调用 restoreOfficial，移除 WE2AI 写入的一切（取代旧版只删 Key
+  // 的 removeToolKeys）。
+  const restoreOfficialForAllTools = async () => {
     try {
-      const result = await we2aiApi.removeToolKeys();
-      if (result.removed.length > 0) {
+      const result = await we2aiApi.restoreOfficial([
+        "claude_code",
+        "codex",
+        "workbuddy",
+      ]);
+      if (result.restored.length > 0) {
         toast.success(
-          formatWe2aiString(t.toolKeysRemoved, {
-            count: result.removed.length,
+          formatWe2aiString(t.toolsRestored, {
+            count: result.restored.length,
           }),
         );
       }
       if (result.skipped.length > 0) {
-        toast.warning(t.toolKeysRemoveSkipped, {
+        toast.warning(t.toolsRestoreSkipped, {
           description: result.skipped.join("\n"),
         });
       }
+      // 三个工具里可能只指定过一个，其余两个"未指向 WE2AI"是正常情况，不是
+      // 失败——只在既没有恢复成功、也没有真失败时才用中性提示（Opus 复核
+      // 高危项 1：不能让这种正常情况弹出警告 toast）。
+      if (result.restored.length === 0 && result.skipped.length === 0) {
+        toast.info(t.toolsRestoreNoop);
+      }
     } catch (error) {
-      toast.error(t.toolKeysRemoveFailed, {
+      toast.error(t.toolsRestoreFailed, {
         description: extractErrorMessage(error) || undefined,
       });
     }
@@ -266,10 +278,10 @@ export function We2aiShell() {
     setLoggingOut(true);
     try {
       const outcome = await withKeyringWaitHint(we2aiApi.logout());
-      // 勾选了移除工具 Key：只要会话已登出（含本机清理失败的情形）就执行，
+      // 勾选了恢复官方配置：只要会话已登出（含本机清理失败的情形）就执行，
       // 不能因后续走重试流程而丢掉用户的选择（Fable P5 增量终验中危项）。
-      if (removeToolKeys && outcome !== "notLoggedIn") {
-        await removeKeysFromTools();
+      if (restoreOfficialOnLogout && outcome !== "notLoggedIn") {
+        await restoreOfficialForAllTools();
       }
       if (outcome === "localCleanupFailed") {
         // Codex 代码评审第 5 轮高危项 3：本地清理两项都没能成功，不能保证
@@ -295,7 +307,7 @@ export function We2aiShell() {
     } finally {
       setLoggingOut(false);
       setLogoutDialogOpen(false);
-      setRemoveToolKeys(false);
+      setRestoreOfficialOnLogout(false);
     }
   };
 
@@ -569,7 +581,11 @@ export function We2aiShell() {
         </div>
       </header>
 
-      <ToolStatusBar t={t} report={toolStatus} />
+      <ToolStatusBar
+        t={t}
+        report={toolStatus}
+        onRestored={() => void refreshToolStatus()}
+      />
 
       <Dialog open={logoutDialogOpen} onOpenChange={setLogoutDialogOpen}>
         <DialogContent className="we2ai-theme rounded-none border-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-[8px_8px_0_0_var(--we2ai-ink)]">
@@ -581,12 +597,14 @@ export function We2aiShell() {
           </DialogHeader>
           <label className="flex items-center gap-2 px-6 text-sm">
             <Checkbox
-              checked={removeToolKeys}
+              checked={restoreOfficialOnLogout}
               disabled={loggingOut}
-              onCheckedChange={(checked) => setRemoveToolKeys(checked)}
+              onCheckedChange={(checked) =>
+                setRestoreOfficialOnLogout(checked === true)
+              }
               className="rounded-sm border-2 border-[var(--we2ai-ink)]"
             />
-            {t.logoutRemoveToolKeys}
+            {t.logoutRestoreOfficial}
           </label>
           <DialogFooter className="border-t-[2.5px] border-[var(--we2ai-ink)] bg-transparent">
             <Button

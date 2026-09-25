@@ -10,7 +10,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use serial_test::serial;
 
-use super::apply::{self, ApplyParams, ClaudeSlots, ProviderTool, Stage};
+use super::apply::{self, ApplyParams, ClaudeSlots, ProviderTool, RestoreTool, Stage};
+use super::secret_store::test_support::InMemorySecretStore;
+use super::secret_store::{self, SecretStore, SecretStoreError};
 use super::workbuddy;
 use crate::app_config::AppType;
 use crate::database::Database;
@@ -68,6 +70,14 @@ fn state() -> AppState {
 
 fn ok() -> bool {
     true
+}
+
+/// 大多数用例不关心系统钥匙串内容，每次给一个全新的、进程内泄漏的假钥匙串
+/// （测试专用，`InMemorySecretStore` 不接系统钥匙串）。需要观察/预置钥匙串
+/// 内容的用例（ANTHROPIC_API_KEY 往返）自己构造 `Arc<InMemorySecretStore>`
+/// 并复用同一个实例，不调用这个函数。
+fn ss() -> &'static dyn SecretStore {
+    Box::leak(Box::new(InMemorySecretStore::new()))
 }
 
 fn params(model: &str, key: &str) -> ApplyParams {
@@ -163,13 +173,14 @@ fn claude_apply_twice_keeps_unmanaged_fields_and_converges_db_row() {
         ProviderTool::ClaudeCode,
         &params("claude-sonnet-4-5", KEY_A),
         &ok,
+        ss(),
     )
     .unwrap();
     assert_eq!(out.model, "claude-sonnet-4-5");
 
     let mut second = params("claude-opus-4-1", KEY_B);
     second.claude_slots.haiku = Some("claude-haiku-4-5".into());
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &second, &ok).unwrap();
+    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &second, &ok, ss()).unwrap();
 
     let after = read_json(&path);
     let env = &after["env"];
@@ -208,7 +219,14 @@ fn claude_apply_twice_keeps_unmanaged_fields_and_converges_db_row() {
 fn first_apply_creates_all_three_config_dirs_private_and_files_0600() {
     let home = TestHome::new();
     let state = state();
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     for dir in [".claude", ".codex", ".workbuddy"] {
         assert_eq!(mode(&home.path().join(dir)), 0o700, "{dir}");
     }
@@ -230,7 +248,14 @@ fn existing_open_dirs_and_files_are_tightened() {
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     assert_eq!(mode(&home.path().join(".claude")), 0o700);
     assert_eq!(mode(&path), 0o600);
 }
@@ -262,9 +287,14 @@ fn claude_failures_at_each_stage_restore_the_whole_snapshot() {
             }
             Err(format!("injected at {s:?}"))
         });
-        let err =
-            apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok)
-                .unwrap_err();
+        let err = apply::apply_provider_tool(
+            &state,
+            ProviderTool::ClaudeCode,
+            &params("m", KEY_A),
+            &ok,
+            ss(),
+        )
+        .unwrap_err();
         assert_eq!(err.code, apply::ERR_FAILED, "{stage:?}: {err}");
         assert_claude_restored(&state, &path, CLAUDE_BASE);
     }
@@ -277,8 +307,14 @@ fn failure_after_a_previous_success_restores_the_previous_state() {
     let state = state();
     let path = claude_settings(home.path());
     write(&path, CLAUDE_BASE);
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m1", KEY_A), &ok)
-        .unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m1", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     let live_before = std::fs::read_to_string(&path).unwrap();
     let db_before = db_view(&state, AppType::Claude, apply::CLAUDE_PROVIDER_ID);
 
@@ -289,8 +325,14 @@ fn failure_after_a_previous_success_restores_the_previous_state() {
             Ok(())
         }
     });
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m2", KEY_B), &ok)
-        .unwrap_err();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m2", KEY_B),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), live_before);
     assert_eq!(
         db_view(&state, AppType::Claude, apply::CLAUDE_PROVIDER_ID),
@@ -313,9 +355,14 @@ fn external_write_before_rollback_is_not_overwritten() {
         }
         Ok(())
     });
-    let err =
-        apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok)
-            .unwrap_err();
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(err.code, apply::ERR_EXTERNAL, "{err}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -348,8 +395,14 @@ fn legacy_claude_json_is_the_fixed_target_and_is_restored_private() {
             Ok(())
         }
     });
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok)
-        .unwrap_err();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(
         std::fs::read_to_string(&legacy).unwrap(),
         "{\"env\":{\"X\":\"1\"}}"
@@ -372,9 +425,14 @@ fn a_second_provider_row_blocks_apply_before_any_write() {
         None,
     );
     state.db.save_provider("claude", &other).unwrap();
-    let err =
-        apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok)
-            .unwrap_err();
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(err.code, apply::ERR_PRECONDITION);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), CLAUDE_BASE);
 }
@@ -388,17 +446,27 @@ fn proxy_takeover_in_live_or_backup_blocks_apply() {
     let state = state();
     let path = claude_settings(home.path());
     write(&path, TAKEN_OVER);
-    let err =
-        apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok)
-            .unwrap_err();
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(err.code, apply::ERR_TAKEOVER);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), TAKEN_OVER);
 
     write(&path, CLAUDE_BASE);
     futures::executor::block_on(state.db.save_live_backup("claude", "{}")).unwrap();
-    let err =
-        apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok)
-            .unwrap_err();
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(err.code, apply::ERR_TAKEOVER);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), CLAUDE_BASE);
 }
@@ -420,9 +488,14 @@ fn takeover_starting_right_before_switch_is_refused_and_left_intact() {
         }
         Ok(())
     });
-    let err =
-        apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok)
-            .unwrap_err();
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(err.code, apply::ERR_TAKEOVER, "{err}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), TAKEN_OVER);
     assert_eq!(
@@ -439,10 +512,22 @@ fn concurrent_applies_to_the_same_tool_queue_and_both_finish() {
     write(&claude_settings(home.path()), "{}");
     std::thread::scope(|s| {
         let a = s.spawn(|| {
-            apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m1", KEY_A), &ok)
+            apply::apply_provider_tool(
+                &state,
+                ProviderTool::ClaudeCode,
+                &params("m1", KEY_A),
+                &ok,
+                ss(),
+            )
         });
         let b = s.spawn(|| {
-            apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m2", KEY_B), &ok)
+            apply::apply_provider_tool(
+                &state,
+                ProviderTool::ClaudeCode,
+                &params("m2", KEY_B),
+                &ok,
+                ss(),
+            )
         });
         a.join().unwrap().unwrap();
         b.join().unwrap().unwrap();
@@ -457,8 +542,22 @@ fn logout_scrub_removes_keys_from_managed_rows_but_keeps_live_files() {
     let home = TestHome::new();
     let state = state();
     write(&codex_config(home.path()), "");
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
-    apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_B), &ok).unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_B),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     let claude_live = std::fs::read_to_string(claude_settings(home.path())).unwrap();
 
     apply::scrub_managed_provider_keys(&state).unwrap();
@@ -479,8 +578,14 @@ fn logout_scrub_removes_keys_from_managed_rows_but_keeps_live_files() {
         claude_live
     );
     // 清除后仍可再次指定。
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m2", KEY_A), &ok)
-        .unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m2", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -488,7 +593,14 @@ fn logout_scrub_removes_keys_from_managed_rows_but_keeps_live_files() {
 fn logout_material_cleanup_empties_backups_and_drops_proxy_backups() {
     let home = TestHome::new();
     let state = state();
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     let backups = home.path().join(".we2ai/backups");
     std::fs::create_dir_all(backups.join("nested")).unwrap();
     std::fs::write(backups.join("db_backup_1.db"), KEY_A).unwrap();
@@ -520,9 +632,14 @@ fn apply_after_the_session_changed_writes_nothing() {
     let path = claude_settings(home.path());
     write(&path, CLAUDE_BASE);
     let gone = || false;
-    let err =
-        apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &gone)
-            .unwrap_err();
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &gone,
+        ss(),
+    )
+    .unwrap_err();
     assert_eq!(err.code, apply::ERR_SESSION_CHANGED);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), CLAUDE_BASE);
     assert_eq!(
@@ -562,6 +679,7 @@ fn logout_cleanup_waits_for_an_in_flight_apply_and_then_removes_its_key() {
                 ProviderTool::ClaudeCode,
                 &params("m", KEY_A),
                 &ok,
+                ss(),
             );
             apply::clear_test_hook();
             r
@@ -614,7 +732,14 @@ fn backup_entries_that_cannot_be_removed_make_cleanup_fail() {
 fn stale_logout_cleanup_skips_material_owned_by_a_new_session() {
     let home = TestHome::new();
     let state = state();
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_B), &ok).unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_B),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     let backups = home.path().join(".we2ai/backups");
     std::fs::create_dir_all(&backups).unwrap();
     std::fs::write(backups.join("db_backup.db"), "x").unwrap();
@@ -636,7 +761,14 @@ fn key_material_residue_is_detected_without_the_marker() {
     let home = TestHome::new();
     let state = state();
     assert!(!apply::key_material_residue(&state));
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     assert!(apply::key_material_residue(&state));
     apply::clear_local_key_material(&state, &ok).unwrap();
     assert!(!apply::key_material_residue(&state));
@@ -671,10 +803,276 @@ fn material_cleanup_marker_survives_restart_until_cleared() {
     apply::set_material_cleanup_pending(&root, false).unwrap();
 }
 
-/// 登出弹窗勾选"同时从工具配置中移除 Key"：只移除 WE2AI 写入的部分。
+// ---------------------------------------------------------------------------
+// 用户自己的 ANTHROPIC_API_KEY 保护（P6 方案决定 2）
+// ---------------------------------------------------------------------------
+
+/// apply 删除用户自己的 `ANTHROPIC_API_KEY` 前，先把它保存到系统钥匙串
+/// （这里用注入的 `InMemorySecretStore` 断言，不依赖真实系统钥匙串）。
 #[test]
 #[serial]
-fn remove_tool_keys_strips_only_we2ai_credentials() {
+fn claude_apply_saves_the_users_own_api_key_before_removing_it() {
+    let home = TestHome::new();
+    let state = state();
+    write(&claude_settings(home.path()), CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .get(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT)
+            .unwrap(),
+        Some("sk-user-own".to_string())
+    );
+    assert!(read_json(&claude_settings(home.path()))["env"]
+        .get("ANTHROPIC_API_KEY")
+        .is_none());
+}
+
+/// live 里没有用户自己的 Key：不调用钥匙串，也不会用"没有"覆盖掉已保存的值。
+#[test]
+#[serial]
+fn claude_apply_does_not_touch_the_keychain_when_live_has_no_api_key() {
+    let home = TestHome::new();
+    let state = state();
+    write(&claude_settings(home.path()), "{}");
+    let store = InMemorySecretStore::new();
+    store
+        .set(
+            secret_store::SERVICE_NAME,
+            apply::CLAUDE_API_KEY_ACCOUNT,
+            "sk-previously-saved",
+        )
+        .unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .get(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT)
+            .unwrap(),
+        Some("sk-previously-saved".to_string()),
+        "an empty live key must not overwrite a previously saved one"
+    );
+}
+
+/// 钥匙串保存失败：整次 apply 中止，live 文件与数据库都不写入——用户的 Key
+/// 绝不能被静默销毁。
+#[test]
+#[serial]
+fn claude_apply_aborts_and_writes_nothing_when_saving_the_users_api_key_fails() {
+    let home = TestHome::new();
+    let state = state();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    store.set_fail_set(true);
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, apply::ERR_FAILED, "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), CLAUDE_BASE);
+    assert_eq!(
+        db_view(&state, AppType::Claude, apply::CLAUDE_PROVIDER_ID),
+        (None, None, false, None)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 恢复官方配置（P6：`restore_official`，取代功能 12 的 `remove_tool_keys`）
+// ---------------------------------------------------------------------------
+
+/// 恢复确认弹窗展示的计划：Claude 六个托管键全部标"移除"、`ANTHROPIC_API_KEY`
+/// 标"写回"（不是 apply 计划里的"删除"——恢复的语义完全相反，Opus 复核中危
+/// 项 2）。
+#[test]
+fn restore_plan_for_claude_lists_all_six_managed_keys_as_removed() {
+    let plan = apply::restore_plan_for(RestoreTool::ClaudeCode);
+    for key in [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ] {
+        assert!(
+            plan.fields
+                .iter()
+                .any(|f| f.contains(key) && f.contains("移除")),
+            "missing {key} in {:?}",
+            plan.fields
+        );
+    }
+    assert!(
+        plan.fields
+            .iter()
+            .any(|f| f.contains("ANTHROPIC_API_KEY") && f.contains("写回")),
+        "{:?}",
+        plan.fields
+    );
+    assert!(
+        plan.fields.iter().all(|f| !f.contains("删除")),
+        "{:?}",
+        plan.fields
+    );
+}
+
+/// Codex 恢复计划只列 `config.toml`（apply 计划额外列出模型目录文件，恢复
+/// 从不触碰它）；字段标注移除，并说明 `auth.json` 不受影响。
+#[test]
+fn restore_plan_for_codex_lists_only_config_toml_and_notes_auth_json_untouched() {
+    let plan = apply::restore_plan_for(RestoreTool::Codex);
+    assert_eq!(plan.files.len(), 1, "{:?}", plan.files);
+    assert!(plan.files[0].ends_with("config.toml"), "{:?}", plan.files);
+    assert!(plan.fields.iter().any(|f| f.contains("auth.json")));
+}
+
+/// 文件已经写回用户的 Key，但钥匙串条目删不掉：不算恢复失败（`restored`
+/// 仍记这个文件），额外报告一条钥匙串清理失败的提示（Codex 复核中危项 3）。
+#[test]
+#[serial]
+fn restore_claude_reports_but_does_not_fail_when_keychain_delete_fails_after_write() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+    store.set_fail_delete(true);
+
+    let out = apply::restore_official(&state, &root, &store, &[RestoreTool::ClaudeCode], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    assert!(
+        out.skipped
+            .iter()
+            .any(|s| s.contains("Claude Code") && s.contains("钥匙串")),
+        "{out:?}"
+    );
+    let after = read_json(&path);
+    assert_eq!(
+        after["env"]["ANTHROPIC_API_KEY"], "sk-user-own",
+        "the file must still be restored even though the keychain cleanup failed"
+    );
+    assert!(
+        store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT),
+        "entry must remain since delete failed"
+    );
+}
+
+/// 上一次恢复删钥匙串失败留下的残留，在下一次恢复（此时 live 已经不再指向
+/// WE2AI）时被自动清理：钥匙串里的值与 live 当前的 Key 一致才删，成功不
+/// 产生任何消息（Codex 复核中危项 3）。
+#[test]
+#[serial]
+fn a_later_restore_call_cleans_up_a_previously_undeletable_keychain_entry() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+    store.set_fail_delete(true);
+    let first = apply::restore_official(&state, &root, &store, &[RestoreTool::ClaudeCode], &ok);
+    assert_eq!(first.restored.len(), 1, "{first:?}");
+    assert!(store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT));
+
+    // 第二次恢复：钥匙串现在能正常删除了；live 已经不指向 WE2AI（上一次已经
+    // 恢复过），走"没有可做的事"分支，顺手清理陈旧残留。
+    store.set_fail_delete(false);
+    let second = apply::restore_official(&state, &root, &store, &[RestoreTool::ClaudeCode], &ok);
+    assert!(second.restored.is_empty(), "{second:?}");
+    assert!(
+        second.skipped.is_empty(),
+        "cleanup success must be silent: {second:?}"
+    );
+    assert!(
+        !store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT),
+        "stale entry must be cleaned up now that it matches live"
+    );
+}
+
+/// live 已经有自己的 `ANTHROPIC_API_KEY`（不是空的）：钥匙串里保存的旧 Key
+/// 不会覆盖它，钥匙串条目也不会被动用（既没写回也没删除）。
+#[test]
+#[serial]
+fn restore_claude_does_not_overwrite_an_api_key_already_present_in_live() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+    assert!(store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT));
+    // 模拟用户在恢复前手动往 live 里加回了一个新 Key（与钥匙串保存的旧
+    // Key 不同）。
+    let mut value = read_json(&path);
+    value["env"]["ANTHROPIC_API_KEY"] = json!("sk-manually-added");
+    write(&path, &serde_json::to_string(&value).unwrap());
+
+    let out = apply::restore_official(&state, &root, &store, &[RestoreTool::ClaudeCode], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    let after = read_json(&path);
+    assert_eq!(
+        after["env"]["ANTHROPIC_API_KEY"], "sk-manually-added",
+        "must not overwrite an API key already present in live"
+    );
+    assert!(
+        store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT),
+        "saved key must be left untouched since it was neither used nor stale"
+    );
+}
+
+/// 恢复移除的是 WE2AI 写入的一切（不只是 Key）：Claude 的全部托管 env 键、
+/// Codex 的顶层字段与整张 we2ai 表、WorkBuddy 的托管条目；用户自己的
+/// `ANTHROPIC_API_KEY` 在 apply 时已被保存，恢复时写回；数据库两条固定 id
+/// 行与 current 标记被清空，恢复后不再有 Key 残留。
+#[test]
+#[serial]
+fn restore_official_strips_all_we2ai_content_and_restores_saved_api_key() {
     let home = TestHome::new();
     let state = state();
     let root = data_root(home.path());
@@ -682,44 +1080,90 @@ fn remove_tool_keys_strips_only_we2ai_credentials() {
     write(&claude_settings(home.path()), CLAUDE_BASE);
     write(&codex_config(home.path()), CODEX_BASE);
     write(&wb_models(home.path()), &format!("[{USER_ENTRY}]"));
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
-    apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_A), &ok).unwrap();
+    let store: Arc<InMemorySecretStore> = Arc::new(InMemorySecretStore::new());
+    let store_ref: &dyn SecretStore = store.as_ref();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        store_ref,
+    )
+    .unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     workbuddy::apply_workbuddy(&root, &params("glm", KEY_A), false, &ok).unwrap();
+    // 用户原本自己的 ANTHROPIC_API_KEY（CLAUDE_BASE 里的 "sk-user-own"）已被
+    // 保存到钥匙串，不在 live 文件里了。
+    assert!(store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT));
+    assert!(read_json(&claude_settings(home.path()))["env"]
+        .get("ANTHROPIC_API_KEY")
+        .is_none());
 
-    // 仍登录时拒绝。
-    let logged_in = || false;
-    assert_eq!(
-        apply::remove_tool_keys(&root, &logged_in).unwrap_err().code,
-        apply::ERR_SESSION_CHANGED
+    let out = apply::restore_official(
+        &state,
+        &root,
+        store_ref,
+        &[
+            RestoreTool::ClaudeCode,
+            RestoreTool::Codex,
+            RestoreTool::Workbuddy,
+        ],
+        &ok,
     );
-
-    let out = apply::remove_tool_keys(&root, &ok).unwrap();
-    assert_eq!(out.removed.len(), 3, "{out:?}");
+    assert_eq!(out.restored.len(), 3, "{out:?}");
+    assert!(out.unchanged.is_empty(), "{out:?}");
     assert!(out.skipped.is_empty(), "{out:?}");
 
     let claude = read_json(&claude_settings(home.path()));
-    assert!(claude["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+    for key in [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ] {
+        assert!(claude["env"].get(key).is_none(), "{key} not removed");
+    }
     assert_eq!(claude["env"]["CUSTOM_FLAG"], "1");
     assert_eq!(claude["hooks"], read_json_str(CLAUDE_BASE)["hooks"]);
+    // 用户自己的 Key 写回，钥匙串条目随之删除。
+    assert_eq!(claude["env"]["ANTHROPIC_API_KEY"], "sk-user-own");
+    assert!(!store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT));
+
     let codex = read_toml(&codex_config(home.path()));
-    assert!(codex["model_providers"]["we2ai"]
-        .get("experimental_bearer_token")
+    assert!(codex.get("model_provider").is_none());
+    assert!(codex.get("model").is_none());
+    assert!(codex
+        .get("model_providers")
+        .and_then(|p| p.get("we2ai"))
         .is_none());
     assert_eq!(
         codex["model_providers"]["mine"]["experimental_bearer_token"].as_str(),
         Some("sk-mine-secret"),
         "user's own provider token untouched"
     );
+
     let items = wb_items(home.path());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], "deepseek-v3");
     assert!(workbuddy::load_record(&root).is_none());
+
+    assert!(!apply::key_material_residue(&state));
 }
 
 #[test]
 #[serial]
-fn remove_tool_keys_leaves_non_we2ai_claude_and_edited_workbuddy_entries() {
+fn restore_official_leaves_non_we2ai_claude_and_edited_workbuddy_entries() {
     let home = TestHome::new();
+    let state = state();
     let root = data_root(home.path());
     std::fs::create_dir_all(&root).unwrap();
     let other = r#"{"env":{"ANTHROPIC_BASE_URL":"https://other.example","ANTHROPIC_AUTH_TOKEN":"sk-other"}}"#;
@@ -732,9 +1176,30 @@ fn remove_tool_keys_leaves_non_we2ai_claude_and_edited_workbuddy_entries() {
         &serde_json::to_string(&items).unwrap(),
     );
 
-    let out = apply::remove_tool_keys(&root, &ok).unwrap();
-    assert!(out.removed.is_empty(), "{out:?}");
+    let out = apply::restore_official(
+        &state,
+        &root,
+        ss(),
+        &[RestoreTool::ClaudeCode, RestoreTool::Workbuddy],
+        &ok,
+    );
+    assert!(out.restored.is_empty(), "{out:?}");
+    // Claude 不指向 WE2AI 是"本来就没有可做的事"，不是失败：进 unchanged，
+    // 不能让"三个工具只指定了一个"这种正常情况在登出恢复时弹出警告 toast
+    // （Opus 复核高危项 1）。WorkBuddy 条目被手工修改过是真失败，留在
+    // skipped。
+    assert_eq!(out.unchanged.len(), 1, "{out:?}");
+    assert!(
+        out.unchanged
+            .iter()
+            .any(|s| s.contains("Claude Code") && s.contains("未指向 WE2AI")),
+        "{out:?}"
+    );
     assert_eq!(out.skipped.len(), 1, "{out:?}");
+    assert!(
+        out.skipped.iter().any(|s| s.contains("手工修改")),
+        "{out:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(claude_settings(home.path())).unwrap(),
         other
@@ -742,17 +1207,24 @@ fn remove_tool_keys_leaves_non_we2ai_claude_and_edited_workbuddy_entries() {
     assert_eq!(wb_items(home.path()).len(), 1);
 }
 
-/// 配置损坏或不可读时报告为未移除，不静默成功。
+/// 配置损坏或不可读时报告为未恢复，不静默成功。
 #[test]
 #[serial]
-fn remove_tool_keys_reports_unreadable_or_corrupt_configs() {
+fn restore_official_reports_unreadable_or_corrupt_configs() {
     let home = TestHome::new();
+    let state = state();
     let root = data_root(home.path());
     std::fs::create_dir_all(&root).unwrap();
     write(&claude_settings(home.path()), "{ not json");
     write(&codex_config(home.path()), "[[[ not toml");
-    let out = apply::remove_tool_keys(&root, &ok).unwrap();
-    assert!(out.removed.is_empty(), "{out:?}");
+    let out = apply::restore_official(
+        &state,
+        &root,
+        ss(),
+        &[RestoreTool::ClaudeCode, RestoreTool::Codex],
+        &ok,
+    );
+    assert!(out.restored.is_empty(), "{out:?}");
     assert_eq!(out.skipped.len(), 2, "{out:?}");
 
     #[cfg(unix)]
@@ -766,55 +1238,485 @@ fn remove_tool_keys_reports_unreadable_or_corrupt_configs() {
         .unwrap();
         std::fs::write(codex_config(home.path()), "").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let out = apply::remove_tool_keys(&root, &ok).unwrap();
+        let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::ClaudeCode], &ok);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(out.skipped.len(), 1, "{out:?}");
+        assert!(
+            out.skipped.iter().any(|s| s.contains("读取失败")),
+            "{out:?}"
+        );
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .contains("ANTHROPIC_AUTH_TOKEN"));
     }
 }
 
-/// 用户把 we2ai 表改成自有端点：token 不动，并如实报告没有可移除的内容。
+/// 用户把 we2ai 表改成自有端点：不动它，并如实报告没有可恢复的内容。
 #[test]
 #[serial]
-fn remove_tool_keys_skips_a_we2ai_codex_table_pointing_elsewhere() {
+fn restore_official_skips_a_we2ai_codex_table_pointing_elsewhere() {
     let home = TestHome::new();
+    let state = state();
     let root = data_root(home.path());
     std::fs::create_dir_all(&root).unwrap();
     let cfg = "model_provider = \"we2ai\"\n[model_providers.we2ai]\nbase_url = \"https://mine.example/v1\"\nexperimental_bearer_token = \"sk-mine\"\n";
     write(&codex_config(home.path()), cfg);
-    let out = apply::remove_tool_keys(&root, &ok).unwrap();
-    assert!(out.removed.is_empty(), "{out:?}");
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    // 顶层 model_provider == "we2ai" 触发移除，但整张表 base_url 不再指向
+    // WE2AI，所以只删了顶层两个字段、保留了表本身（与旧 remove_tool_keys 对
+    // Codex 的判定不同：那时整张表都不会碰；本命令的顶层字段判定与表判定各
+    // 自独立，见 restore_codex 的实现说明）。
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    let after = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    assert!(!after.contains("model_provider ="), "{after}");
+    assert!(after.contains("experimental_bearer_token = \"sk-mine\""));
+}
+
+/// 顶层不指向 WE2AI（用户已经手动切换）：完全不动这个文件。
+#[test]
+#[serial]
+fn restore_official_codex_untouched_when_model_provider_is_not_we2ai() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(&codex_config(home.path()), CODEX_BASE);
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert!(out.restored.is_empty(), "{out:?}");
+    assert_eq!(out.unchanged.len(), 1, "{out:?}");
+    assert!(out.skipped.is_empty(), "{out:?}");
     assert_eq!(
         std::fs::read_to_string(codex_config(home.path())).unwrap(),
-        cfg
+        CODEX_BASE
     );
 }
 
-/// 移除过程中重新登录：此后不再改文件，剩余项报告为未移除。
+/// CC Switch 正在代理接管（`ANTHROPIC_AUTH_TOKEN` 变成占位符）：即便
+/// `ANTHROPIC_BASE_URL` 仍是 WE2AI 网关，也完全不动这个文件——CC Switch 热
+/// 切换会保留 `model_provider`/字段名不变、只换地址与凭据，先判断"指向
+/// WE2AI"再删字段会误删 CC Switch 正在依赖的内容。
 #[test]
 #[serial]
-fn remove_tool_keys_stops_when_the_user_logs_in_midway() {
+fn restore_official_does_not_touch_claude_live_under_cc_switch_takeover() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let taken_over_but_our_gateway = format!(
+        r#"{{"env":{{"ANTHROPIC_BASE_URL":"{GATEWAY}","ANTHROPIC_AUTH_TOKEN":"PROXY_MANAGED"}}}}"#
+    );
+    write(&claude_settings(home.path()), &taken_over_but_our_gateway);
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::ClaudeCode], &ok);
+    assert!(out.restored.is_empty(), "{out:?}");
+    assert_eq!(out.unchanged.len(), 1, "{out:?}");
+    assert!(out.skipped.is_empty(), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(claude_settings(home.path())).unwrap(),
+        taken_over_but_our_gateway
+    );
+}
+
+/// 只有 `model` 前有注释（`model_provider` 没有）：注释接到恢复后新的第一个
+/// 键上（Codex 复核中危项 2）。
+#[test]
+#[serial]
+fn restore_codex_comment_moves_when_only_model_is_commented() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let cfg = "model_provider = \"we2ai\"\n# only model comment\nmodel = \"gpt-5\"\napproval_policy = \"on-request\"\n\n[model_providers.we2ai]\nname = \"WE2AI\"\nbase_url = \"https://api.we2ai.com/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"sk-x\"\n";
+    write(&codex_config(home.path()), cfg);
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    let text = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    assert_eq!(
+        text.matches("only model comment").count(),
+        1,
+        "comment must appear exactly once:\n{text}"
+    );
+    assert!(
+        text.contains("# only model comment\napproval_policy = \"on-request\""),
+        "comment must move to the new first key:\n{text}"
+    );
+}
+
+/// 两个键都有注释，且恢复后新的第一个键自己也有注释：三段注释按原始顺序
+/// 拼接，都保留，谁的都不丢（Codex 复核中危项 2）。
+#[test]
+#[serial]
+fn restore_codex_concatenates_both_removed_comments_and_keeps_the_next_keys_own_comment() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let cfg = "# c1\nmodel_provider = \"we2ai\"\n# c2\nmodel = \"gpt-5\"\n# own\napproval_policy = \"on-request\"\n\n[model_providers.we2ai]\nname = \"WE2AI\"\nbase_url = \"https://api.we2ai.com/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"sk-x\"\n";
+    write(&codex_config(home.path()), cfg);
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    let text = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    for comment in ["c1", "c2", "own"] {
+        assert_eq!(
+            text.matches(comment).count(),
+            1,
+            "{comment} must appear exactly once:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("# c1\n# c2\n# own\napproval_policy = \"on-request\""),
+        "comments must be concatenated in original order and prepended, not replacing the existing comment:\n{text}"
+    );
+}
+
+/// 恢复后顶层不剩任何普通键（只剩表）：注释落到文档级 leading 文本上，出现
+/// 在第一张表之前，不丢失（Codex 复核中危项 2）。
+#[test]
+#[serial]
+fn restore_codex_keeps_comments_as_document_leading_text_when_only_tables_remain() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let cfg = "# c1\nmodel_provider = \"we2ai\"\n# c2\nmodel = \"gpt-5\"\n\n[model_providers.we2ai]\nname = \"WE2AI\"\nbase_url = \"https://api.we2ai.com/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"sk-x\"\n\n[mcp_servers.docs]\ncommand = \"npx\"\n";
+    write(&codex_config(home.path()), cfg);
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    let text = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    for comment in ["c1", "c2"] {
+        assert_eq!(
+            text.matches(comment).count(),
+            1,
+            "{comment} must appear exactly once:\n{text}"
+        );
+    }
+    assert!(
+        text.starts_with("# c1\n# c2\n"),
+        "comments must lead the document before the first remaining table:\n{text}"
+    );
+    assert!(text.contains("[mcp_servers.docs]"));
+    assert!(!text.contains("model_providers"));
+}
+
+/// 恢复保留注释、其他 provider 表、mcp_servers、profiles，`auth.json` 逐字节
+/// 不变。
+#[test]
+#[serial]
+fn restore_official_codex_preserves_comments_other_providers_and_auth_json() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    write(&codex_config(home.path()), CODEX_BASE);
+    write(&codex_auth(home.path()), CHATGPT_AUTH);
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
+
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+
+    let text = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    assert!(text.contains("# 用户自己的注释"), "comment lost:\n{text}");
+    let cfg = read_toml(&codex_config(home.path()));
+    assert!(cfg.get("model_provider").is_none());
+    assert!(cfg.get("model").is_none());
+    assert!(cfg
+        .get("model_providers")
+        .and_then(|p| p.get("we2ai"))
+        .is_none());
+    assert_eq!(
+        cfg["model_providers"]["mine"]["experimental_bearer_token"].as_str(),
+        Some("sk-mine-secret")
+    );
+    assert_eq!(cfg["mcp_servers"]["docs"]["command"].as_str(), Some("npx"));
+    assert_eq!(
+        cfg["profiles"]["fast"]["model"].as_str(),
+        Some("gpt-5-mini")
+    );
+    assert_eq!(
+        std::fs::read_to_string(codex_auth(home.path())).unwrap(),
+        CHATGPT_AUTH,
+        "auth.json must be untouched"
+    );
+}
+
+/// 恢复过程中会话变化（如登出流程里重新登录）：此后不再处理剩余工具。
+#[test]
+#[serial]
+fn restore_official_stops_remaining_tools_when_the_session_changes_midway() {
     use std::cell::Cell;
     let home = TestHome::new();
     let state = state();
     let root = data_root(home.path());
     std::fs::create_dir_all(&root).unwrap();
-    write(&codex_config(home.path()), "");
-    apply::apply_provider_tool(&state, ProviderTool::ClaudeCode, &params("m", KEY_A), &ok).unwrap();
-    apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_A), &ok).unwrap();
-    // 第一次检查（取锁后）未登录，之后变为已登录。
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
+    // 前两次检查仍允许：一次是 restore_official 每个工具开始前的检查，一次
+    // 是 restore_claude 写入前的 TOCTOU 复查（Codex 复核高危项 1 新增，
+    // Claude Code 完整走完需要两次 still_allowed() 都返回 true）；第三次
+    // 检查（Codex 工具开始前）起已变化。
     let calls = Cell::new(0);
-    let logged_out = || {
+    let still_allowed = || {
+        calls.set(calls.get() + 1);
+        calls.get() <= 2
+    };
+    let out = apply::restore_official(
+        &state,
+        &root,
+        ss(),
+        &[RestoreTool::ClaudeCode, RestoreTool::Codex],
+        &still_allowed,
+    );
+    assert_eq!(
+        out.restored,
+        vec![claude_settings(home.path()).display().to_string()]
+    );
+    let codex_text = std::fs::read_to_string(codex_config(home.path())).unwrap();
+    assert!(
+        codex_text.contains("model_provider = \"we2ai\""),
+        "codex must be untouched: {codex_text}"
+    );
+    assert!(
+        out.skipped.iter().any(|s| s.contains("登录状态已变化")),
+        "{out:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 恢复的 TOCTOU 防护（Codex 复核高危项 1）
+// ---------------------------------------------------------------------------
+
+/// 包一层 `InMemorySecretStore`，在 `get()` 里执行一次副作用（模拟"系统
+/// 钥匙串授权弹窗停留期间，其他程序改写了 live 文件"），其余方法原样转发。
+struct SecretStoreWithGetSideEffect<'a, F: Fn() + Send + Sync> {
+    inner: &'a InMemorySecretStore,
+    on_get: F,
+}
+
+impl<F: Fn() + Send + Sync> SecretStore for SecretStoreWithGetSideEffect<'_, F> {
+    fn get(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
+        (self.on_get)();
+        self.inner.get(service, account)
+    }
+    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), SecretStoreError> {
+        self.inner.set(service, account, secret)
+    }
+    fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
+        self.inner.delete(service, account)
+    }
+}
+
+/// 修复前的顺序是"读 live 文件 → 阻塞钥匙串 get() → 写回读文件时的旧快照"：
+/// 弹窗停留期间用户对 settings.json 做的编辑会被静默覆盖丢失。修复后钥匙串
+/// get() 挪到读 live 文件**之前**，编辑发生在 get() 里时，随后的读取自然会
+/// 拿到编辑后的最新内容，不会被覆盖。
+#[test]
+#[serial]
+fn restore_claude_reads_the_keychain_before_the_live_file_so_concurrent_edits_survive() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+    assert!(store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT));
+
+    let path_for_hook = path.clone();
+    let wrapper = SecretStoreWithGetSideEffect {
+        inner: &store,
+        on_get: move || {
+            let mut value = read_json(&path_for_hook);
+            value["env"]["EDITED_WHILE_WAITING"] = json!("yes");
+            write(&path_for_hook, &serde_json::to_string(&value).unwrap());
+        },
+    };
+    let out = apply::restore_official(&state, &root, &wrapper, &[RestoreTool::ClaudeCode], &ok);
+    assert_eq!(out.restored.len(), 1, "{out:?}");
+    let after = read_json(&path);
+    assert_eq!(
+        after["env"]["EDITED_WHILE_WAITING"], "yes",
+        "edit made during the blocking keychain call must survive, not be clobbered by a stale snapshot: {after}"
+    );
+    assert_eq!(after["env"]["ANTHROPIC_API_KEY"], "sk-user-own");
+    for key in [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ] {
+        assert!(
+            after["env"].get(key).is_none(),
+            "{key} not removed: {after}"
+        );
+    }
+}
+
+/// 写入前的复查发现"调用方已不再允许继续"（如登出恢复流程里用户又重新
+/// 登录）：不写，钥匙串条目原样保留，报告为未恢复而不是静默丢弃差异。
+#[test]
+#[serial]
+fn restore_claude_does_not_write_when_session_changes_during_keychain_read() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let allowed = AtomicBool::new(true);
+    let wrapper = SecretStoreWithGetSideEffect {
+        inner: &store,
+        on_get: || allowed.store(false, Ordering::SeqCst),
+    };
+    let still_allowed = || allowed.load(Ordering::SeqCst);
+    let out = apply::restore_official(
+        &state,
+        &root,
+        &wrapper,
+        &[RestoreTool::ClaudeCode],
+        &still_allowed,
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "must not write after the session changed mid-flight"
+    );
+    assert!(
+        store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT),
+        "keychain entry must remain since nothing was written"
+    );
+    assert!(
+        out.skipped.iter().any(|s| s.contains("登录状态已变化")),
+        "{out:?}"
+    );
+}
+
+/// 写入前的复查发现 CC Switch 刚开始代理接管（钥匙串授权弹窗停留期间发生）：
+/// 不写，钥匙串条目原样保留。
+#[test]
+#[serial]
+fn restore_claude_does_not_write_when_cc_switch_takeover_starts_during_keychain_read() {
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let store = InMemorySecretStore::new();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        &store,
+    )
+    .unwrap();
+
+    let path_for_hook = path.clone();
+    let written: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let written_ref = &written;
+    let wrapper = SecretStoreWithGetSideEffect {
+        inner: &store,
+        on_get: move || {
+            let mut value = read_json(&path_for_hook);
+            value["env"]["ANTHROPIC_AUTH_TOKEN"] = json!("PROXY_MANAGED");
+            let text = serde_json::to_string(&value).unwrap();
+            write(&path_for_hook, &text);
+            *written_ref.lock().unwrap() = Some(text);
+        },
+    };
+    let out = apply::restore_official(&state, &root, &wrapper, &[RestoreTool::ClaudeCode], &ok);
+    let expected = written.lock().unwrap().clone().expect("hook must have run");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        expected,
+        "must not write after CC Switch takeover starts mid-flight"
+    );
+    assert!(
+        store.contains(secret_store::SERVICE_NAME, apply::CLAUDE_API_KEY_ACCOUNT),
+        "keychain entry must remain since nothing was written"
+    );
+    assert!(
+        out.skipped.iter().any(|s| s.contains("CC Switch 代理接管")),
+        "{out:?}"
+    );
+}
+
+/// Codex 侧同一套写入前复查：`still_allowed()` 在写入前再次变为 false 时
+/// 不写。
+#[test]
+#[serial]
+fn restore_codex_does_not_write_when_session_changes_before_write() {
+    use std::cell::Cell;
+    let home = TestHome::new();
+    let state = state();
+    let root = data_root(home.path());
+    std::fs::create_dir_all(&root).unwrap();
+    apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(codex_config(home.path())).unwrap();
+
+    // 第一次检查（restore_official 每个工具开始前）仍允许，第二次
+    // （restore_codex 写入前的复查）起已变化。
+    let calls = Cell::new(0);
+    let still_allowed = || {
         calls.set(calls.get() + 1);
         calls.get() == 1
     };
-    let out = apply::remove_tool_keys(&root, &logged_out).unwrap();
-    assert!(out.removed.is_empty(), "{out:?}");
-    assert!(read_json(&claude_settings(home.path()))["env"]["ANTHROPIC_AUTH_TOKEN"] == KEY_A);
+    let out = apply::restore_official(&state, &root, ss(), &[RestoreTool::Codex], &still_allowed);
+    assert_eq!(
+        std::fs::read_to_string(codex_config(home.path())).unwrap(),
+        before,
+        "must not write after the session changed mid-flight"
+    );
     assert!(
-        out.skipped.iter().any(|s| s.contains("已重新登录")),
+        out.skipped.iter().any(|s| s.contains("登录状态已变化")),
         "{out:?}"
     );
 }
@@ -857,10 +1759,17 @@ fn codex_apply_twice_writes_managed_table_and_keeps_everything_else() {
         ProviderTool::Codex,
         &params("gpt-5-codex", KEY_A),
         &ok,
+        ss(),
     )
     .unwrap();
-    let out = apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_B), &ok)
-        .unwrap();
+    let out = apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_B),
+        &ok,
+        ss(),
+    )
+    .unwrap();
     assert_eq!(out.model, "gpt-5");
 
     let text = std::fs::read_to_string(codex_config(home.path())).unwrap();
@@ -944,8 +1853,14 @@ fn codex_requires_openai_auth_is_false_for_every_login_state() {
         if let Some(auth) = auth {
             write(&codex_auth(home.path()), auth);
         }
-        apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_A), &ok)
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        apply::apply_provider_tool(
+            &state,
+            ProviderTool::Codex,
+            &params("gpt-5", KEY_A),
+            &ok,
+            ss(),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
         let cfg = read_toml(&codex_config(home.path()));
         assert_eq!(
             cfg["model_providers"]["we2ai"]["requires_openai_auth"].as_bool(),
@@ -980,9 +1895,14 @@ fn codex_failures_at_each_stage_restore_the_whole_snapshot() {
             }
             Err(format!("injected at {s:?}"))
         });
-        let err =
-            apply::apply_provider_tool(&state, ProviderTool::Codex, &params("gpt-5", KEY_A), &ok)
-                .unwrap_err();
+        let err = apply::apply_provider_tool(
+            &state,
+            ProviderTool::Codex,
+            &params("gpt-5", KEY_A),
+            &ok,
+            ss(),
+        )
+        .unwrap_err();
         assert_eq!(err.code, apply::ERR_FAILED, "{stage:?}: {err}");
         assert_eq!(
             std::fs::read_to_string(codex_config(home.path())).unwrap(),

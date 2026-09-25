@@ -333,7 +333,7 @@ describe("We2aiShell session-not-persistable warning", () => {
 // Codex 代码评审第 5 轮高危项 3：本地清理（索引 + 钥匙串）两项全部失败时，
 // `we2ai_logout` 返回 `localCleanupFailed`——前端不能表现成"已经退出"，
 // 必须保持已登录界面并提示清理失败、提供重试。
-describe("We2aiShell logout removing tool keys", () => {
+describe("We2aiShell logout restoring official config", () => {
   afterEach(() => {
     server.resetHandlers();
   });
@@ -350,9 +350,9 @@ describe("We2aiShell logout removing tool keys", () => {
     });
   }
 
-  it("removes keys from tool configs only when the checkbox is ticked", async () => {
+  it("restores official config for all three tools only when the checkbox is ticked", async () => {
     const state = { loggedOut: false };
-    let removeCalls = 0;
+    const restoreCalls: unknown[] = [];
     mockShellCommands({
       we2ai_resume_session: () => "restored",
       we2ai_session_status: loggedInUntilLogout(state),
@@ -360,10 +360,10 @@ describe("We2aiShell logout removing tool keys", () => {
         state.loggedOut = true;
         return "revoked";
       },
-      we2ai_remove_tool_keys: () => {
-        removeCalls += 1;
+      we2ai_restore_official: (body: any) => {
+        restoreCalls.push(body?.tools);
         return {
-          removed: ["/u/.claude/settings.json", "/u/.codex/config.toml"],
+          restored: ["/u/.claude/settings.json", "/u/.codex/config.toml"],
           skipped: [],
         };
       },
@@ -373,16 +373,86 @@ describe("We2aiShell logout removing tool keys", () => {
 
     await user.click(await screen.findByText("登出"));
     await user.click(
-      await screen.findByRole("checkbox", { name: /同时从工具配置中移除 Key/ }),
+      await screen.findByRole("checkbox", { name: /同时恢复工具的官方配置/ }),
     );
     await user.click(screen.getByRole("button", { name: "确认登出" }));
 
-    await screen.findByText("已从 2 个工具配置中移除 Key");
-    expect(removeCalls).toBe(1);
+    await screen.findByText("已恢复 2 个工具的官方配置");
+    expect(restoreCalls).toEqual([["claude_code", "codex", "workbuddy"]]);
   });
 
-  it("still removes tool keys when local cleanup failed after logout", async () => {
-    let removeCalls = 0;
+  // Opus 复核高危项 1：只指定过一个工具时，其余两个工具的"未指向
+  // WE2AI，无需恢复"落在 unchanged 而不是 skipped——不能弹出警告 toast，
+  // 那不是失败，只是正常情况（验收清单 2.11 的前提：警告只列真失败）。
+  it("shows no warning toast when only one of the three tools was ever applied", async () => {
+    const state = { loggedOut: false };
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: loggedInUntilLogout(state),
+      we2ai_logout: () => {
+        state.loggedOut = true;
+        return "revoked";
+      },
+      we2ai_restore_official: () => ({
+        restored: ["/u/.claude/settings.json"],
+        unchanged: [
+          "Codex：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复",
+          "WorkBuddy：未指向 WE2AI，无需恢复",
+        ],
+        skipped: [],
+      }),
+    });
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(await screen.findByText("登出"));
+    await user.click(
+      await screen.findByRole("checkbox", { name: /同时恢复工具的官方配置/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "确认登出" }));
+
+    await screen.findByText("已恢复 1 个工具的官方配置");
+    expect(
+      screen.queryByText("部分工具的官方配置未恢复"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a neutral toast (not a warning) when nothing was ever pointed at WE2AI", async () => {
+    const state = { loggedOut: false };
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: loggedInUntilLogout(state),
+      we2ai_logout: () => {
+        state.loggedOut = true;
+        return "revoked";
+      },
+      we2ai_restore_official: () => ({
+        restored: [],
+        unchanged: [
+          "Claude Code：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复",
+          "Codex：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复",
+          "WorkBuddy：未指向 WE2AI，无需恢复",
+        ],
+        skipped: [],
+      }),
+    });
+    const user = userEvent.setup();
+    renderShell();
+
+    await user.click(await screen.findByText("登出"));
+    await user.click(
+      await screen.findByRole("checkbox", { name: /同时恢复工具的官方配置/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "确认登出" }));
+
+    await screen.findByText("工具未指向 WE2AI，无需恢复");
+    expect(
+      screen.queryByText("部分工具的官方配置未恢复"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("still restores official config when local cleanup failed after logout", async () => {
+    let restoreCalls = 0;
     mockShellCommands({
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
@@ -395,9 +465,9 @@ describe("We2aiShell logout removing tool keys", () => {
         localCleanupPending: false,
       }),
       we2ai_logout: () => "localCleanupFailed",
-      we2ai_remove_tool_keys: () => {
-        removeCalls += 1;
-        return { removed: ["/u/.claude/settings.json"], skipped: [] };
+      we2ai_restore_official: () => {
+        restoreCalls += 1;
+        return { restored: ["/u/.claude/settings.json"], skipped: [] };
       },
     });
     const user = userEvent.setup();
@@ -405,16 +475,16 @@ describe("We2aiShell logout removing tool keys", () => {
 
     await user.click(await screen.findByText("登出"));
     await user.click(
-      await screen.findByRole("checkbox", { name: /同时从工具配置中移除 Key/ }),
+      await screen.findByRole("checkbox", { name: /同时恢复工具的官方配置/ }),
     );
     await user.click(screen.getByRole("button", { name: "确认登出" }));
-    await screen.findByText("已从 1 个工具配置中移除 Key");
-    expect(removeCalls).toBe(1);
+    await screen.findByText("已恢复 1 个工具的官方配置");
+    expect(restoreCalls).toBe(1);
   });
 
-  it("keeps tool keys by default", async () => {
+  it("leaves tool configs alone by default", async () => {
     const state = { loggedOut: false };
-    let removeCalls = 0;
+    let restoreCalls = 0;
     mockShellCommands({
       we2ai_resume_session: () => "restored",
       we2ai_session_status: loggedInUntilLogout(state),
@@ -422,18 +492,18 @@ describe("We2aiShell logout removing tool keys", () => {
         state.loggedOut = true;
         return "revoked";
       },
-      we2ai_remove_tool_keys: () => {
-        removeCalls += 1;
-        return { removed: [], skipped: [] };
+      we2ai_restore_official: () => {
+        restoreCalls += 1;
+        return { restored: [], skipped: [] };
       },
     });
     const user = userEvent.setup();
     renderShell();
 
     await user.click(await screen.findByText("登出"));
-    await user.click(await screen.findByRole("button", { name: "确认登出" }));
+    await user.click(screen.getByRole("button", { name: "确认登出" }));
     await screen.findByText("登录 WE2AI");
-    expect(removeCalls).toBe(0);
+    expect(restoreCalls).toBe(0);
   });
 });
 

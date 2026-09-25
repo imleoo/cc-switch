@@ -157,8 +157,11 @@ export interface We2aiApplyRequest {
   overwrite?: boolean;
 }
 
-export interface We2aiRemoveToolKeysOutcome {
-  removed: string[];
+export interface We2aiRestoreOfficialOutcome {
+  restored: string[];
+  /** 本来就没有可做的事，不是失败（未指向 WE2AI、或正被 CC Switch 代理接管）。 */
+  unchanged: string[];
+  /** 真失败：读取/解析失败、WorkBuddy 条目被手工修改、会话已变化等。 */
   skipped: string[];
 }
 
@@ -274,13 +277,28 @@ export const we2aiApi = {
     return await invoke("we2ai_tool_status");
   },
 
-  /** 登出后按用户勾选从工具配置中移除 WE2AI 写入的 Key（方案 5.2）。 */
-  async removeToolKeys(): Promise<We2aiRemoveToolKeysOutcome> {
-    return await invoke("we2ai_remove_tool_keys");
+  /**
+   * 恢复某个/某些工具的官方配置：移除 WE2AI 为其写入的一切（P6，取代
+   * `removeToolKeys`）。登出弹窗勾选"同时恢复工具的官方配置"时对全部三个
+   * 工具调用；顶栏"恢复官方"按钮对单个工具调用，无论是否登录都可用。
+   */
+  async restoreOfficial(
+    tools: We2aiTool[],
+  ): Promise<We2aiRestoreOfficialOutcome> {
+    return await invoke("we2ai_restore_official", { tools });
   },
 
   async applyPlan(tool: We2aiTool): Promise<We2aiApplyPlan> {
     return await invoke("we2ai_apply_plan", { tool });
+  },
+
+  /**
+   * 恢复官方确认弹窗展示的"将移除的文件与字段"（P6）。与 `applyPlan` 是两份
+   * 独立的计划——那份是"将写入什么"，恢复场景下 `env.ANTHROPIC_API_KEY`
+   * 是写回而不是删除，Codex 也不会触碰模型目录文件。
+   */
+  async restorePlan(tool: We2aiTool): Promise<We2aiApplyPlan> {
+    return await invoke("we2ai_restore_plan", { tool });
   },
 
   /** 把模型写入工具配置并激活；Key 明文由 Rust 侧按 keyId 取出。 */

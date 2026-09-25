@@ -498,6 +498,25 @@ else
   err "$release_yml: 文件不存在"
 fi
 
+# 4.9 功能 17（P6 恢复官方配置）：旧命令 we2ai_remove_tool_keys /
+# RemoveToolKeysOutcome 已被 we2ai_restore_official / RestoreOfficialOutcome
+# 取代，全仓不得再出现（上游同步不会引入这两个符号，只防我们自己手滑改回）；
+# 新命令必须注册在 lib.rs 的 WE2AI 命令列表（generate_handler! 白名单）里——
+# 它是 `we2ai_` 前缀命令，已经受 `gate()` 的默认放行规则覆盖，不需要再登记进
+# 上游命令白名单（mode.rs::UPSTREAM_COMMAND_WHITELIST / ipcWhitelist.ts），
+# 这里只检查它确实出现在 lib.rs 的第一个 generate_handler! 列表里。
+removed_symbol_hits="$(grep -rn 'we2ai_remove_tool_keys\|RemoveToolKeysOutcome' src src-tauri/src --include="*.rs" --include="*.ts" --include="*.tsx" 2>/dev/null || true)"
+if [[ -n "$removed_symbol_hits" ]]; then
+  err "功能 17：we2ai_remove_tool_keys / RemoveToolKeysOutcome 已被 P6 的 we2ai_restore_official / RestoreOfficialOutcome 取代，不应再出现：
+${removed_symbol_hits}"
+fi
+if ! grep -q 'we2ai::commands_apply::we2ai_restore_official' src-tauri/src/lib.rs; then
+  err "src-tauri/src/lib.rs: 找不到 we2ai::commands_apply::we2ai_restore_official 注册（功能 17：P6 恢复官方配置命令）"
+fi
+if ! grep -q 'we2ai::commands_apply::we2ai_restore_plan' src-tauri/src/lib.rs; then
+  err "src-tauri/src/lib.rs: 找不到 we2ai::commands_apply::we2ai_restore_plan 注册（功能 17：恢复确认弹窗的独立计划命令，Opus 复核中危项 2）"
+fi
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi
