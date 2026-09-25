@@ -227,11 +227,19 @@ fn codex_managed_marker_path() -> PathBuf {
 }
 
 /// 该工具的 live 文件快照清单。
+///
+/// **不包含 Codex 的 `auth.json`**（P6 五轮 Codex 验收高危项 1）：WE2AI 模式
+/// 下 `preserve_codex_official_auth_on_switch` 恒为 `true`
+/// （见 [`ensure_codex_login_preservation`]），上游 `switch` 管道在这个设置
+/// 下从不写入 `auth.json`（`codex_config.rs` 的 ChatGPT 登录保留分支）。把一
+/// 个"这次调用保证不会写"的文件也纳入快照/标记/回滚清单，只会徒增
+/// `mark_write_attempted()` 之后、`switch` 真正返回之前这段窗口里的误判
+/// 面——哪怕有 `h_pre` 兜底（P6 四轮）能避免误覆盖，也不该让一个从不在
+/// 本次调用职责范围内的文件出现在"我们负责回滚"的清单里。
 fn live_files(tool: ProviderTool, claude_settings: &Path) -> Vec<PathBuf> {
     match tool {
         ProviderTool::ClaudeCode => vec![claude_settings.to_path_buf()],
         ProviderTool::Codex => vec![
-            crate::codex_config::get_codex_auth_path(),
             crate::codex_config::get_codex_config_path(),
             crate::codex_config::get_codex_model_catalog_path(),
             codex_managed_marker_path(),
@@ -838,21 +846,30 @@ fn rollback(
     for snap in files {
         let _ = fsguard::tighten_file(&snap.path);
     }
-    if !external.is_empty() {
-        return ApplyError::new(
-            ERR_EXTERNAL,
-            format!(
-                "{}；检测到其他程序修改，未回滚：{}",
-                cause.message,
+    // 两种情况可能同时发生：一部分文件被外部程序改写、不能覆盖，另一部分
+    // 文件确实需要恢复但恢复本身失败了。旧逻辑只要 `external` 非空就直接
+    // 返回，会把 `failures` 列表整个丢掉——用户看不到"另外还有文件恢复
+    // 失败"这件事。现在两者都收集进消息；只要有恢复失败就升级成
+    // `ERR_ROLLBACK`（这是更严重的情况，外部修改至少内容还在原地，恢复
+    // 失败则状态不确定），否则外部修改单独存在时仍用 `ERR_EXTERNAL`
+    // （P6 五轮 Codex 验收高危项 3）。
+    if !external.is_empty() || !failures.is_empty() {
+        let mut parts = Vec::new();
+        if !external.is_empty() {
+            parts.push(format!(
+                "检测到其他程序修改，未回滚：{}",
                 external.join("、")
-            ),
-        );
-    }
-    if !failures.is_empty() {
-        return ApplyError::new(
-            ERR_ROLLBACK,
-            format!("{}；以下项未能恢复：{}", cause.message, failures.join("、")),
-        );
+            ));
+        }
+        if !failures.is_empty() {
+            parts.push(format!("以下项未能恢复：{}", failures.join("、")));
+        }
+        let code = if !failures.is_empty() {
+            ERR_ROLLBACK
+        } else {
+            ERR_EXTERNAL
+        };
+        return ApplyError::new(code, format!("{}；{}", cause.message, parts.join("；")));
     }
     cause
 }
@@ -1658,8 +1675,25 @@ pub fn apply_provider_tool(
     // 自己对 Codex 的追加写入）。标记之前的任何失败都不该把这段准备期间
     // 发生的外部编辑当成"我们的半写状态"去回滚覆盖（P6 二轮 Opus 复核
     // 高危项 1a，见 `snapshot.rs::FileSnapshot::mark_write_attempted`）。
+    //
+    // 标记本身也可能失败（权限问题等真正的 I/O 错误，`NotFound` 已经在
+    // `mark_write_attempted()` 内部归一化成"文件不存在"）：一旦发生，必须
+    // 在真正调用 `switch` 之前就中止整个 apply，不写任何 live 文件——此时
+    // 没有任何文件被写过，直接按失败路径回滚（对已经标记成功的文件是
+    // 安全的 no-op，对标记失败的文件本身，`restore()` 会因为"已标记但
+    // H_pre 未知"拒绝写入并单独报告，见 P6 五轮 Codex 验收高危项 2）。
+    let mut mark_err = None;
     for f in files.iter_mut() {
-        f.mark_write_attempted();
+        if let Err(e) = f.mark_write_attempted() {
+            mark_err = Some(ApplyError::new(
+                ERR_FAILED,
+                format!("标记 {} 为即将写入失败：{e}", f.path.display()),
+            ));
+            break;
+        }
+    }
+    if let Some(e) = mark_err {
+        return Err(fail(&files, e));
     }
 
     let switch_result = match hook!(Switch) {

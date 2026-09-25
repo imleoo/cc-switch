@@ -2296,31 +2296,134 @@ fn claude_apply_keeps_an_external_edit_made_before_the_write_attempt_mark_when_s
     );
 }
 
-const CHATGPT_AUTH_REFRESHED: &str = r#"{"OPENAI_API_KEY":null,"tokens":{"id_token":"x.y.z","access_token":"at2","refresh_token":"rt2","account_id":"acc"},"last_refresh":"2026-09-25T12:00:00Z"}"#;
-
-/// P6 四轮 Opus 复核高危项 1：Codex 保留 ChatGPT 登录时 `auth.json` 从不被
-/// `switch` 写入，但仍然和其他文件一起被 `mark_write_attempted()` 标记。
-/// 标记前 `auth.json` 因为 Codex 自己刷新令牌而改变内容，随后 `switch`
-/// 正常执行（真的写了 `config.toml`），但更后面的阶段失败：`auth.json`
-/// 必须保留刷新后的内容，`config.toml` 正常回滚到 apply 之前的样子。
+/// P6 五轮 Codex 验收高危项 2：标记即将写入这一步本身读取失败（权限问题等
+/// 真正的 I/O 错误）时，必须在真正调用 `switch` 之前中止整个 apply，不写
+/// 任何 live 文件。
+#[cfg(unix)]
 #[test]
 #[serial]
-fn codex_apply_keeps_a_refreshed_auth_json_while_rolling_back_config_toml_on_a_later_stage_failure()
-{
+fn a_read_error_when_marking_claude_settings_aborts_before_switch_and_leaves_the_file_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = TestHome::new();
+    let state = state();
+    let path = claude_settings(home.path());
+    write(&path, CLAUDE_BASE);
+    let path_for_hook = path.clone();
+    apply::set_test_hook(move |stage| {
+        if stage == Stage::BeforeSwitch {
+            // 标记循环紧跟在 BeforeSwitch 钩子成功返回之后：这里把文件设成
+            // 不可读，模拟标记那一刻的真实 I/O 错误（不是"文件不存在"，
+            // `hash_file` 会把 NotFound 归一化成正常状态，不会走到这里）。
+            std::fs::set_permissions(&path_for_hook, std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+        }
+        Ok(())
+    });
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::ClaudeCode,
+        &params("m", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
+    // 复原权限方便后续读取断言；生产代码里 rollback() 自己的收紧循环不会
+    // 放宽已经是 0000 的文件（fsguard::tighten_file 只收紧不放宽）。
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // switch 从未被调用：唯一的文件恢复时因为读取失败报 `Failed`，没有其他
+    // 外部修改，整体错误码是 ERR_ROLLBACK（见 `rollback()` 对 `failures` 非空
+    // 的判定）。
+    assert_eq!(err.code, apply::ERR_ROLLBACK, "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        CLAUDE_BASE,
+        "switch was never called; the file must be completely untouched by this apply"
+    );
+}
+
+/// P6 五轮 Codex 验收高危项 3：同一次回滚里，一个文件确实被外部程序改写
+/// （只能报告、不能覆盖），另一个文件恢复本身失败（读取失败）——旧逻辑
+/// 只要 `external` 非空就直接返回，会把"恢复失败"这部分完全吞掉，用户看
+/// 不到还有文件没能恢复。修复后两者都要出现在消息里，错误码升级为更严重
+/// 的 `ERR_ROLLBACK`（不是 `ERR_EXTERNAL`）。
+#[cfg(unix)]
+#[test]
+#[serial]
+fn rollback_reports_both_external_modification_and_restore_failure_in_the_same_call() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = TestHome::new();
+    let state = state();
+    write(&codex_config(home.path()), CODEX_BASE);
+    write(&codex_auth(home.path()), CHATGPT_AUTH);
+    let catalog_path = home.path().join(".codex/cc-switch-model-catalog.json");
+    let marker_path = home
+        .path()
+        .join(".we2ai/codex_managed_oauth_live_auth.json");
+    write(&catalog_path, "{}");
+    write(&marker_path, "{}");
+    let catalog_for_hook = catalog_path.clone();
+    let marker_for_hook = marker_path.clone();
+    apply::set_test_hook(move |stage| {
+        if stage == Stage::BeforeSwitch {
+            // 标记清单顺序是 config.toml → model catalog → managed marker。
+            // ① 让 marker 被"外部程序"改写：model catalog 的标记会先失败
+            // 并中止循环，marker 因此永远不会被标记，走"从未标记"分支；
+            // ② 让 model catalog 变成不可读，导致它自己的标记读取失败。
+            std::fs::write(&marker_for_hook, "changed by someone else").unwrap();
+            std::fs::set_permissions(&catalog_for_hook, std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+        }
+        Ok(())
+    });
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
+    std::fs::set_permissions(&catalog_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(err.code, apply::ERR_ROLLBACK, "{err}");
+    assert!(err.message.contains("检测到其他程序修改，未回滚"), "{err}");
+    assert!(err.message.contains("以下项未能恢复"), "{err}");
+    assert!(
+        err.message.contains(&marker_path.display().to_string()),
+        "{err}"
+    );
+    assert!(
+        err.message.contains(&catalog_path.display().to_string()),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker_path).unwrap(),
+        "changed by someone else",
+        "external edit must survive, not be overwritten"
+    );
+}
+
+const CHATGPT_AUTH_REFRESHED: &str = r#"{"OPENAI_API_KEY":null,"tokens":{"id_token":"x.y.z","access_token":"at2","refresh_token":"rt2","account_id":"acc"},"last_refresh":"2026-09-25T12:00:00Z"}"#;
+
+/// P6 五轮 Codex 验收高危项 1：`auth.json` 不再出现在 `live_files()` 的快照
+/// /标记/回滚清单里——WE2AI 模式下 `preserve_codex_official_auth_on_switch`
+/// 恒为 `true`，`switch` 管道保证不写 `auth.json`。标记之后（`Stage::Switch`
+/// 钩子里，此时 `mark_write_attempted()` 已经跑过）Codex 自己刷新了令牌，
+/// 紧接着 `switch` 立即失败（从未真正碰过 `config.toml`）：`auth.json` 既不
+/// 在快照清单里，这次刷新必须原样保留，且不能被当成"外部修改"影响错误码
+/// （`config.toml` 自身未变，属于 `Unchanged`，整体是 `ERR_FAILED`）。
+#[test]
+#[serial]
+fn codex_apply_keeps_a_refreshed_auth_json_on_an_immediate_switch_failure() {
     let home = TestHome::new();
     let state = state();
     write(&codex_config(home.path()), CODEX_BASE);
     write(&codex_auth(home.path()), CHATGPT_AUTH);
     let auth_path_for_hook = codex_auth(home.path());
     apply::set_test_hook(move |stage| {
-        if stage == Stage::BeforeSwitch {
-            // 模拟 Codex 自己在这期间刷新了 ChatGPT 令牌；这次改动发生在
-            // mark_write_attempted() 之前。
+        if stage == Stage::Switch {
+            // mark_write_attempted() 已经跑过（在 BeforeSwitch 成功之后、
+            // Switch 钩子之前）；Codex 自己在这里刷新了 ChatGPT 令牌。
             write(&auth_path_for_hook, CHATGPT_AUTH_REFRESHED);
-        }
-        if stage == Stage::AfterLiveWrite {
-            // 这一步在 switch 真正写完 config.toml、且已经对全部文件调用过
-            // record_h1() 之后才失败。
             return Err("boom".into());
         }
         Ok(())
@@ -2333,14 +2436,60 @@ fn codex_apply_keeps_a_refreshed_auth_json_while_rolling_back_config_toml_on_a_l
         ss(),
     )
     .unwrap_err();
-    // auth.json 报 `ExternalModified`（rollback() 升级为 ERR_EXTERNAL），
-    // config.toml 仍然按正常快照恢复——两者是同一次 rollback() 里各自独立
-    // 判定的结果，参见 `rollback()` 对 `files` 逐项 `.restore()` 的实现。
-    assert_eq!(err.code, apply::ERR_EXTERNAL, "{err}");
+    assert_eq!(err.code, apply::ERR_FAILED, "{err}");
     assert_eq!(
         std::fs::read_to_string(codex_auth(home.path())).unwrap(),
         CHATGPT_AUTH_REFRESHED,
-        "auth.json was never written by switch; the refresh made before the write-attempt mark must survive"
+        "auth.json is not in the snapshot/rollback set at all; a refresh made after the mark must survive untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(codex_config(home.path())).unwrap(),
+        CODEX_BASE,
+        "config.toml was never actually written by the failed switch and stays as-is"
+    );
+}
+
+/// 同上，但换成"标记后写过、更晚阶段才失败"的场景：`switch` 正常执行（真的
+/// 写了 `config.toml`），刷新发生在同一个 `Stage::Switch` 钩子里（标记之
+/// 后），随后更后面的阶段失败。`auth.json` 因为不在快照清单里必须保留刷新
+/// 后的内容，`config.toml` 因为确实被写过、有 H1，正常按快照回滚。
+#[test]
+#[serial]
+fn codex_apply_keeps_a_refreshed_auth_json_while_rolling_back_config_toml_on_a_later_stage_failure()
+{
+    let home = TestHome::new();
+    let state = state();
+    write(&codex_config(home.path()), CODEX_BASE);
+    write(&codex_auth(home.path()), CHATGPT_AUTH);
+    let auth_path_for_hook = codex_auth(home.path());
+    apply::set_test_hook(move |stage| {
+        if stage == Stage::Switch {
+            // 标记之后、真正调用上游 switch 之前，Codex 自己刷新了令牌。
+            write(&auth_path_for_hook, CHATGPT_AUTH_REFRESHED);
+        }
+        if stage == Stage::AfterLiveWrite {
+            // 这一步在 switch 真正写完 config.toml、且已经对全部快照文件
+            // 调用过 record_h1() 之后才失败。
+            return Err("boom".into());
+        }
+        Ok(())
+    });
+    let err = apply::apply_provider_tool(
+        &state,
+        ProviderTool::Codex,
+        &params("gpt-5", KEY_A),
+        &ok,
+        ss(),
+    )
+    .unwrap_err();
+    // auth.json 不在快照清单里，不参与 rollback() 的判定；config.toml 确实
+    // 被写过、按快照正常恢复，整体错误码是 ERR_FAILED（没有任何被跟踪的
+    // 文件报告 ExternalModified）。
+    assert_eq!(err.code, apply::ERR_FAILED, "{err}");
+    assert_eq!(
+        std::fs::read_to_string(codex_auth(home.path())).unwrap(),
+        CHATGPT_AUTH_REFRESHED,
+        "auth.json is not in the snapshot/rollback set at all; the refresh made after the mark must survive untouched"
     );
     assert_eq!(
         std::fs::read_to_string(codex_config(home.path())).unwrap(),

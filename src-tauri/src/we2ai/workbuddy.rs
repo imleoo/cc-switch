@@ -304,8 +304,12 @@ pub fn apply_workbuddy(
         }
         // 即将真正尝试写入：此刻 current == read_hash（H0），标记写入尝试
         // 记下的 H_pre 因此等于 H0，不会干扰后续基于 H1 的正常判定（见
-        // `FileSnapshot::mark_write_attempted` 文档）。
-        models_snapshot.mark_write_attempted();
+        // `FileSnapshot::mark_write_attempted` 文档）。标记本身的读取失败
+        // （极小概率的竞态：文件在两次读取之间被删除又权限异常等）不再被
+        // 吞掉，直接中止、不写入（P6 五轮 Codex 验收高危项 2）。
+        models_snapshot.mark_write_attempted().map_err(|e| {
+            ApplyError::new(ERR_FAILED, format!("标记写入 {} 失败：{e}", path.display()))
+        })?;
         crate::config::atomic_write_private(&path, &bytes)
             .map_err(|e| ApplyError::new(ERR_FAILED, e.to_string()))?;
         // 直接用刚刚写盘的字节记录 H1，不重新读盘：写入与记录之间如果重新

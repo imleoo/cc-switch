@@ -5,13 +5,14 @@
 //!   的哈希 H_pre（P6 四轮新增）。
 //! - 写入后：`switch` 返回后回读计算 H1（已计入上游规范化与 MCP 重投影）。
 //! - 恢复：当前 = H0 → 未动过，`Unchanged`；从未标记过 → 现在的任何差异都
-//!   只可能来自外部程序，`ExternalModified`，不覆盖；已标记但当前 = H_pre
-//!   → 从标记那一刻到现在这个文件其实从未被写过（例如一次 `switch` 统一给
-//!   多个文件打标记，其中某个文件因管道内部逻辑或更早的失败而没被真正碰
-//!   到）——按 H_pre 是否等于 H0 分别报告 `Unchanged`/`ExternalModified`，
-//!   不写入；已标记且当前 ≠ H_pre 时才看 H1：有 H1 时当前 = H1 才恢复，其余
-//!   视为被外部改写、不恢复并报告；没有 H1（`switch` 中途失败）时按快照
-//!   写回。
+//!   只可能来自外部程序，`ExternalModified`，不覆盖；已标记但 H_pre 未知
+//!   （标记那一刻读取失败，例如权限问题）→ 无法判断是否真的写过，一律不
+//!   写入，`Failed`；已标记且当前 = H_pre → 从标记那一刻到现在这个文件其实
+//!   从未被写过（例如一次 `switch` 统一给多个文件打标记，其中某个文件因
+//!   管道内部逻辑或更早的失败而没被真正碰到）——按 H_pre 是否等于 H0 分别
+//!   报告 `Unchanged`/`ExternalModified`，不写入；已标记且当前 ≠ H_pre 时
+//!   才看 H1：有 H1 时当前 = H1 才恢复，其余视为被外部改写、不恢复并报告；
+//!   没有 H1（`switch` 中途失败）时按快照写回。
 //!
 //! 比对与替换之间的毫秒级窗口无法消除，是方案登记的已知限制。
 
@@ -90,9 +91,19 @@ impl FileSnapshot {
     /// `true`，都不该走"没有 H1 就当部分写入回滚"的逻辑，而要看 `h_pre`
     /// 是否等于 H0 来判定是"确实没动过"还是"标记前已经被外部改过"
     /// （P6 四轮 Opus 复核高危项 1）。
-    pub fn mark_write_attempted(&mut self) {
+    ///
+    /// 读取失败时不再静默吞掉（`.ok()`）：调用方必须把 `Err` 当作"标记这一
+    /// 步本身失败了"处理——`NotFound` 已经在 `hash_file` 内部归一化成
+    /// "文件不存在"这个正常状态（`Ok(None)`），这里只会因为权限问题等真正
+    /// 的 I/O 错误才返回 `Err`。调用方应在真正调用 `switch` 之前就中止整个
+    /// apply，不写任何 live 文件（P6 五轮 Codex 验收高危项 2）。即便调用方
+    /// 没有正确中止，`write_attempted` 仍会被设为 `true` 而 `h_pre` 保持
+    /// 未知，`restore()` 对这种"标记了但不知道标记那一刻内容"的状态有独立
+    /// 的兜底：一律不写入。
+    pub fn mark_write_attempted(&mut self) -> std::io::Result<()> {
         self.write_attempted = true;
-        self.h_pre = hash_file(&self.path).ok();
+        self.h_pre = Some(hash_file(&self.path)?);
+        Ok(())
     }
 
     pub fn existed(&self) -> bool {
@@ -144,6 +155,14 @@ impl FileSnapshot {
             // 从未真正尝试写入：现在的差异只可能来自外部程序，不是我们的
             // 半写状态，不能覆盖（P6 二轮 Opus 复核高危项 1a）。
             return RestoreResult::ExternalModified;
+        }
+        if self.h_pre.is_none() {
+            // 已标记，但标记那一刻读取失败（权限问题等真正的 I/O 错误，
+            // `mark_write_attempted()` 不再吞掉这类错误）：无法判断从标记
+            // 到现在这段时间文件是否真的被我们写过，为安全起见一律不写
+            // 入，按"恢复失败"上报，交给调用方决定如何提示用户
+            // （P6 五轮 Codex 验收高危项 2）。
+            return RestoreResult::Failed("标记写入前读取文件失败，无法判断是否需要恢复".into());
         }
         if let Some(h_pre) = self.h_pre {
             if current == h_pre {
@@ -202,8 +221,8 @@ mod tests {
 
         let mut a = FileSnapshot::capture(&existing).unwrap();
         let mut b = FileSnapshot::capture(&created).unwrap();
-        a.mark_write_attempted();
-        b.mark_write_attempted();
+        a.mark_write_attempted().unwrap();
+        b.mark_write_attempted().unwrap();
         std::fs::write(&existing, "ours").unwrap();
         std::fs::write(&created, "ours").unwrap();
         a.record_h1();
@@ -221,7 +240,7 @@ mod tests {
         let f = tmp.path().join("config.toml");
         std::fs::write(&f, "old").unwrap();
         let mut snap = FileSnapshot::capture(&f).unwrap();
-        snap.mark_write_attempted();
+        snap.mark_write_attempted().unwrap();
         std::fs::write(&f, "ours").unwrap();
         snap.record_h1();
         std::fs::write(&f, "someone else").unwrap();
@@ -236,7 +255,7 @@ mod tests {
         std::fs::write(&f, "old").unwrap();
         let mut snap = FileSnapshot::capture(&f).unwrap();
         assert_eq!(snap.restore(), RestoreResult::Unchanged);
-        snap.mark_write_attempted();
+        snap.mark_write_attempted().unwrap();
         std::fs::write(&f, "partial").unwrap();
         assert_eq!(snap.restore(), RestoreResult::Restored);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "old");
@@ -271,12 +290,47 @@ mod tests {
         let mut snap = FileSnapshot::capture(&f).unwrap();
         // 标记之前，外部程序已经把内容改了（例如 Codex 自己刷新了令牌）。
         std::fs::write(&f, "refreshed by codex itself").unwrap();
-        snap.mark_write_attempted();
+        snap.mark_write_attempted().unwrap();
         // 这个文件从标记到现在从未被我们写过，也就没有 record_h1()。
         assert_eq!(snap.restore(), RestoreResult::ExternalModified);
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "refreshed by codex itself"
+        );
+    }
+
+    /// P6 五轮 Codex 验收高危项 2：标记那一刻读取失败（权限问题等真正的
+    /// I/O 错误，不是"文件不存在"）不能被 `.ok()` 静默吞掉——`mark_write_attempted()`
+    /// 必须把错误报给调用方；即便调用方之后仍然调用了 `restore()`
+    /// （防御性兜底），也绝不能因为 H_pre 未知就冒险按旧逻辑写入，只能报告
+    /// `Failed` 且不改动文件。
+    #[cfg(unix)]
+    #[test]
+    fn a_read_error_at_mark_time_is_not_swallowed_and_restore_never_writes_when_h_pre_is_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("config.toml");
+        std::fs::write(&f, "old").unwrap();
+        let mut snap = FileSnapshot::capture(&f).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mark_result = snap.mark_write_attempted();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            mark_result.is_err(),
+            "a permission-denied read at mark time must not be swallowed as success"
+        );
+        // 标记失败之后内容又变了（current != H0），才会真正走到"已标记但
+        // H_pre 未知"这条新分支——如果内容没变，`restore()` 会在更早的
+        // "current == H0" 检查里直接返回 `Unchanged`，测不到这条分支。
+        std::fs::write(&f, "changed after the failed mark").unwrap();
+        match snap.restore() {
+            RestoreResult::Failed(_) => {}
+            other => panic!("expected Failed when h_pre is unknown, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "changed after the failed mark",
+            "restore() must never write when h_pre is unknown"
         );
     }
 
@@ -289,7 +343,7 @@ mod tests {
         std::fs::write(&f, "old").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut snap = FileSnapshot::capture(&f).unwrap();
-        snap.mark_write_attempted();
+        snap.mark_write_attempted().unwrap();
         std::fs::write(&f, "ours").unwrap();
         snap.record_h1();
         assert_eq!(snap.restore(), RestoreResult::Restored);
