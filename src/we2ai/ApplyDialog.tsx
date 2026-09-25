@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import "./we2ai-theme.css";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -184,10 +185,13 @@ export function ApplyDialog({
         value={slots[key]}
         onValueChange={(v) => setSlots((s) => ({ ...s, [key]: v }))}
       >
-        <SelectTrigger className="h-8 w-56 text-xs" aria-label={label}>
+        <SelectTrigger
+          className="h-8 w-56 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-xs text-[var(--we2ai-ink)] shadow-none"
+          aria-label={label}
+        >
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
           <SelectItem value={SAME_AS_MAIN}>{target.model}</SelectItem>
           {claudeModels
             .filter((m) => m !== target.model)
@@ -201,6 +205,11 @@ export function ApplyDialog({
     </div>
   );
 
+  const primaryButtonClass =
+    "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-orange)]";
+  const secondaryButtonClass =
+    "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]";
+
   return (
     <Dialog
       open
@@ -208,24 +217,32 @@ export function ApplyDialog({
         if (!open && !applying) onClose();
       }}
     >
-      <DialogContent>
+      <DialogContent className="we2ai-theme rounded-none border-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-[8px_8px_0_0_var(--we2ai-ink)]">
         {needsOverwrite ? (
           <>
-            <DialogHeader>
-              <DialogTitle>{t.workbuddyOverwriteTitle}</DialogTitle>
+            <DialogHeader className="border-b-[2.5px] border-[var(--we2ai-ink)] bg-transparent">
+              <DialogTitle className="we2ai-heading">
+                {t.workbuddyOverwriteTitle}
+              </DialogTitle>
               <DialogDescription>
                 {formatWe2aiString(t.workbuddyOverwriteDescription, {
                   model: target.model,
                 })}
               </DialogDescription>
             </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" disabled={applying} onClick={onClose}>
+            <DialogFooter className="border-t-[2.5px] border-[var(--we2ai-ink)] bg-transparent">
+              <Button
+                variant="outline"
+                disabled={applying}
+                onClick={onClose}
+                className={secondaryButtonClass}
+              >
                 {t.applyCancel}
               </Button>
               <Button
                 disabled={applying}
                 onClick={() => void handleApply(true)}
+                className={primaryButtonClass}
               >
                 {applying ? t.applying : t.workbuddyOverwriteConfirm}
               </Button>
@@ -233,8 +250,8 @@ export function ApplyDialog({
           </>
         ) : (
           <>
-            <DialogHeader>
-              <DialogTitle>
+            <DialogHeader className="border-b-[2.5px] border-[var(--we2ai-ink)] bg-transparent">
+              <DialogTitle className="we2ai-heading">
                 {formatWe2aiString(t.applyConfirmTitle, {
                   model: target.model,
                   tool: toolLabel,
@@ -243,9 +260,12 @@ export function ApplyDialog({
               <DialogDescription>{t.applyConfirmDescription}</DialogDescription>
             </DialogHeader>
             {plan && (
-              <div className="space-y-2 text-xs" data-testid="we2ai-apply-plan">
+              <div
+                className="mx-6 space-y-2 border-2 border-[var(--we2ai-ink)] p-3 text-xs"
+                data-testid="we2ai-apply-plan"
+              >
                 <div>
-                  <div className="font-medium">{t.applyFilesLabel}</div>
+                  <div className="we2ai-label">{t.applyFilesLabel}</div>
                   {plan.files.map((f) => (
                     <div key={f} className="break-all font-mono">
                       {f}
@@ -253,21 +273,24 @@ export function ApplyDialog({
                   ))}
                 </div>
                 <div>
-                  <div className="font-medium">{t.applyFieldsLabel}</div>
+                  <div className="we2ai-label">{t.applyFieldsLabel}</div>
                   <div className="font-mono">{plan.fields.join("、")}</div>
                 </div>
               </div>
             )}
             {planFailed && (
-              <p role="alert" className="text-xs text-destructive">
+              <p
+                role="alert"
+                className="mx-6 text-xs text-[var(--we2ai-orange)]"
+              >
                 {t.applyPlanFailed}
               </p>
             )}
             {target.tool === "claude_code" && claudeModels.length > 1 && (
-              <div className="space-y-2">
+              <div className="mx-6 space-y-2">
                 <button
                   type="button"
-                  className="text-xs text-primary underline-offset-2 hover:underline"
+                  className="we2ai-label underline-offset-2 hover:text-[var(--we2ai-orange)] hover:underline"
                   onClick={() => setShowAdvanced((v) => !v)}
                 >
                   {t.applyAdvanced}
@@ -281,13 +304,19 @@ export function ApplyDialog({
                 )}
               </div>
             )}
-            <DialogFooter>
-              <Button variant="outline" disabled={applying} onClick={onClose}>
+            <DialogFooter className="border-t-[2.5px] border-[var(--we2ai-ink)] bg-transparent">
+              <Button
+                variant="outline"
+                disabled={applying}
+                onClick={onClose}
+                className={secondaryButtonClass}
+              >
                 {t.applyCancel}
               </Button>
               <Button
                 disabled={applying || !plan}
                 onClick={() => void handleApply(false)}
+                className={primaryButtonClass}
               >
                 {applying ? t.applying : t.applyConfirm}
               </Button>

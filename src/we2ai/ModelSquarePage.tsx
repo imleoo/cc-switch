@@ -189,12 +189,15 @@ export function ModelSquarePage({
     void we2aiApi.selectKey(keyId).catch(() => undefined);
   };
 
+  const secondaryButtonClass =
+    "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]";
+
   if (keys === null) {
     return (
-      <div className="space-y-3 py-6 text-sm text-muted-foreground">
+      <div className="space-y-3 py-6 text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
         {keysError ? (
           <div className="flex items-center gap-3">
-            <span role="alert" className="text-destructive">
+            <span role="alert" className="text-[var(--we2ai-orange)]">
               {keysError}
             </span>
             <Button
@@ -202,6 +205,7 @@ export function ModelSquarePage({
               variant="outline"
               disabled={loadingKeys}
               onClick={() => void loadKeys()}
+              className={secondaryButtonClass}
             >
               {t.offlineRetry}
             </Button>
@@ -215,13 +219,14 @@ export function ModelSquarePage({
 
   if (keys.length === 0) {
     return (
-      <div className="space-y-3 py-6 text-sm text-muted-foreground">
+      <div className="space-y-3 py-6 text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
         <p>{t.noKeys}</p>
         <Button
           size="sm"
           variant="outline"
           disabled={loadingKeys}
           onClick={() => void loadKeys()}
+          className={secondaryButtonClass}
         >
           {t.refresh}
         </Button>
@@ -234,7 +239,7 @@ export function ModelSquarePage({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm font-medium">{t.keyLabel}</span>
+        <span className="we2ai-label">{t.keyLabel}</span>
         {keys.length === 1 && selectedKey ? (
           <span className="text-sm" data-testid="we2ai-single-key">
             {selectedKey.name}
@@ -245,10 +250,13 @@ export function ModelSquarePage({
             value={selectedKeyId !== null ? String(selectedKeyId) : undefined}
             onValueChange={handleSelectKey}
           >
-            <SelectTrigger className="w-72" aria-label={t.keyLabel}>
+            <SelectTrigger
+              className="w-72 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none"
+              aria-label={t.keyLabel}
+            >
               <SelectValue placeholder={t.keyPlaceholder} />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
               {keys.map((key) => (
                 <SelectItem key={key.id} value={String(key.id)}>
                   {key.name}
@@ -259,7 +267,7 @@ export function ModelSquarePage({
           </Select>
         )}
         {selectedKey && (
-          <span className="font-mono text-xs text-muted-foreground">
+          <span className="font-mono text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
             {selectedKey.maskedKey}
           </span>
         )}
@@ -268,6 +276,7 @@ export function ModelSquarePage({
           variant="ghost"
           disabled={loadingKeys}
           onClick={() => void loadKeys()}
+          className="rounded-lg border-transparent shadow-none hover:bg-[var(--we2ai-paper-2)]"
         >
           {t.refresh}
         </Button>
@@ -276,7 +285,7 @@ export function ModelSquarePage({
       {models && !models.callable && (
         <div
           role="alert"
-          className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+          className="border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-orange)] px-3 py-2 text-xs font-medium text-[var(--we2ai-paper)]"
         >
           {describeBlockedReason(t, models.blockedReason)}
         </div>
@@ -284,7 +293,7 @@ export function ModelSquarePage({
 
       {modelsError && (
         <div className="flex items-center gap-3 text-sm">
-          <span role="alert" className="text-destructive">
+          <span role="alert" className="text-[var(--we2ai-orange)]">
             {modelsError}
           </span>
           {selectedKeyId !== null && (
@@ -293,6 +302,7 @@ export function ModelSquarePage({
               variant="outline"
               disabled={loadingModels}
               onClick={() => void loadModels(selectedKeyId)}
+              className={secondaryButtonClass}
             >
               {t.offlineRetry}
             </Button>
@@ -301,67 +311,99 @@ export function ModelSquarePage({
       )}
 
       {loadingModels && (
-        <p className="text-sm text-muted-foreground">{t.loadingModels}</p>
+        <p className="text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
+          {t.loadingModels}
+        </p>
       )}
 
       {models && models.models.length === 0 && (
-        <p className="text-sm text-muted-foreground">{t.noModels}</p>
+        <p className="text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
+          {t.noModels}
+        </p>
       )}
 
       {models && models.models.length > 0 && (
-        <ul className="grid gap-3 sm:grid-cols-2">
-          {models.models.map((model) => (
-            <li
-              key={model.id}
-              className="rounded-lg border p-3"
-              data-testid="we2ai-model-card"
-            >
-              <div className="mb-2 flex items-baseline justify-between gap-2">
-                <span className="break-all font-mono text-sm font-medium">
-                  {model.id}
-                </span>
-                {model.provider && (
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {model.provider}
+        <ul className="we2ai-model-grid grid sm:grid-cols-2">
+          {models.models.map((model) => {
+            const isInUseSomewhere = model.tools.some(
+              (tool) =>
+                toolStatus?.tools.find((s) => s.tool === tool)?.managedModel ===
+                model.id,
+            );
+            return (
+              <li
+                key={model.id}
+                className={`we2ai-model-cell p-4 ${
+                  isInUseSomewhere ? "we2ai-model-cell--orange" : ""
+                }`}
+                data-testid="we2ai-model-card"
+              >
+                <div className="mb-3 flex items-baseline justify-between gap-2">
+                  <span className="break-all font-mono text-sm font-bold">
+                    {model.id}
                   </span>
-                )}
-              </div>
-              {model.tools.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {t.modelNoTools}
-                </p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {model.tools.map((tool) => {
-                    const inUse =
-                      toolStatus?.tools.find((s) => s.tool === tool)
-                        ?.managedModel === model.id;
-                    return (
-                      <Button
-                        key={tool}
-                        size="sm"
-                        variant={inUse ? "default" : "outline"}
-                        disabled={!models.callable || selectedKeyId === null}
-                        title={
-                          models.callable
-                            ? inUse
-                              ? t.applyCurrent
-                              : undefined
-                            : describeBlockedReason(t, models.blockedReason)
-                        }
-                        onClick={() =>
-                          setApplyTarget({ tool, model: model.id })
-                        }
-                      >
-                        {WE2AI_TOOL_LABELS[tool]}
-                        {inUse ? " ✓" : ""}
-                      </Button>
-                    );
-                  })}
+                  {model.provider && (
+                    <span
+                      className={`we2ai-chip shrink-0 ${
+                        isInUseSomewhere
+                          ? "border-[var(--we2ai-paper)] text-[var(--we2ai-paper)]"
+                          : ""
+                      }`}
+                    >
+                      {model.provider}
+                    </span>
+                  )}
                 </div>
-              )}
-            </li>
-          ))}
+                {model.tools.length === 0 ? (
+                  <p
+                    className={`text-xs ${
+                      isInUseSomewhere
+                        ? "text-[color:color-mix(in_srgb,var(--we2ai-paper)_70%,transparent)]"
+                        : "text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]"
+                    }`}
+                  >
+                    {t.modelNoTools}
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {model.tools.map((tool) => {
+                      const inUse =
+                        toolStatus?.tools.find((s) => s.tool === tool)
+                          ?.managedModel === model.id;
+                      return (
+                        <Button
+                          key={tool}
+                          size="sm"
+                          variant={inUse ? "default" : "outline"}
+                          disabled={!models.callable || selectedKeyId === null}
+                          title={
+                            models.callable
+                              ? inUse
+                                ? t.applyCurrent
+                                : undefined
+                              : describeBlockedReason(t, models.blockedReason)
+                          }
+                          onClick={() =>
+                            setApplyTarget({ tool, model: model.id })
+                          }
+                          className={
+                            inUse
+                              ? "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-ink)]"
+                              : isInUseSomewhere
+                                ? "rounded-lg border-[var(--we2ai-paper)] bg-transparent text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-paper)] hover:text-[var(--we2ai-ink)]"
+                                : secondaryButtonClass
+                          }
+                        >
+                          {WE2AI_TOOL_LABELS[tool]}
+                          {inUse ? " ✓" : ""}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
 

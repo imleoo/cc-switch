@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import we2aiLogo from "@/assets/icons/web-logo.svg";
+import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
+import "./we2ai-theme.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -275,22 +277,42 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
   // 真实使用中出现的机会（不是唯一的正确性保障，Rust 侧代次校验才是）。
   const loginFlowBusy = captchaFlowBusy || twoFaBusy;
 
+  const inputClass =
+    "rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none focus:ring-0 focus:border-[var(--we2ai-orange)]";
+  const primaryButtonClass =
+    "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-orange)]";
+  const secondaryButtonClass =
+    "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]";
+
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-background p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader className="items-center text-center">
+    <div className="we2ai-theme flex h-screen w-screen items-center justify-center p-6">
+      {isMac() && (
+        <div
+          className="fixed inset-x-0 top-0 h-8"
+          {...DRAG_REGION_ATTR}
+          aria-hidden="true"
+        />
+      )}
+      <Card className="we2ai-panel w-full max-w-md">
+        <CardHeader className="items-center border-b-2 border-[var(--we2ai-ink)] text-center">
           <img
             src={we2aiLogo}
             alt=""
             aria-hidden="true"
             className="mb-2 h-10 w-10"
           />
-          <CardTitle>{t.loginTitle}</CardTitle>
-          <CardDescription>{t.loginSubtitle}</CardDescription>
+          <CardTitle className="we2ai-heading text-2xl">
+            {t.loginTitle}
+          </CardTitle>
+          <CardDescription className="text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
+            {t.loginSubtitle}
+          </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-4 pt-6">
           <div className="space-y-1.5">
-            <Label htmlFor="we2ai-region">{t.regionLabel}</Label>
+            <Label htmlFor="we2ai-region" className="we2ai-label">
+              {t.regionLabel}
+            </Label>
             <Select
               value={region}
               onValueChange={handleRegionChange}
@@ -301,10 +323,10 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                 loginFlowBusy
               }
             >
-              <SelectTrigger id="we2ai-region">
+              <SelectTrigger id="we2ai-region" className={inputClass}>
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
                 {regions.map((r) => (
                   <SelectItem key={r} value={r}>
                     {regionLabel(t, r)}
@@ -317,15 +339,17 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
           {stage.kind === "twoFa" ? (
             <form className="space-y-4" onSubmit={handleTwoFaSubmit}>
               <div className="space-y-1">
-                <p className="text-sm font-medium">{t.twoFaTitle}</p>
-                <p className="text-xs text-muted-foreground">
+                <p className="we2ai-label">{t.twoFaTitle}</p>
+                <p className="text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
                   {formatWe2aiString(t.twoFaDescription, {
                     email: stage.emailMasked,
                   })}
                 </p>
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="we2ai-totp">{t.twoFaCodeLabel}</Label>
+                <Label htmlFor="we2ai-totp" className="we2ai-label">
+                  {t.twoFaCodeLabel}
+                </Label>
                 <Input
                   id="we2ai-totp"
                   inputMode="numeric"
@@ -335,16 +359,19 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                   onChange={(e) =>
                     setTotpCode(e.target.value.replace(/\D/g, ""))
                   }
+                  className={inputClass}
                 />
               </div>
               {displayedError && (
-                <p className="text-sm text-destructive">{displayedError}</p>
+                <p className="text-sm text-[var(--we2ai-orange)]">
+                  {displayedError}
+                </p>
               )}
               <div className="flex gap-2">
                 <Button
                   type="button"
                   variant="outline"
-                  className="flex-1"
+                  className={`flex-1 ${secondaryButtonClass}`}
                   onClick={() => {
                     setStage({ kind: "credentials" });
                     setErrorCode(null);
@@ -355,7 +382,7 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                 </Button>
                 <Button
                   type="submit"
-                  className="flex-1"
+                  className={`flex-1 ${primaryButtonClass}`}
                   disabled={
                     twoFaBusy || totpCode.length !== 6 || regionSwitchBusy
                   }
@@ -369,12 +396,18 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
               value={tab}
               onValueChange={(v) => setTab(v as "email" | "phone")}
             >
-              <TabsList className="w-full">
-                <TabsTrigger className="flex-1" value="email">
+              <TabsList className="w-full rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
+                <TabsTrigger
+                  className="we2ai-label flex-1 rounded-none border-0 data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+                  value="email"
+                >
                   {t.tabEmailLogin}
                 </TabsTrigger>
                 {isDomesticRegion(region) && (
-                  <TabsTrigger className="flex-1" value="phone">
+                  <TabsTrigger
+                    className="we2ai-label flex-1 rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+                    value="phone"
+                  >
                     {t.tabPhoneLogin}
                   </TabsTrigger>
                 )}
@@ -383,7 +416,9 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
               <TabsContent value="email">
                 <form className="space-y-4" onSubmit={handleEmailLogin}>
                   <div className="space-y-1.5">
-                    <Label htmlFor="we2ai-email">{t.emailLabel}</Label>
+                    <Label htmlFor="we2ai-email" className="we2ai-label">
+                      {t.emailLabel}
+                    </Label>
                     <Input
                       id="we2ai-email"
                       type="email"
@@ -391,10 +426,13 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
+                      className={inputClass}
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="we2ai-password">{t.passwordLabel}</Label>
+                    <Label htmlFor="we2ai-password" className="we2ai-label">
+                      {t.passwordLabel}
+                    </Label>
                     <Input
                       id="we2ai-password"
                       type="password"
@@ -402,14 +440,17 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
+                      className={inputClass}
                     />
                   </div>
                   {displayedError && (
-                    <p className="text-sm text-destructive">{displayedError}</p>
+                    <p className="text-sm text-[var(--we2ai-orange)]">
+                      {displayedError}
+                    </p>
                   )}
                   <Button
                     type="submit"
-                    className="w-full"
+                    className={`w-full ${primaryButtonClass}`}
                     disabled={loginFlowBusy || regionSwitchBusy}
                   >
                     {emailBusy ? t.loginButtonBusy : t.loginButton}
@@ -421,7 +462,9 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                 <TabsContent value="phone">
                   <form className="space-y-4" onSubmit={handlePhoneLogin}>
                     <div className="space-y-1.5">
-                      <Label htmlFor="we2ai-phone">{t.phoneLabel}</Label>
+                      <Label htmlFor="we2ai-phone" className="we2ai-label">
+                        {t.phoneLabel}
+                      </Label>
                       <Input
                         id="we2ai-phone"
                         type="tel"
@@ -429,10 +472,13 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                         required
                         value={phone}
                         onChange={(e) => setPhone(e.target.value)}
+                        className={inputClass}
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label htmlFor="we2ai-sms-code">{t.phoneCodeLabel}</Label>
+                      <Label htmlFor="we2ai-sms-code" className="we2ai-label">
+                        {t.phoneCodeLabel}
+                      </Label>
                       <div className="flex gap-2">
                         <Input
                           id="we2ai-sms-code"
@@ -440,7 +486,7 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                           required
                           value={smsCode}
                           onChange={(e) => setSmsCode(e.target.value)}
-                          className="flex-1"
+                          className={`flex-1 ${inputClass}`}
                         />
                         <Button
                           type="button"
@@ -452,6 +498,7 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                             !phone.trim()
                           }
                           onClick={() => void handleSendCode()}
+                          className={secondaryButtonClass}
                         >
                           {sendCodeBusy
                             ? t.sendCodeButtonBusy
@@ -464,13 +511,13 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                       </div>
                     </div>
                     {displayedError && (
-                      <p className="text-sm text-destructive">
+                      <p className="text-sm text-[var(--we2ai-orange)]">
                         {displayedError}
                       </p>
                     )}
                     <Button
                       type="submit"
-                      className="w-full"
+                      className={`w-full ${primaryButtonClass}`}
                       disabled={loginFlowBusy || regionSwitchBusy}
                     >
                       {phoneLoginBusy
@@ -483,7 +530,7 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
             </Tabs>
           )}
 
-          <p className="text-center text-xs text-muted-foreground">
+          <p className="text-center text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
             {t.freeLoginNote}
           </p>
         </CardContent>

@@ -452,6 +452,52 @@ else
   fi
 fi
 
+# 4.7 功能 14：cargo/tauri dev 产出的二进制名必须是 we2ai，而不是随 [package]
+# name 走的 cc-switch。`cargo build`/`pnpm tauri dev` 不经过 `tauri build` 的
+# mainBinaryName 重命名步骤，没有这个显式 [[bin]] table 的话，macOS 钥匙串
+# 授权提示、登录项等系统级 UI 在 dev 场景下仍会显示 cc-switch（自定义开发功能
+# 列表.md 功能 14）。同时确认 [package] name / [lib] name 没有被上游同步改掉
+# ——scripts/we2ai/lib.sh 的版本号定位、`cc_switch_lib` crate 名依赖它们不变。
+cargo_toml=src-tauri/Cargo.toml
+bin_block="$(awk '/^\[\[bin\]\]/{f=1;next} f&&/^\[/{exit} f' "$cargo_toml")"
+if [[ -z "$bin_block" ]]; then
+  err "$cargo_toml: 找不到 [[bin]] table，cargo build/pnpm tauri dev 会产出 cc-switch(.exe) 而不是 we2ai（功能 14）"
+else
+  bin_name="$(printf '%s\n' "$bin_block" | sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
+  if [[ "$bin_name" != "we2ai" ]]; then
+    err "$cargo_toml: [[bin]] name 应为 we2ai，实际：${bin_name:-<空>}（功能 14）"
+  fi
+fi
+pkg_name="$(awk '/^\[package\]/{f=1;next} f&&/^\[/{exit} f&&/^[[:space:]]*name[[:space:]]*=/{print;exit}' "$cargo_toml" | sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p')"
+if [[ "$pkg_name" != "cc-switch" ]]; then
+  err "$cargo_toml: [package] name 被改成了 ${pkg_name:-<空>}（应保持 cc-switch，见功能 14——scripts/we2ai/lib.sh 的版本号定位依赖这个包名）"
+fi
+lib_name="$(awk '/^\[lib\]/{f=1;next} f&&/^\[/{exit} f&&/^[[:space:]]*name[[:space:]]*=/{print;exit}' "$cargo_toml" | sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p')"
+if [[ "$lib_name" != "cc_switch_lib" ]]; then
+  err "$cargo_toml: [lib] name 被改成了 ${lib_name:-<空>}（应保持 cc_switch_lib，见功能 14——测试/CI 里大量 cc_switch_lib:: 引用依赖这个 crate 名）"
+fi
+
+# 4.8 功能 15：release.yml 在没有 Apple 证书 Secret 时也能跑通（内测包），且
+# 只能在 v* tag 上手动运行——不做运行时验证（那要真的跑一次 CI），只做静态
+# 结构检查：guard 步骤存在、HAS_APPLE_CERT 在 job 级 env 里定义、publish-release
+# 声明了 environment: release（否则读不到 secrets.APPLE_CERTIFICATE，正文文案
+# 会一律显示"未公证"）。
+release_yml=.github/workflows/release.yml
+if [[ -f "$release_yml" ]]; then
+  if ! grep -q "github.ref_type" "$release_yml"; then
+    err "$release_yml: 找不到 ref_type 校验，release job 可能在分支 ref 上运行并创建以分支名为 tag 的错误 Release（功能 15）"
+  fi
+  if ! grep -qE '^\s*HAS_APPLE_CERT:\s*\$\{\{\s*secrets\.APPLE_CERTIFICATE\s*!=\s*.{0,2}\s*\}\}' "$release_yml"; then
+    err "$release_yml: 找不到 job 级 env HAS_APPLE_CERT（应为 \${{ secrets.APPLE_CERTIFICATE != '' }}），macOS 签名/公证步骤的 if 条件依赖它（功能 15）"
+  fi
+  publish_release_block="$(awk '/^  publish-release:/{f=1} f{print} f&&/^  [a-zA-Z]/&&!/^  publish-release:/&&NR>1{if(seen)exit} /^  publish-release:/{seen=1}' "$release_yml")"
+  if ! printf '%s\n' "$publish_release_block" | grep -qE '^\s*environment:\s*release\s*$'; then
+    err "$release_yml: publish-release job 没有声明 environment: release，读不到 secrets.APPLE_CERTIFICATE，Release 正文的签名/未公证文案会永远显示成未公证（功能 15）"
+  fi
+else
+  err "$release_yml: 文件不存在"
+fi
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi

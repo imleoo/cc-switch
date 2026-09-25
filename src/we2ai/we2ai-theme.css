@@ -1,0 +1,119 @@
+/**
+ * WE2AI 桌面客户端主题（neo-brutalist），对齐 https://we2ai.com 的视觉规范。
+ *
+ * 仅作用于 `.we2ai-theme` 作用域内（挂在 We2aiShell / LoginPage 的根节点上），
+ * 不影响上游 cc-switch 的全局样式与组件（同步冲突风险最低的做法）。
+ *
+ * 这里只放跨组件复用的 CSS 变量与少量原子类（票据条 / 徽标 / 芯片 /
+ * 模型格子 / 硬阴影面板）；shadcn 组件（Button、Card、Select、Dialog、
+ * Input…）的视觉覆盖直接在各自的 JSX 里用 Tailwind 任意值 className 完成，
+ * 不在这里用 `!important` 打架。
+ */
+
+.we2ai-theme {
+  --we2ai-paper: #f4f1e8;
+  --we2ai-paper-2: #e7e2d2;
+  --we2ai-ink: #0a0a08;
+  --we2ai-orange: #ff4d00;
+  --we2ai-blue: #2438e8;
+  --we2ai-font-sans:
+    -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, "PingFang SC",
+    "Noto Sans CJK SC", sans-serif;
+  --we2ai-font-mono:
+    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  background-color: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  font-family: var(--we2ai-font-sans);
+}
+
+.dark .we2ai-theme {
+  --we2ai-paper: #0a0a08;
+  --we2ai-paper-2: #1c1c17;
+  --we2ai-ink: #f4f1e8;
+}
+
+/* 标题：粗体、负字距 */
+.we2ai-heading {
+  font-family: var(--we2ai-font-sans);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: var(--we2ai-ink);
+}
+
+/* mono 小标签：eyebrow / 字段名 */
+.we2ai-label {
+  font-family: var(--we2ai-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--we2ai-ink);
+}
+
+/* chip：小圆角药丸，细描边 */
+.we2ai-chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--we2ai-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1.5px solid var(--we2ai-ink);
+  color: var(--we2ai-ink);
+  padding: 1px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* 硬阴影面板：直角 + 描边 + 偏移阴影 */
+.we2ai-panel {
+  background: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  border: 2.5px solid var(--we2ai-ink);
+  border-radius: 0;
+  box-shadow: 6px 6px 0 0 var(--we2ai-ink);
+}
+
+/* 票据条（顶栏工具状态）：ink 底 paper mono 字 */
+.we2ai-ticker {
+  background: var(--we2ai-ink);
+  color: var(--we2ai-paper);
+  font-family: var(--we2ai-font-mono);
+}
+
+.we2ai-ticker-item {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* 模型广场：格子网格 */
+.we2ai-model-grid {
+  display: grid;
+  border-top: 2px solid var(--we2ai-ink);
+  border-left: 2px solid var(--we2ai-ink);
+}
+
+.we2ai-model-cell {
+  border-right: 2px solid var(--we2ai-ink);
+  border-bottom: 2px solid var(--we2ai-ink);
+  background: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  transition: background-color 0.12s ease;
+}
+
+.we2ai-model-cell:hover {
+  background: var(--we2ai-paper-2);
+}
+
+.we2ai-model-cell--orange {
+  background: var(--we2ai-orange);
+  color: var(--we2ai-paper);
+}
+
+.we2ai-model-cell--orange:hover {
+  background: var(--we2ai-orange);
+}

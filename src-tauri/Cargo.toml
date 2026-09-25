@@ -15,6 +15,17 @@ name = "cc_switch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 doctest = false
 
+# we2ai: 显式声明 bin target，让 `cargo build`/`tauri dev` 直接产出 we2ai(.exe)，
+# 而不是跟着 [package] name 走的 cc-switch(.exe)（见自定义开发功能列表.md 功能 5
+# 的 "Linux deep-link 并存冲突"一节）。`tauri.conf.json` 的 mainBinaryName 只在
+# `tauri build` 打包阶段重命名产物，`cargo build`/`pnpm tauri dev` 不经过那一步，
+# macOS 钥匙串授权提示、登录项等系统级 UI 仍会显示 cargo 产出的原始进程名。
+# 不改 [package] name：那会牵动 Cargo.toml/Cargo.lock 的包名条目、
+# scripts/we2ai/lib.sh 的版本号定位（依赖 `name = "cc-switch"`）等一大片。
+[[bin]]
+name = "we2ai"
+path = "src/main.rs"
+
 [features]
 default = []
 test-hooks = []

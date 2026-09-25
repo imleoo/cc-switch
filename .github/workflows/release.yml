@@ -15,6 +15,13 @@ jobs:
   release:
     runs-on: ${{ matrix.os }}
     environment: release
+    env:
+      # we2ai: fork 仓库（imleoo/cc-switch）目前没有配置 Apple Developer ID 证书，
+      # 只有 TAURI_SIGNING_PRIVATE_KEY[/_PASSWORD]（updater 签名，与 Apple 签名/
+      # 公证无关）。HAS_APPLE_CERT 决定 macOS 走完整签名+公证流程，还是内测用的
+      # 临时签名（ad-hoc）+ 不公证流程，见下方各 macOS 步骤的 if 条件，以及
+      # 自定义开发功能列表.md 功能 15。job 级 env 支持引用 secrets。
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,6 +35,31 @@ jobs:
           - os: macos-14
 
     steps:
+      - name: Guard against non-tag dispatch
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # we2ai: publish-release job 直接用 github.ref_name 当 GitHub Release 的
+          # tag_name 发布。手动 workflow_dispatch 时如果误选了分支而不是 v* tag
+          # 作为 ref，会创建一个以分支名当 tag 名的错误 Release（自定义开发功能
+          # 列表.md 功能 15）。这里在最早的步骤失败退出，避免跑完整个矩阵才发现。
+          # ref 走 env 传入，不直接内联进脚本（git ref 可含 shell 特殊字符）。
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::release.yml 必须在 tag ref 上手动运行（当前 ref_type=$REF_TYPE, ref_name=$REF_NAME）。请在 Actions → Run workflow 里把 Use workflow from 选成 v* tag，而不是分支。" >&2
+            exit 1
+          fi
+          case "$REF_NAME" in
+            v*) ;;
+            *)
+              echo "::error::release.yml 必须在 v* 格式的 tag 上运行（当前 ref_name=$REF_NAME）。" >&2
+              exit 1
+              ;;
+          esac
+          echo "✅ 在 tag $REF_NAME 上运行"
+
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -182,7 +214,7 @@ jobs:
           echo "✅ Tauri signing key prepared"
 
       - name: Import Apple signing certificate
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -223,6 +255,14 @@ jobs:
           # Cleanup certificate file
           rm -f "$CERT_PATH"
 
+      - name: Configure unsigned macOS signing identity
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning::HAS_APPLE_CERT is false — no Apple Developer ID certificate configured for this repo. Building an internal test package with ad-hoc signing only (unsigned, not notarized)."
+          echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+
       - name: Build Tauri App (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -234,6 +274,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          if [ "$HAS_APPLE_CERT" != "true" ]; then
+            # we2ai: 未配置 Apple 证书时不能把 APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID
+            # 留成空字符串——tauri-bundler 只判断这三个环境变量"是否被设置"，空
+            # 字符串仍算已设置，会用空凭据尝试公证并失败。必须整个 unset。
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
             echo "=== macOS build/notarization attempt ${attempt}/${max_attempts} ==="
@@ -299,9 +345,13 @@ jobs:
             exit 1
           fi
 
-          # Staple notarization ticket to .app (Tauri already notarized it)
-          xcrun stapler staple "$APP_PATH"
-          echo "✅ .app stapled"
+          if [ "$HAS_APPLE_CERT" = "true" ]; then
+            # Staple notarization ticket to .app (Tauri already notarized it)
+            xcrun stapler staple "$APP_PATH"
+            echo "✅ .app stapled"
+          else
+            echo "::warning::HAS_APPLE_CERT is false — skipping .app notarization staple (unsigned/internal test build)"
+          fi
 
           # 1) Collect .tar.gz (updater artifact)
           NEW_TAR_GZ="WE2AI-${VERSION}-macOS.tar.gz"
@@ -315,9 +365,15 @@ jobs:
           echo "macOS zip ready: $NEW_ZIP"
 
           # 3) Create styled DMG with create-dmg (Tauri's built-in DMG styling doesn't work on CI)
-          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-            echo "❌ APPLE_SIGNING_IDENTITY is missing before DMG creation" >&2
-            exit 1
+          DMG_CODESIGN_ARGS=()
+          if [ "$HAS_APPLE_CERT" = "true" ]; then
+            if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+              echo "❌ APPLE_SIGNING_IDENTITY is missing before DMG creation" >&2
+              exit 1
+            fi
+            DMG_CODESIGN_ARGS=(--codesign "$APPLE_SIGNING_IDENTITY")
+          else
+            echo "::warning::HAS_APPLE_CERT is false — creating an unsigned DMG (internal test build)"
           fi
 
           HOMEBREW_NO_AUTO_UPDATE=1 brew install create-dmg
@@ -336,7 +392,7 @@ jobs:
             --icon "WE2AI.app" 180 220 \
             --hide-extension "WE2AI.app" \
             --app-drop-link 480 220 \
-            --codesign "$APPLE_SIGNING_IDENTITY" \
+            ${DMG_CODESIGN_ARGS[@]+"${DMG_CODESIGN_ARGS[@]}"} \
             --no-internet-enable \
             "release-assets/$NEW_DMG" \
             "$DMG_STAGE_DIR"
@@ -345,7 +401,7 @@ jobs:
           echo "✅ Styled DMG created: $NEW_DMG"
 
       - name: Notarize macOS DMG
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
         shell: bash
         timeout-minutes: 30
         env:
@@ -410,15 +466,21 @@ jobs:
           fi
           echo "=== Verifying .app: $APP_PATH ==="
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          echo "✅ codesign verification passed"
-          spctl -a -t exec -vv "$APP_PATH"
-          echo "✅ spctl assessment passed"
-          xcrun stapler validate "$APP_PATH"
-          echo "✅ .app stapler validation passed"
+          echo "✅ codesign verification passed (ad-hoc signature also satisfies this check)"
 
-          # Verify .dmg (from release-assets/, created by create-dmg + notarized)
+          # Verify .dmg (from release-assets/, created by create-dmg)
           DMG_PATH=$(find release-assets -maxdepth 1 -name "*.dmg" -type f | head -1 || true)
-          if [ -n "$DMG_PATH" ]; then
+          if [ -z "$DMG_PATH" ]; then
+            echo "❌ No .dmg found for verification — release would ship without a DMG" >&2
+            exit 1
+          fi
+
+          if [ "$HAS_APPLE_CERT" = "true" ]; then
+            spctl -a -t exec -vv "$APP_PATH"
+            echo "✅ spctl assessment passed"
+            xcrun stapler validate "$APP_PATH"
+            echo "✅ .app stapler validation passed"
+
             echo "=== Verifying .dmg: $DMG_PATH ==="
             codesign --verify --verbose=2 "$DMG_PATH"
             echo "✅ .dmg codesign verification passed"
@@ -427,8 +489,8 @@ jobs:
             xcrun stapler validate "$DMG_PATH"
             echo "✅ .dmg stapler validation passed"
           else
-            echo "❌ No .dmg found for verification — release would ship without verified DMG" >&2
-            exit 1
+            echo "::warning::HAS_APPLE_CERT is false — this is an unsigned/unnotarized internal test build. Skipping spctl/stapler/DMG-signature checks (they would fail by design)."
+            echo "=== .dmg present at: $DMG_PATH ==="
           fi
 
       - name: Prepare Windows Assets
@@ -587,6 +649,11 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
     needs: release
+    # we2ai: 需要能读到 APPLE_CERTIFICATE 才能在 Release 正文里正确区分"已签名
+    # 公证" vs "内测未公证"文案（功能 15）；这个 secret 挂在 release 这个
+    # Environment 下，job 不声明 environment: release 就读不到，会一律读成
+    # 空字符串、永远走"未公证"分支，即使实际签名成功也会显示错误提示。
+    environment: release
     permissions:
       contents: write
     steps:
@@ -627,7 +694,7 @@ jobs:
             > `.tar.gz` 为 Tauri updater 自动更新专用，无需手动下载。
 
             ---
-            macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。
+            ${{ secrets.APPLE_CERTIFICATE != '' && 'macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。' || '⚠️ 内测包：macOS 版本未经 Apple 公证，首次打开需在「系统设置 → 隐私与安全性」中点「仍要打开」，或执行 `xattr -dr com.apple.quarantine /Applications/WE2AI.app` 后再打开。' }}
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

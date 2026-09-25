@@ -12,6 +12,8 @@ import { useTheme } from "@/components/theme-provider";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { settingsApi } from "@/lib/api/settings";
 import { WE2AI_WEBSITE_URL } from "@/config/we2ai";
+import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
+import "./we2ai-theme.css";
 import {
   we2aiApi,
   type We2aiSessionSummary,
@@ -480,11 +482,23 @@ export function We2aiShell() {
     }
   }, [loggedInIdentity, refreshToolStatus]);
 
+  // macOS 用 `titleBarStyle: "Overlay"`（`src-tauri/tauri.conf.json`），红绿灯
+  // 悬浮在内容之上、不占布局空间：顶栏需要预留左侧空间，否则 logo/文字会被
+  // 红绿灯遮住。其他平台没有这个问题，不需要额外留白。
+  const macDragPadding = isMac() ? "pl-20" : "pl-4";
+
   // 全部 hooks 已在上方无条件声明完毕，以下按会话状态分支渲染不同视图，不再
   // 有新的 hook 调用——不违反 hooks 调用顺序规则。
   if (!sessionChecked) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-background">
+      <div className="we2ai-theme flex h-screen w-screen items-center justify-center">
+        {isMac() && (
+          <div
+            className="fixed inset-x-0 top-0 h-8"
+            {...DRAG_REGION_ATTR}
+            aria-hidden="true"
+          />
+        )}
         <img
           src={we2aiLogo}
           alt=""
@@ -500,10 +514,10 @@ export function We2aiShell() {
       // 登出或会话终止时本机凭据没清掉：重启可能恢复旧会话，登录页上方给出
       // 提示与重试入口，不能静默（Codex 验收第 5 轮高危项 2）。
       return (
-        <div className="flex h-screen w-screen flex-col">
+        <div className="we2ai-theme flex h-screen w-screen flex-col">
           <div
             role="alert"
-            className="flex items-center justify-between gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
+            className="flex items-center justify-between gap-3 border-b-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-orange)] px-4 py-2 text-sm font-medium text-[var(--we2ai-paper)]"
           >
             <span>{t.localCleanupPendingBanner}</span>
             <Button
@@ -511,6 +525,7 @@ export function We2aiShell() {
               variant="outline"
               disabled={loggingOut}
               onClick={() => void handleRetryLocalCleanup()}
+              className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
             >
               {t.offlineRetry}
             </Button>
@@ -525,18 +540,21 @@ export function We2aiShell() {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-background text-foreground">
+    <div className="we2ai-theme flex h-screen w-screen flex-col">
       <header
-        className="flex h-12 shrink-0 items-center justify-between border-b px-4"
+        className={`flex h-14 shrink-0 items-center justify-between border-b-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] pr-4 ${macDragPadding}`}
         data-tauri-drag-region
       >
-        <span className="flex items-center gap-2 text-sm font-semibold tracking-wide">
+        <span className="we2ai-heading flex items-center gap-2 text-base">
           <img src={we2aiLogo} alt="" aria-hidden="true" className="h-5 w-5" />
           {t.brand}
         </span>
-        <div className="flex items-center gap-3">
+        <div
+          className="flex items-center gap-3"
+          style={{ WebkitAppRegion: "no-drag" } as any}
+        >
           {session.emailMasked && (
-            <span className="text-xs text-muted-foreground">
+            <span className="we2ai-label">
               {formatWe2aiString(t.loggedInAs, { email: session.emailMasked })}
             </span>
           )}
@@ -544,6 +562,7 @@ export function We2aiShell() {
             variant="ghost"
             size="sm"
             onClick={() => setLogoutDialogOpen(true)}
+            className="rounded-lg border-transparent px-3 shadow-none hover:bg-[var(--we2ai-paper-2)]"
           >
             {t.logoutButton}
           </Button>
@@ -553,24 +572,28 @@ export function We2aiShell() {
       <ToolStatusBar t={t} report={toolStatus} />
 
       <Dialog open={logoutDialogOpen} onOpenChange={setLogoutDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t.logoutConfirmTitle}</DialogTitle>
+        <DialogContent className="we2ai-theme rounded-none border-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-[8px_8px_0_0_var(--we2ai-ink)]">
+          <DialogHeader className="border-b-[2.5px] border-[var(--we2ai-ink)] bg-transparent">
+            <DialogTitle className="we2ai-heading">
+              {t.logoutConfirmTitle}
+            </DialogTitle>
             <DialogDescription>{t.logoutConfirmDescription}</DialogDescription>
           </DialogHeader>
-          <label className="flex items-center gap-2 text-sm">
+          <label className="flex items-center gap-2 px-6 text-sm">
             <Checkbox
               checked={removeToolKeys}
               disabled={loggingOut}
               onCheckedChange={(checked) => setRemoveToolKeys(checked)}
+              className="rounded-sm border-2 border-[var(--we2ai-ink)]"
             />
             {t.logoutRemoveToolKeys}
           </label>
-          <DialogFooter>
+          <DialogFooter className="border-t-[2.5px] border-[var(--we2ai-ink)] bg-transparent">
             <Button
               variant="outline"
               onClick={() => setLogoutDialogOpen(false)}
               disabled={loggingOut}
+              className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
             >
               {t.logoutConfirmCancel}
             </Button>
@@ -578,6 +601,7 @@ export function We2aiShell() {
               variant="destructive"
               onClick={() => void handleConfirmLogout()}
               disabled={loggingOut}
+              className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-orange)] text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-ink)]"
             >
               {t.logoutConfirmConfirm}
             </Button>
@@ -586,7 +610,7 @@ export function We2aiShell() {
       </Dialog>
 
       {offline && (
-        <div className="flex items-center justify-between gap-3 border-b bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        <div className="flex items-center justify-between gap-3 border-b-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-4 py-2 text-xs text-[var(--we2ai-ink)]">
           <span>
             {t.offlineBanner}
             {typeof session?.offlineRetryInSeconds === "number" &&
@@ -600,6 +624,7 @@ export function We2aiShell() {
             size="sm"
             disabled={retryingOffline}
             onClick={() => void handleRetryNow()}
+            className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
           >
             {retryingOffline ? t.offlineRetrying : t.offlineRetry}
           </Button>
@@ -607,7 +632,7 @@ export function We2aiShell() {
       )}
 
       {session.keyringDegraded && (
-        <div className="border-b bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        <div className="border-b-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-4 py-2 text-xs text-[var(--we2ai-ink)]">
           {t.keyringDegradedWarning}
         </div>
       )}
@@ -616,7 +641,7 @@ export function We2aiShell() {
           钥匙串退化分开展示——原因不同（索引写失败 vs 钥匙串不可用），
           文案不应该互相混淆。 */}
       {!session.keyringDegraded && session.indexDegraded && (
-        <div className="border-b bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        <div className="border-b-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-4 py-2 text-xs text-[var(--we2ai-ink)]">
           {t.sessionNotPersistableWarning}
         </div>
       )}
@@ -626,7 +651,7 @@ export function We2aiShell() {
       {session.localCleanupPending && (
         <div
           role="alert"
-          className="flex items-center justify-between gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive"
+          className="flex items-center justify-between gap-3 border-b-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-orange)] px-4 py-2 text-xs font-medium text-[var(--we2ai-paper)]"
         >
           <span>{t.localCleanupPendingBanner}</span>
           <Button
@@ -634,6 +659,7 @@ export function We2aiShell() {
             variant="outline"
             disabled={loggingOut}
             onClick={() => void handleRetryLocalCleanup()}
+            className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
           >
             {t.offlineRetry}
           </Button>
@@ -642,18 +668,32 @@ export function We2aiShell() {
 
       <div className="flex-1 overflow-y-auto p-6">
         <Tabs defaultValue="marketplace" className="mx-auto max-w-3xl">
-          <TabsList>
-            <TabsTrigger value="marketplace">{t.navMarketplace}</TabsTrigger>
-            <TabsTrigger value="settings">{t.navSettings}</TabsTrigger>
+          <TabsList className="rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
+            <TabsTrigger
+              value="marketplace"
+              className="we2ai-label rounded-none border-0 data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navMarketplace}
+            </TabsTrigger>
+            <TabsTrigger
+              value="settings"
+              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navSettings}
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="marketplace">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t.marketplaceTitle}</CardTitle>
-                <CardDescription>{t.marketplaceDescription}</CardDescription>
+            <Card className="we2ai-panel">
+              <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
+                <CardTitle className="we2ai-heading text-xl">
+                  {t.marketplaceTitle}
+                </CardTitle>
+                <CardDescription className="text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
+                  {t.marketplaceDescription}
+                </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="pt-6">
                 {/* 以会话身份作 key：换账号或换区域后整页重建，不沿用上个
                     会话的 Key 列表与选择。 */}
                 <ModelSquarePage
@@ -668,21 +708,23 @@ export function We2aiShell() {
           </TabsContent>
 
           <TabsContent value="settings" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t.settingsTitle}</CardTitle>
+            <Card className="we2ai-panel">
+              <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
+                <CardTitle className="we2ai-heading text-xl">
+                  {t.settingsTitle}
+                </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-5">
+              <CardContent className="space-y-5 pt-6">
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-sm font-medium">{t.themeLabel}</span>
+                  <span className="we2ai-label">{t.themeLabel}</span>
                   <Select
                     value={theme}
                     onValueChange={(v) => setTheme(v as typeof theme)}
                   >
-                    <SelectTrigger className="w-36">
+                    <SelectTrigger className="w-36 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
                       <SelectItem value="light">{t.themeLight}</SelectItem>
                       <SelectItem value="dark">{t.themeDark}</SelectItem>
                       <SelectItem value="system">{t.themeSystem}</SelectItem>
@@ -691,12 +733,12 @@ export function We2aiShell() {
                 </div>
 
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-sm font-medium">{t.languageLabel}</span>
+                  <span className="we2ai-label">{t.languageLabel}</span>
                   <Select value={language} onValueChange={handleLanguageChange}>
-                    <SelectTrigger className="w-36">
+                    <SelectTrigger className="w-36 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
                       <SelectItem value="zh">简体中文</SelectItem>
                       <SelectItem value="en">English</SelectItem>
                     </SelectContent>
@@ -705,10 +747,8 @@ export function We2aiShell() {
 
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <div className="text-sm font-medium">
-                      {t.launchOnStartupLabel}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
+                    <div className="we2ai-label">{t.launchOnStartupLabel}</div>
+                    <div className="mt-1 text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
                       {t.launchOnStartupDescription}
                     </div>
                   </div>
@@ -718,15 +758,14 @@ export function We2aiShell() {
                     onCheckedChange={(checked) => {
                       void handleLaunchOnStartupChange(checked);
                     }}
+                    className="border-2 border-[var(--we2ai-ink)] data-[state=checked]:bg-[var(--we2ai-orange)] data-[state=unchecked]:bg-[var(--we2ai-paper-2)]"
                   />
                 </div>
 
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <div className="text-sm font-medium">
-                      {t.silentStartupLabel}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
+                    <div className="we2ai-label">{t.silentStartupLabel}</div>
+                    <div className="mt-1 text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
                       {t.silentStartupDescription}
                     </div>
                   </div>
@@ -734,28 +773,37 @@ export function We2aiShell() {
                     checked={silentStartup}
                     disabled={!settingsLoaded}
                     onCheckedChange={handleSilentStartupChange}
+                    className="border-2 border-[var(--we2ai-ink)] data-[state=checked]:bg-[var(--we2ai-orange)] data-[state=unchecked]:bg-[var(--we2ai-paper-2)]"
                   />
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
+            <Card className="we2ai-panel">
+              <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
+                <CardTitle className="we2ai-heading flex items-center gap-2 text-xl">
                   <img src={we2aiLogo} alt={t.brand} className="h-5 w-5" />
                   {t.aboutTitle}
                 </CardTitle>
-                <CardDescription>
+                <CardDescription className="text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
                   {t.versionLabel} {appVersion ? `v${appVersion}` : "…"}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-wrap items-center gap-3">
-                <Button variant="outline" onClick={handleOpenWebsite}>
+              <CardContent className="flex flex-wrap items-center gap-3 pt-6">
+                <Button
+                  variant="outline"
+                  onClick={handleOpenWebsite}
+                  className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
+                >
                   {t.officialWebsite}
                 </Button>
 
                 {update.hasUpdate ? (
-                  <Button onClick={handleInstallUpdate} disabled={installing}>
+                  <Button
+                    onClick={handleInstallUpdate}
+                    disabled={installing}
+                    className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-orange)]"
+                  >
                     {installing
                       ? t.checking
                       : `${t.updateAvailable}${
@@ -769,6 +817,7 @@ export function We2aiShell() {
                     variant="outline"
                     onClick={handleCheckForUpdates}
                     disabled={update.isChecking}
+                    className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
                   >
                     {update.isChecking ? t.checking : t.checkForUpdates}
                   </Button>
@@ -777,9 +826,7 @@ export function We2aiShell() {
                 {!update.isChecking &&
                   !update.hasUpdate &&
                   update.updateInfo === null && (
-                    <span className="text-xs text-muted-foreground">
-                      {t.upToDate}
-                    </span>
+                    <span className="we2ai-label opacity-60">{t.upToDate}</span>
                   )}
               </CardContent>
             </Card>

@@ -16,37 +16,42 @@ interface ToolStatusBarProps {
 export function ToolStatusBar({ t, report }: ToolStatusBarProps) {
   if (!report) return null;
   return (
-    <div className="border-b" data-testid="we2ai-tool-status">
+    <div
+      className="we2ai-ticker border-b-[2.5px] border-[var(--we2ai-ink)]"
+      data-testid="we2ai-tool-status"
+    >
       {report.ccSwitchRunning && (
         <div
           role="status"
-          className="bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200"
+          className="we2ai-ticker-item border-b border-[color:color-mix(in_srgb,var(--we2ai-paper)_25%,transparent)] bg-[var(--we2ai-orange)] px-4 py-1.5 text-[var(--we2ai-paper)]"
         >
           {t.ccSwitchRunningBanner}
         </div>
       )}
-      <ul className="flex flex-wrap gap-x-6 gap-y-1 px-4 py-2 text-xs">
+      <ul className="flex flex-wrap gap-x-6 gap-y-1 px-4 py-2">
         {report.tools.map((tool) => (
           <li
             key={tool.tool}
-            className="flex items-center gap-2"
+            className="we2ai-ticker-item flex items-center gap-2"
             data-testid={`we2ai-tool-${tool.tool}`}
           >
-            <span className="font-medium">{WE2AI_TOOL_LABELS[tool.tool]}</span>
+            <span>{WE2AI_TOOL_LABELS[tool.tool]}</span>
             {tool.broken ? (
-              <span className="text-destructive">{t.toolBroken}</span>
+              <span className="text-[var(--we2ai-orange)]">{t.toolBroken}</span>
             ) : tool.installed ? (
               tool.version && (
-                <span className="text-muted-foreground">{tool.version}</span>
+                <span className="normal-case tracking-normal text-[color:color-mix(in_srgb,var(--we2ai-paper)_60%,transparent)]">
+                  {tool.version}
+                </span>
               )
             ) : (
               <>
-                <span className="text-muted-foreground">
+                <span className="text-[color:color-mix(in_srgb,var(--we2ai-paper)_60%,transparent)]">
                   {t.toolNotInstalled}
                 </span>
                 <button
                   type="button"
-                  className="text-primary underline-offset-2 hover:underline"
+                  className="underline-offset-2 hover:text-[var(--we2ai-orange)] hover:underline"
                   onClick={() =>
                     void settingsApi.openExternal(tool.downloadUrl)
                   }
@@ -55,7 +60,7 @@ export function ToolStatusBar({ t, report }: ToolStatusBarProps) {
                 </button>
               </>
             )}
-            <span className="text-muted-foreground">
+            <span className="normal-case tracking-normal text-[color:color-mix(in_srgb,var(--we2ai-paper)_60%,transparent)]">
               ·{" "}
               {tool.managedModel
                 ? formatWe2aiString(t.toolCurrentModel, {
