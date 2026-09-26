@@ -30,6 +30,8 @@ export interface We2aiStrings {
   toolCurrentModel: string;
   toolNotConfigured: string;
   ccSwitchRunningBanner: string;
+  /** apply 前的快速检测超时未完成时的提示（Codex 验收 Y1）。 */
+  applyDetectionIncomplete: string;
   // 恢复官方配置（方案 P6，顶栏单工具入口）
   restoreOfficialAction: string;
   restoreOfficialConfirmTitle: string;
@@ -40,6 +42,7 @@ export interface We2aiStrings {
   applyConfirmDescription: string;
   applyFilesLabel: string;
   applyFieldsLabel: string;
+  applyExtraChangesLabel: string;
   applyAdvanced: string;
   slotSonnet: string;
   slotOpus: string;
@@ -59,6 +62,7 @@ export interface We2aiStrings {
   errorApplyPrecondition: string;
   errorApplyGeneric: string;
   errorApplyConcurrent: string;
+  errorApplyExtraChangesStale: string;
   keyBlockedQuotaExhausted: string;
   keyBlockedExpired: string;
   keyBlockedDisabled: string;
@@ -178,7 +182,8 @@ const zh: We2aiStrings = {
   toolCurrentModel: "当前：{model}",
   toolNotConfigured: "未指定 WE2AI 模型",
   ccSwitchRunningBanner:
-    "CC Switch 也在运行，它与 WE2AI 可能互相覆盖这些工具的配置",
+    "检测到另一个配置管理工具正在运行，可能与 WE2AI 互相覆盖这些工具的配置",
+  applyDetectionIncomplete: "未能完成检测（可能是网络较慢），仍可继续确认",
   restoreOfficialAction: "恢复官方",
   restoreOfficialConfirmTitle: "恢复 {tool} 的官方配置？",
   restoreOfficialConfirmDescription:
@@ -189,6 +194,7 @@ const zh: We2aiStrings = {
   applyConfirmDescription: "只改写以下文件中的这些字段，其余内容保持不变",
   applyFilesLabel: "文件",
   applyFieldsLabel: "字段",
+  applyExtraChangesLabel: "以下内容也会被一并改动（非 WE2AI 托管，由工具自身的写入逻辑触发）",
   applyAdvanced: "高级：分别指定各槽位模型",
   slotSonnet: "Sonnet 槽位",
   slotOpus: "Opus 槽位",
@@ -205,11 +211,13 @@ const zh: We2aiStrings = {
     "WorkBuddy 中已有 {model} 条目，且内容与 WE2AI 上次写入的不同。",
   workbuddyOverwriteConfirm: "覆盖为 WE2AI 配置",
   errorApplyTakeover:
-    "CC Switch 正在代理接管此工具，请先在 CC Switch 中关闭接管",
+    "该工具正被其他程序代理接管，请先在该程序中关闭接管",
   errorApplyTakeoverDetected: "检测到代理接管，未生效",
   errorApplyPrecondition: "WE2AI 记录的供应商状态异常，已停止写入",
   errorApplyGeneric: "写入失败",
   errorApplyConcurrent: "WorkBuddy 配置正被其他程序频繁修改，请稍后重试",
+  errorApplyExtraChangesStale:
+    "确认弹窗展示的内容与当前配置不一致（配置在确认期间被修改），未写入，请重新打开确认弹窗核对后再试",
   keyBlockedQuotaExhausted: "这个 Key 的额度已用完，暂时无法调用",
   keyBlockedExpired: "这个 Key 已过期",
   keyBlockedDisabled: "这个 Key 已被停用",
@@ -331,7 +339,9 @@ const en: We2aiStrings = {
   toolCurrentModel: "Current: {model}",
   toolNotConfigured: "No WE2AI model set",
   ccSwitchRunningBanner:
-    "CC Switch is also running. It and WE2AI may overwrite each other's tool settings.",
+    "Another configuration manager is also running. It and WE2AI may overwrite each other's tool settings.",
+  applyDetectionIncomplete:
+    "Couldn't finish the check (network may be slow); you can still confirm",
   restoreOfficialAction: "Restore official",
   restoreOfficialConfirmTitle: "Restore the official config for {tool}?",
   restoreOfficialConfirmDescription:
@@ -343,6 +353,8 @@ const en: We2aiStrings = {
     "Only these fields in these files are changed. Everything else stays as is.",
   applyFilesLabel: "Files",
   applyFieldsLabel: "Fields",
+  applyExtraChangesLabel:
+    "These will also be changed (not managed by WE2AI; triggered by the tool's own write logic)",
   applyAdvanced: "Advanced: choose a model per slot",
   slotSonnet: "Sonnet slot",
   slotOpus: "Opus slot",
@@ -361,7 +373,7 @@ const en: We2aiStrings = {
     "WorkBuddy already has a {model} entry that differs from what WE2AI last wrote.",
   workbuddyOverwriteConfirm: "Overwrite with WE2AI settings",
   errorApplyTakeover:
-    "CC Switch is proxy-managing this tool. Turn off takeover in CC Switch first.",
+    "This tool is being proxy-managed by another program. Turn off takeover there first.",
   errorApplyTakeoverDetected:
     "Proxy takeover detected. The change did not take effect.",
   errorApplyPrecondition:
@@ -369,6 +381,8 @@ const en: We2aiStrings = {
   errorApplyGeneric: "Write failed",
   errorApplyConcurrent:
     "Another program keeps changing the WorkBuddy settings. Please try again later.",
+  errorApplyExtraChangesStale:
+    "The confirmation dialog no longer matches the current config (it was changed while you were confirming). Nothing was written — please reopen the dialog and try again.",
   keyBlockedQuotaExhausted: "This key has used up its quota",
   keyBlockedExpired: "This key has expired",
   keyBlockedDisabled: "This key is disabled",

@@ -560,6 +560,15 @@ struct Inner {
     /// 测试专用：强制接下来的 N 次索引读回（`try_load`）失败。
     #[cfg(test)]
     force_index_read_failures: AtomicU64,
+    /// 测试专用：覆盖 [`SessionManager::ensure_refreshed_with_backoff`] 的
+    /// 总时限（生产恒为 30 秒）。真实的 30 秒太长，测试没法在合理时间内
+    /// 断言"超过截止时间后不再发起新的重试"；设置为更短的值（如 1 秒），
+    /// 配合足够长的 mock 响应延迟（如 3 秒），既能验证截止时间检查确实
+    /// 生效，又能验证它只在"发起下一次重试之前"检查、绝不取消正在进行中
+    /// 的请求（Opus 复核低危项 S5）。生产路径下恒为 `None`，且没有公开
+    /// 方法能在生产构建下设置它（setter 本身 `#[cfg(test)]`）。
+    #[cfg(test)]
+    refresh_backoff_deadline_override: Mutex<Option<Duration>>,
 }
 
 #[cfg(test)]
@@ -651,6 +660,8 @@ impl SessionManager {
             pending_cleanups: Mutex::new(HashMap::new()),
             #[cfg(test)]
             force_index_read_failures: AtomicU64::new(0),
+            #[cfg(test)]
+            refresh_backoff_deadline_override: Mutex::new(None),
         }))
     }
 
@@ -662,6 +673,12 @@ impl SessionManager {
             }
         }
         ApiClient::new(region, &self.0.app_version)
+    }
+
+    /// 测试专用：见 [`Inner::refresh_backoff_deadline_override`] 的说明。
+    #[cfg(test)]
+    pub(crate) fn set_test_refresh_backoff_deadline(&self, deadline: Duration) {
+        *self.0.refresh_backoff_deadline_override.lock().unwrap() = Some(deadline);
     }
 
     /// 测试专用：见 [`Inner::base_url_override`] 的说明。
@@ -1445,6 +1462,91 @@ impl SessionManager {
         result.map(|_| ())
     }
 
+    /// [`run_protected`] 里"access token 过期 → 单飞刷新"分支专用：刷新请求
+    /// 本身遇到网络错误/429/5xx（[`ensure_refreshed`] 返回
+    /// [`SessionError::Transient`]）时，做与请求重放同一套有限次数快速退避
+    /// 重试（复用 [`PROTECTED_FAST_RETRY_ATTEMPTS`]/[`backoff_delay`]），而不
+    /// 是把第一次 Transient 直接上抛终止整个受保护调用——刷新接口的瞬时失败
+    /// 与请求接口的瞬时失败享受同一种"抖动式短暂失败"待遇（方案第 3.1/5.2
+    /// 节"网络错误、429、5xx 保留凭证并退避重试"）。凭证在整个过程中都不
+    /// 清除：`ensure_refreshed()`/`do_refresh()` 对 Transient 分类本就不触碰
+    /// 钥匙串。
+    ///
+    /// 每次重试前都用 `ctx` 复查身份（generation + 区域）：会话在退避等待
+    /// 期间登出或切换，立即以 `SessionChanged` 停止重试，不再对着一个已经
+    /// 不属于这次调用的会话继续刷新（与 `run_protected` 里请求重放前的身份
+    /// 复查同一套逻辑）。次数耗尽仍失败时，把最后一次 `Transient` 错误原样
+    /// 上抛，交由调用方界面提示并重试，不在这里无限重试或悄悄延长等待。
+    ///
+    /// **总时限（Opus 复核低危项 L1，中危项 R4 修正实现方式）**：不整体包
+    /// 一层 `tokio::time::timeout` 强行取消进行中的请求——那样会在 refresh
+    /// 请求已经发到服务端、服务端已经轮转了 refresh token，但响应还没送达
+    /// 客户端时把这次 `await` 提前掐断：本地既没拿到新 token，下次还会拿
+    /// 这个已经失效的旧 token 去刷新，服务端会把这当成"已轮转 token 被
+    /// 重放"，直接撤销整条会话（`REFRESH_TOKEN_REUSED`）。改为只在**发起
+    /// 下一次重试之前**检查这个软时限，已经发出的请求永远等它自然返回，
+    /// 不强行中断；`PROTECTED_FAST_RETRY_ATTEMPTS` 次数上限仍然是主要的
+    /// 收敛手段，这个时限只是防止个别请求异常缓慢时无限期地叠加等待。
+    const REFRESH_BACKOFF_OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// 本次调用要用的总时限：测试可通过
+    /// [`Self::set_test_refresh_backoff_deadline`] 覆盖成更短的值（真实的
+    /// 30 秒太长，测试没法在合理时间内断言"截止后不再重试"），生产路径下
+    /// 恒为 [`Self::REFRESH_BACKOFF_OVERALL_TIMEOUT`]。
+    fn refresh_backoff_overall_timeout(&self) -> Duration {
+        #[cfg(test)]
+        {
+            if let Some(d) = *self.0.refresh_backoff_deadline_override.lock().unwrap() {
+                return d;
+            }
+        }
+        Self::REFRESH_BACKOFF_OVERALL_TIMEOUT
+    }
+
+    async fn ensure_refreshed_with_backoff(
+        &self,
+        ctx: OperationContext,
+        stale_token: &str,
+    ) -> Result<(), SessionError> {
+        let deadline = Instant::now() + self.refresh_backoff_overall_timeout();
+        let mut attempt = 0u32;
+        let mut last_transient = String::new();
+        loop {
+            // 只在**真正要发起下一次请求之前**检查软时限（Codex 验收 X3：旧
+            // 实现把这个检查放在上一次请求失败、决定要不要睡这一轮退避的
+            // 那一刻——睡眠本身可能跨过截止时间，睡醒后却没有再检查一次，
+            // 于是截止时间之后仍然发出了下一次 refresh 请求）。首次尝试
+            // （`attempt == 0`）永远放行，不受这个检查约束——截止时间是从
+            // 这个函数开始计时的，此刻必然还没过期，也不应该因为函数入口
+            // 到这里之间的极短调度延迟而误判。
+            if attempt > 0 && Instant::now() >= deadline {
+                return Err(SessionError::Transient(last_transient));
+            }
+            match self.ensure_refreshed().await {
+                Ok(()) => return Ok(()),
+                Err(SessionError::Transient(msg)) => {
+                    if attempt >= PROTECTED_FAST_RETRY_ATTEMPTS {
+                        return Err(SessionError::Transient(msg));
+                    }
+                    last_transient = msg;
+                    let delay = backoff_delay(attempt);
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                    let current = self.current_token_if_context_matches(ctx)?;
+                    // 醒来时 token 已经不是发起这次退避时的旧值：说明另一路
+                    // 并发调用已经独立完成了一轮刷新（不一定是同一个
+                    // single-flight future——两次重试各自新建的 future 在
+                    // 时序上可能没有重叠），没必要再发一次多余的刷新请求
+                    // （Opus 复核中危项 M5）。
+                    if current != stale_token {
+                        return Ok(());
+                    }
+                }
+                Err(other) => return Err(other),
+            }
+        }
+    }
+
     async fn do_refresh(&self) -> Result<TokenPair, SessionError> {
         let (region, refresh_token, generation) = match &*self.current_state() {
             SessionState::Active(s) => (s.region, s.refresh_token.clone(), s.generation),
@@ -1976,7 +2078,7 @@ impl SessionManager {
                         // API 的请求（Codex 代码评审第 6 轮高危项 1）。
                         let current = self.current_token_if_context_matches(ctx)?;
                         if current == token {
-                            self.ensure_refreshed().await?;
+                            self.ensure_refreshed_with_backoff(ctx, &token).await?;
                         }
                         token = self.current_token_if_context_matches(ctx)?;
                         continue;
@@ -2721,6 +2823,77 @@ mod tests {
         );
     }
 
+    // Opus 复核低危项 L2：与上面的用例同源，但拦截的是*刷新本身*的退避
+    // （偏差修复项 C / 中危项 M5 新增的 `ensure_refreshed_with_backoff`），
+    // 不是请求重放的退避。第一次 refresh 遇到 503 后进入 1 秒退避，退避期间
+    // 登出；醒来时身份已变化，必须停止，不发起第二次 refresh 请求。
+    #[tokio::test]
+    async fn refresh_backoff_stops_retrying_and_issues_no_second_refresh_once_the_session_logs_out_mid_backoff(
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let manager = manager_with_store(dir.path(), store.clone());
+        seed_active(&manager, Region::International, 42, "refresh-1");
+        store
+            .set(
+                secret_store::SERVICE_NAME,
+                &secret_store::account_key("international", 42),
+                "refresh-1",
+            )
+            .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": "TOKEN_EXPIRED", "message": "expired"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // 只应该被调用一次：退避期间登出后，醒来必须停止，不发起第二次
+        // refresh 请求。如果实现在登出后仍然重试，这个 `.expect(1)` 会让
+        // 测试失败。
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/logout"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success", "data": {"revoked": true}
+            })))
+            .mount(&server)
+            .await;
+        manager.set_test_base_url_override(server.uri());
+
+        let manager_for_call = manager.clone();
+        let api = manager.api_for(Region::International);
+        let call_task = tokio::spawn(async move {
+            manager_for_call
+                .call_protected(true, |token| {
+                    let api = &api;
+                    async move { api.get_authed("/api/v1/user/probe", &token).await }
+                })
+                .await
+        });
+
+        // 第一次 refresh 失败后的退避是 1 秒；在它睡着的这段时间内登出。
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let logout_outcome = manager.logout().await;
+        assert_eq!(logout_outcome, LogoutOutcome::Revoked);
+
+        let result = call_task.await.unwrap();
+        assert!(
+            matches!(result, Err(SessionError::SessionChanged)),
+            "retrying the refresh itself against a session that logged out mid-backoff must stop instead of issuing a second refresh, got {result:?}"
+        );
+        // 两个 `.expect(1)`（受保护请求 1 次、refresh 1 次）在 `server` 析构
+        // 时校验：确认没有发生第二次 refresh 请求。
+    }
+
     // Codex 代码评审第 3 轮中危项 1：POST 等非幂等请求遇到网络错误/429/5xx
     // 不能自动重放（服务端可能已经处理了第一次请求），必须立即返回
     // Transient，一次都不重试。
@@ -3064,6 +3237,95 @@ mod tests {
             manager.summary().logged_in,
             "session must be kept alive after the shared refresh"
         );
+    }
+
+    // Opus 复核中危项 M5：两路并发 call_protected 同时撞上 access token 过期，
+    // 第一次 refresh 遇到瞬时失败（503）、退避一次后第二次成功——断言 refresh
+    // 总共只被调用 2 次（每次尝试各 1 次，不是 2 个调用者各自触发 2 次、共
+    // 4 次）。两个 mock 都带延迟拉宽窗口，让两路调用真的有机会互相重叠、
+    // 加入同一次尝试，而不是侥幸串行执行侥幸通过。
+    #[tokio::test]
+    async fn two_concurrent_call_protected_share_the_retry_after_a_transient_refresh_failure() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let manager = manager_with_store(dir.path(), store);
+        seed_active(&manager, Region::International, 42, "refresh-1");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(503).set_delay(Duration::from_millis(30)))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(30))
+                    .set_body_json(json!({
+                        "code": 0, "message": "success",
+                        "data": {"access_token": "new-access", "refresh_token": "refresh-2", "expires_in": 3600, "token_type": "Bearer"}
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer old-access",
+            ))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_delay(Duration::from_millis(30))
+                    .set_body_json(json!({"code": "TOKEN_EXPIRED", "message": "expired"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer new-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success", "data": {"ok": true}
+            })))
+            .mount(&server)
+            .await;
+        manager.set_test_base_url_override(server.uri());
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let manager = manager.clone();
+            handles.push(tokio::spawn(async move {
+                let api = manager.api_for(Region::International);
+                manager
+                    .call_protected(true, |token| {
+                        let api = &api;
+                        async move { api.get_authed("/api/v1/user/probe", &token).await }
+                    })
+                    .await
+            }));
+        }
+        for h in handles {
+            let result = h
+                .await
+                .unwrap()
+                .expect("both concurrent calls must eventually succeed");
+            assert_eq!(
+                result.get("ok").and_then(serde_json::Value::as_bool),
+                Some(true)
+            );
+        }
+
+        assert!(manager.summary().logged_in);
+        // 两个 refresh mock 各自的 `.expect(1)` 在 `server` 析构时校验：总共
+        // 恰好 2 次 refresh 请求（不是两个调用者各自独立重试导致的 4 次）。
     }
 
     #[tokio::test]
@@ -3670,6 +3932,434 @@ mod tests {
             Some(true)
         );
         assert!(manager.summary().logged_in, "session must remain active");
+    }
+
+    // 偏差修复项 C（方案第 3.1/5.2 节"网络错误、429、5xx 保留凭证并退避
+    // 重试"）：受保护接口过期触发的刷新本身遇到 429/5xx 时，`run_protected`
+    // 必须像对待请求重放一样做有限次数快速退避重试，而不是把第一次
+    // Transient 直接上抛终止整个调用。这里第一次 refresh 返回 503，退避一次
+    // 后第二次 refresh 成功，最终请求应当成功、凭证（钥匙串里的 refresh
+    // token）随之更新为轮转后的新值。
+    #[tokio::test]
+    async fn call_protected_retries_refresh_after_transient_failure_then_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let manager = manager_with_store(dir.path(), store.clone());
+        seed_active(&manager, Region::International, 42, "refresh-1");
+        store
+            .set(
+                secret_store::SERVICE_NAME,
+                &secret_store::account_key("international", 42),
+                "refresh-1",
+            )
+            .unwrap();
+
+        let server = MockServer::start().await;
+        // 第一次 refresh 遇到 503（瞬时失败）；退避一次后第二次 refresh 成功。
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {"access_token": "new-access", "refresh_token": "refresh-2", "expires_in": 3600, "token_type": "Bearer"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer old-access",
+            ))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": "TOKEN_EXPIRED", "message": "expired"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer new-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success", "data": {"ok": true}
+            })))
+            .mount(&server)
+            .await;
+        manager.set_test_base_url_override(server.uri());
+
+        let api = manager.api_for(Region::International);
+        let started = std::time::Instant::now();
+        let result = manager
+            .call_protected(true, |token| {
+                let api = &api;
+                async move { api.get_authed("/api/v1/user/probe", &token).await }
+            })
+            .await
+            .expect("should retry the refresh itself with backoff and then succeed");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            result.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            manager.summary().logged_in,
+            "credentials must not be cleared by a transient refresh failure"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "the retry must wait out a backoff delay instead of hammering refresh immediately, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "must still resolve quickly (bounded fast-retry), took {elapsed:?}"
+        );
+        assert_eq!(
+            store
+                .get(
+                    secret_store::SERVICE_NAME,
+                    &secret_store::account_key("international", 42)
+                )
+                .unwrap(),
+            Some("refresh-2".to_string()),
+            "the rotated refresh token from the eventually-successful refresh must be persisted"
+        );
+    }
+
+    // Opus 复核中危项 R4：总时限不能靠 `tokio::time::timeout` 包裹整个重试
+    // 循环去强行取消一个已经发出的 refresh 请求——那样即便服务端已经处理
+    // 完并轮转了 refresh token，客户端也会因为本地提前掐断而拿不到新
+    // token，下次还会用这个已经失效的旧 token 去刷新，被服务端当成"已轮转
+    // token 被重放"而撤销整条会话。这里让第二次（最终成功的）refresh 请求
+    // 故意"很慢"（2 秒延迟，明显长于两次快速重试的退避窗口 1s+2s=3s 里
+    // 单次退避的量级），断言这次慢请求依然被完整等待、其成功结果被正常
+    // 采纳，而不是被提前判定失败或返回 Transient。
+    #[tokio::test]
+    async fn refresh_backoff_waits_out_a_slow_in_flight_refresh_request_instead_of_cancelling_it()
+    {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let manager = manager_with_store(dir.path(), store.clone());
+        seed_active(&manager, Region::International, 42, "refresh-1");
+        store
+            .set(
+                secret_store::SERVICE_NAME,
+                &secret_store::account_key("international", 42),
+                "refresh-1",
+            )
+            .unwrap();
+
+        let server = MockServer::start().await;
+        // 第一次 refresh 快速返回 503（进入退避分支）。
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        // 第二次 refresh 明显"慢"（2 秒），验证它不会被任何隐藏的超时机制
+        // 提前取消——响应必须被完整等待并采纳。
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_json(json!({
+                        "code": 0, "message": "success",
+                        "data": {"access_token": "new-access", "refresh_token": "refresh-2", "expires_in": 3600, "token_type": "Bearer"}
+                    })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer old-access",
+            ))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": "TOKEN_EXPIRED", "message": "expired"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer new-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success", "data": {"ok": true}
+            })))
+            .mount(&server)
+            .await;
+        manager.set_test_base_url_override(server.uri());
+
+        let api = manager.api_for(Region::International);
+        let started = std::time::Instant::now();
+        let result = manager
+            .call_protected(true, |token| {
+                let api = &api;
+                async move { api.get_authed("/api/v1/user/probe", &token).await }
+            })
+            .await
+            .expect("the slow-but-eventually-successful refresh must not be cancelled early");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            result.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        // 至少要等满 2 秒的慢请求延迟（加上第一次退避的 1 秒），证明请求被
+        // 完整等待，而不是被某个更短的隐藏超时提前打断。
+        assert!(
+            elapsed >= Duration::from_secs(2),
+            "the in-flight refresh request must be awaited to completion, not cancelled, took {elapsed:?}"
+        );
+        assert_eq!(
+            store
+                .get(
+                    secret_store::SERVICE_NAME,
+                    &secret_store::account_key("international", 42)
+                )
+                .unwrap(),
+            Some("refresh-2".to_string()),
+            "the rotated refresh token from the slow-but-successful refresh must be persisted, \
+             not lost to a cancelled request"
+        );
+    }
+
+    // Codex 验收 X3：拆成两个独立用例，分别验证"截止前已发出的请求继续
+    // 等待到完成"与"截止后不再发出新请求"——此前这两条挤在同一个用例里，
+    // 而软时限检查的位置本身有错（放在决定要不要睡这一轮退避之前，而不是
+    // 真正发起下一次请求之前），导致这个旧用例断言的其实是"睡眠跨过截止后
+    // 仍然发出下一次请求"这个 bug 本身，误把它当成"不取消在途请求"的证据。
+    //
+    // 本例：deadline 设为 2 秒。第一次 refresh 快速 503，退避 1 秒（此时
+    // 已耗时约 1 秒，仍小于 2 秒的截止，发起下一次请求前的检查放行）；第
+    // 二次 refresh 故意延迟 3 秒才成功——发起时截止还没到，发起之后这次
+    // 请求必须被完整等到，即便响应到达时（约 4 秒）已经明显晚于截止。
+    #[tokio::test]
+    async fn refresh_backoff_waits_out_a_request_dispatched_before_the_deadline_even_if_its_response_arrives_after_it(
+    ) {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let manager = manager_with_store(dir.path(), store.clone());
+        manager.set_test_refresh_backoff_deadline(Duration::from_secs(2));
+        seed_active(&manager, Region::International, 42, "refresh-1");
+        store
+            .set(
+                secret_store::SERVICE_NAME,
+                &secret_store::account_key("international", 42),
+                "refresh-1",
+            )
+            .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        // 3 秒延迟：响应到达时（约 1s 退避 + 3s 延迟 = 4s）已经晚于 2 秒的
+        // 截止，但这次请求是在截止之前（约 1 秒时）发出的，必须被完整等待。
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(3))
+                    .set_body_json(json!({
+                        "code": 0, "message": "success",
+                        "data": {"access_token": "new-access", "refresh_token": "refresh-2", "expires_in": 3600, "token_type": "Bearer"}
+                    })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer old-access",
+            ))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": "TOKEN_EXPIRED", "message": "expired"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer new-access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success", "data": {"ok": true}
+            })))
+            .mount(&server)
+            .await;
+        manager.set_test_base_url_override(server.uri());
+
+        let api = manager.api_for(Region::International);
+        let started = std::time::Instant::now();
+        let result = manager
+            .call_protected(true, |token| {
+                let api = &api;
+                async move { api.get_authed("/api/v1/user/probe", &token).await }
+            })
+            .await
+            .expect("a request dispatched before the deadline must still be awaited to completion even if its response arrives after the deadline");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            result.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            elapsed >= Duration::from_secs(4),
+            "must wait out the full 1s backoff + 3s in-flight request despite the 2-second deadline having elapsed by the time the response arrives, took {elapsed:?}"
+        );
+        assert_eq!(
+            store
+                .get(
+                    secret_store::SERVICE_NAME,
+                    &secret_store::account_key("international", 42)
+                )
+                .unwrap(),
+            Some("refresh-2".to_string()),
+            "the rotated token must be persisted even though it arrived after the deadline"
+        );
+    }
+
+    // Codex 验收 X3（第二例）：把总时限调到 1 秒，让 refresh 一直快速失败
+    // （不延迟）——第一次退避睡满 1 秒后，截止已经用尽，发起第二次请求
+    // 之前的检查必须拦下，全程只应该有 1 次 refresh 调用，即使按
+    // `PROTECTED_FAST_RETRY_ATTEMPTS` 次数上限本来还有余量（会允许 3 次，
+    // 见 `call_protected_refresh_backoff_exhausts_and_returns_transient`）。
+    #[tokio::test]
+    async fn refresh_backoff_stops_issuing_new_retries_once_the_test_deadline_has_elapsed() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let manager = manager_with_store(dir.path(), store);
+        manager.set_test_refresh_backoff_deadline(Duration::from_secs(1));
+        seed_active(&manager, Region::International, 42, "refresh-1");
+
+        let server = MockServer::start().await;
+        // 只应该被调用一次：第一次退避睡满 1 秒后，截止已经用尽，发起
+        // 第二次请求之前的检查必须提前拦下。
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": "TOKEN_EXPIRED", "message": "expired"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        manager.set_test_base_url_override(server.uri());
+
+        let api = manager.api_for(Region::International);
+        let started = std::time::Instant::now();
+        let result = manager
+            .call_protected(true, |token| {
+                let api = &api;
+                async move { api.get_authed("/api/v1/user/probe", &token).await }
+            })
+            .await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(SessionError::Transient(_))),
+            "must give up once the (shortened) deadline has elapsed, got {result:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(3),
+            "must stop after the single 1s backoff sleep once the deadline elapses, not fall back \
+             to the attempt-count budget's second 2s sleep, took {elapsed:?}"
+        );
+        // `.expect(1)` 在 `server` 析构时校验：确认没有发生第二次 refresh 请求。
+    }
+
+    // 偏差修复项 C 的反面：refresh 持续失败（一直 429/5xx）时，重试必须在
+    // `PROTECTED_FAST_RETRY_ATTEMPTS` 次内放弃并把最后一次错误当 Transient
+    // 上抛，而不是无限重试或退化成分钟级的后台离线循环；凭证全程不清除。
+    #[tokio::test]
+    async fn call_protected_refresh_backoff_exhausts_and_returns_transient() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let manager = manager_with_store(dir.path(), store.clone());
+        seed_active(&manager, Region::International, 42, "refresh-1");
+        store
+            .set(
+                secret_store::SERVICE_NAME,
+                &secret_store::account_key("international", 42),
+                "refresh-1",
+            )
+            .unwrap();
+
+        let server = MockServer::start().await;
+        // refresh 一直返回 503：受保护调用的刷新重试必须在有限次数内放弃。
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/user/probe"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": "TOKEN_EXPIRED", "message": "expired"
+            })))
+            .mount(&server)
+            .await;
+        manager.set_test_base_url_override(server.uri());
+
+        let api = manager.api_for(Region::International);
+        let started = std::time::Instant::now();
+        let result = manager
+            .call_protected(true, |token| {
+                let api = &api;
+                async move { api.get_authed("/api/v1/user/probe", &token).await }
+            })
+            .await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(SessionError::Transient(_))),
+            "exhausted refresh retries must surface as Transient, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "refresh retries must be bounded (not the unbounded background offline loop), took {elapsed:?}"
+        );
+        assert!(
+            manager.summary().logged_in,
+            "a transient refresh failure must not clear credentials or terminate the session"
+        );
+        assert_eq!(
+            store
+                .get(
+                    secret_store::SERVICE_NAME,
+                    &secret_store::account_key("international", 42)
+                )
+                .unwrap(),
+            Some("refresh-1".to_string()),
+            "refresh token in the keyring must be untouched"
+        );
     }
 
     // Codex 代码评审高危项 2：refresh 进行中重新登录，旧 refresh 完成后不能

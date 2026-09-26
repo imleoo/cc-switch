@@ -135,10 +135,65 @@ export interface We2aiToolStatusReport {
   ccSwitchRunning: boolean;
 }
 
+/**
+ * apply 前快速检测的三态结果（Codex 验收 Z2）：`"unknown"` 表示检测本身
+ * 没能得出结论（子进程启动失败、非零退出等），不是"确认没有在运行"。
+ */
+export type We2aiCcSwitchRunningStatus = "running" | "not_running" | "unknown";
+
+/**
+ * 合并"apply 前快速检测"的三态结果与完整报告 `ccSwitchRunning` 布尔值，
+ * 得出最终展示用的"CC Switch 是否在运行"（Codex 验收 W2/V2：确认弹窗与
+ * 顶栏必须复用同一份判定，不要各写一套可能不一致的逻辑）。快速检测取得
+ * 确定结果（`"running"`/`"not_running"`）时优先采用——它比完整报告更新、
+ * 更准确；只有快速结果是 `"unknown"`（检测本身没能得出结论）、或还没有
+ * 过一次快速结果（`null`/`undefined`）时，才回退到完整报告的值。
+ */
+export function resolveCcSwitchRunning(
+  quickStatus: We2aiCcSwitchRunningStatus | null | undefined,
+  fullReportRunning: boolean | null | undefined,
+): boolean {
+  if (quickStatus === "running") return true;
+  if (quickStatus === "not_running") return false;
+  return fullReportRunning ?? false;
+}
+
+/**
+ * 计划里的单个文件项：`display` 是展示给用户的名称，`path` 是真实路径
+ * （Opus 复核中危项 S1）——绝大多数文件两者相同；Codex 模型目录文件的真实
+ * 文件名含上游历史遗留字样，`display` 会是中性标签。**只渲染 `display`**，
+ * `path` 不出现在任何界面文本（含 tooltip/title），只用作 React key 之类
+ * 的内部用途。
+ */
+export interface We2aiPlanFile {
+  display: string;
+  path: string;
+}
+
+/**
+ * 确认弹窗里展示的单条"额外变更"：`id` 是稳定内部标识，只用于随
+ * `We2aiApplyRequest.expectedExtraChanges` 原样带回给 Rust 侧做写入前的
+ * STALE 比对，**不渲染到界面**；`display` 才是真正展示给用户看的文案
+ * （Codex 验收 X2②：某些额外变更的文本片段来自用户自己起的 provider 表
+ * 名，`display` 已经在 Rust 侧对品牌残留模式做过中性化，前端只需原样
+ * 渲染，不需要也不应该再对它做二次处理）。
+ */
+export interface We2aiExtraChange {
+  id: string;
+  display: string;
+}
+
 /** 确认弹窗展示的"将写入的文件与字段"。 */
 export interface We2aiApplyPlan {
-  files: string[];
+  files: We2aiPlanFile[];
   fields: string[];
+  /**
+   * 上游写入管道会无条件一并改动、但不属于 WE2AI 托管字段的内容（如 Claude
+   * 内部专用字段被移除、Codex 保留名 provider 表被迁移改名）。写入前如实
+   * 展示，不悄悄发生（Codex 验收偏差修复项 B）。恢复计划不经过上游 switch
+   * 管道，恒为空数组。
+   */
+  extraChanges: We2aiExtraChange[];
 }
 
 /** Claude Code 三个槽位；未指定的与主模型相同。 */
@@ -155,6 +210,14 @@ export interface We2aiApplyRequest {
   claudeSlots?: We2aiClaudeSlots;
   /** WorkBuddy 同名条目需要确认覆盖时传 true。 */
   overwrite?: boolean;
+  /**
+   * 确认弹窗展示、用户已经看到并点击确认的那份 `We2aiApplyPlan.extraChanges`
+   * 里每一条的 `id`（不是 `display`：`id` 才是稳定内部标识，参见
+   * `We2aiExtraChange` 的文档）。Rust 侧写入前会重新计算一次并与这份 id
+   * 列表比对，不一致（配置在"计划展示→点击确认"期间被外部改动）即拒绝
+   * 写入（Opus 复核低危项 L6）。
+   */
+  expectedExtraChanges?: string[];
 }
 
 export interface We2aiRestoreOfficialOutcome {
@@ -278,6 +341,20 @@ export const we2aiApi = {
   },
 
   /**
+   * 只做"CC Switch 是否在运行"这一项快速检测（Codex 验收 Y1）：完整的
+   * `toolStatus()` 会连带查询工具版本（每次无缓存联网查 npm 最新版本，
+   * 单次超时 15 秒），国内网络下可能让 apply 前的检测耗时接近 30 秒。
+   * apply 前只等这一个命令，顶栏完整刷新仍然异步、独立进行。
+   *
+   * 返回三态而不是布尔（Codex 验收 Z2）：`"unknown"` 表示这次检测没能
+   * 得出结论（子进程启动失败/非零退出等），调用方要把它和"确认没有在
+   * 运行"区分开，不能直接当成 `false`。
+   */
+  async ccSwitchRunningQuick(): Promise<We2aiCcSwitchRunningStatus> {
+    return await invoke("we2ai_cc_switch_running_quick");
+  },
+
+  /**
    * 恢复某个/某些工具的官方配置：移除 WE2AI 为其写入的一切（P6，取代
    * `removeToolKeys`）。登出弹窗勾选"同时恢复工具的官方配置"时对全部三个
    * 工具调用；顶栏"恢复官方"按钮对单个工具调用，无论是否登录都可用。
@@ -309,6 +386,7 @@ export const we2aiApi = {
       model: request.model,
       claudeSlots: request.claudeSlots ?? null,
       overwrite: request.overwrite ?? false,
+      expectedExtraChanges: request.expectedExtraChanges ?? [],
     });
   },
 };

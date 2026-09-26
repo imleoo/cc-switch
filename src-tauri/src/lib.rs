@@ -616,7 +616,13 @@ pub fn run() {
                 Ok(Some(version)) => {
                     log::warn!("数据库版本过新（v{version}），引导用户在应用内升级应用");
                     crate::init_status::set_init_error(crate::init_status::InitErrorPayload {
-                        path: db_path.display().to_string(),
+                        // 只展示所在目录，不展示数据库文件名（Opus 复核低危项
+                        // S2：数据库实际文件名 `cc-switch.db` 不打算改，避免
+                        // 这个真实文件名出现在 WE2AI 的恢复界面里）。
+                        path: db_path
+                            .parent()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| db_path.display().to_string()),
                         error: format!(
                             "数据库版本过新（{version}），当前应用仅支持 {}，请升级应用后再尝试。",
                             crate::database::SCHEMA_VERSION
@@ -1240,6 +1246,21 @@ pub fn run() {
                 use we2ai::secret_store::KeyringSecretStore;
                 use we2ai::session::{SessionManager, We2aiSessionState};
 
+                // Unix：数据根 0700、数据库与备份 0600（方案第 8 节 P5）。收紧
+                // 结果记为进程级状态：任一失败时，apply 在写入任何含 Key 的数据
+                // （数据库行或工具 live 文件）之前会先检查这个状态并拒绝写入
+                // （`we2ai::apply::tighten_all`），不只是打日志了事。**必须在
+                // `app.manage(We2aiSessionState(...))` 之前完成并记录**（Opus
+                // 复核中危项 M1）：一旦会话管理器可用，登录命令就能开始向
+                // `~/.we2ai` 写入会话索引等文件，尽量缩小"目录已可写、但收紧
+                // 结果还没记录"的窗口——`data_root_hardened()` 现在 fail-closed，
+                // 窗口内误判也只会更保守地拒绝 apply，不会误放行。
+                let harden_failures = we2ai::mode::harden_data_root();
+                for failure in &harden_failures {
+                    log::warn!("收紧 WE2AI 数据目录权限失败: {failure}");
+                }
+                we2ai::mode::record_harden_result(harden_failures);
+
                 let session_manager = SessionManager::new(
                     Arc::new(KeyringSecretStore),
                     we2ai::mode::data_root(),
@@ -1249,11 +1270,6 @@ pub fn run() {
                 app.manage(We2aiCaptchaState(Arc::new(CaptchaRegistry::new())));
                 app.manage(we2ai::keys::We2aiKeyState::default());
                 log::info!("✓ WE2AI session manager initialized");
-
-                // Unix：数据根 0700、数据库与备份 0600（方案第 8 节 P5）。
-                for failure in we2ai::mode::harden_data_root() {
-                    log::warn!("收紧 WE2AI 数据目录权限失败: {failure}");
-                }
             }
 
             // 初始化 SkillService
@@ -1534,6 +1550,7 @@ pub fn run() {
                 we2ai::keys::we2ai_select_key,
                 we2ai::keys::we2ai_key_models,
                 we2ai::commands_apply::we2ai_tool_status,
+                we2ai::commands_apply::we2ai_cc_switch_running_quick,
                 we2ai::commands_apply::we2ai_apply_plan,
                 we2ai::commands_apply::we2ai_apply_model,
                 we2ai::commands_apply::we2ai_restore_official,
@@ -2277,6 +2294,26 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
 
 /// 显示数据库初始化/Schema 迁移失败对话框
 /// 返回 true 表示用户选择重试，false 表示用户选择退出
+/// rusqlite 0.31 的部分错误文本会把完整的数据库文件路径（含真实文件名
+/// `cc-switch.db`）拼进错误消息本身——仅仅把对话框里独立展示的路径字段换
+/// 成"所在目录"（见 [`show_database_init_error_dialog`] 里的 `db_dir`）并
+/// 不够，`error` 原始文本里原样带着的完整路径/裸文件名同样会把这个真实
+/// 文件名重新透出来（Codex 验收 X2①）。在嵌入对话框正文之前统一替换：
+/// 先替换完整路径（覆盖大多数场景），再替换裸文件名（覆盖错误文本里只剩
+/// 文件名、不含目录的场景）。
+fn sanitize_db_error_for_display(error: &str, db_path: &std::path::Path) -> String {
+    let neutral = if is_chinese_locale() {
+        "<数据库文件，路径见下方目录>"
+    } else {
+        "<database file, see the directory below>"
+    };
+    let mut sanitized = error.replace(&db_path.display().to_string(), neutral);
+    if let Some(name) = db_path.file_name().and_then(|n| n.to_str()) {
+        sanitized = sanitized.replace(name, neutral);
+    }
+    sanitized
+}
+
 fn show_database_init_error_dialog(
     app: &tauri::AppHandle,
     db_path: &std::path::Path,
@@ -2288,33 +2325,41 @@ fn show_database_init_error_dialog(
         "Database Initialization Failed"
     };
 
+    // 只展示所在目录，不展示数据库文件名（Opus 复核低危项 S2：数据库实际
+    // 文件名 `cc-switch.db` 不打算改，避免这个真实文件名出现在 WE2AI 的
+    // 错误对话框里）。
+    let db_dir = db_path.parent().unwrap_or(db_path);
+    // `error` 本身也要脱敏（Codex 验收 X2①），不能只处理这里单独展示的
+    // `db_dir` 字段。
+    let error = sanitize_db_error_for_display(error, db_path);
+
     let message = if is_chinese_locale() {
         format!(
             "初始化数据库或迁移数据库结构时发生错误：\n\n{error}\n\n\
-            数据库文件路径：\n{db}\n\n\
+            数据库所在目录：\n{db}\n（数据库文件位于此目录）\n\n\
             您的数据尚未丢失，应用不会自动删除数据库文件。\n\
             常见原因包括：数据库版本过新、文件损坏、权限不足、磁盘空间不足等。\n\n\
             建议：\n\
-            1) 先备份整个配置目录（包含 cc-switch.db）\n\
+            1) 先备份整个配置目录（含数据库文件）\n\
             2) 如果提示“数据库版本过新”，请升级到更新版本\n\
             3) 如果刚升级出现异常，可回退旧版本导出/备份后再升级\n\n\
             点击「重试」重新尝试初始化\n\
             点击「退出」关闭程序",
-            db = db_path.display()
+            db = db_dir.display()
         )
     } else {
         format!(
             "An error occurred while initializing or migrating the database:\n\n{error}\n\n\
-            Database file path:\n{db}\n\n\
+            Database directory:\n{db}\n(the database file is located in this directory)\n\n\
             Your data is NOT lost - the app will not delete the database automatically.\n\
             Common causes include: newer database version, corrupted file, permission issues, or low disk space.\n\n\
             Suggestions:\n\
-            1) Back up the entire config directory (including cc-switch.db)\n\
+            1) Back up the entire config directory (including the database file)\n\
             2) If you see “database version is newer”, please upgrade WE2AI\n\
             3) If this happened right after upgrading, consider rolling back to export/backup then upgrade again\n\n\
             Click 'Retry' to attempt initialization again\n\
             Click 'Exit' to close the program",
-            db = db_path.display()
+            db = db_dir.display()
         )
     };
 
@@ -2419,9 +2464,39 @@ mod tests {
     use super::{
         classify_exit_request, enabled_proxy_apps_on_startup, redact_url_for_log,
         redact_url_for_log_with_secrets, redact_url_origin_for_log, runtime_log_level_allows,
-        ExitRequestAction,
+        sanitize_db_error_for_display, ExitRequestAction,
     };
     use crate::database::Database;
+
+    // Codex 验收 X2①：rusqlite 0.31 的部分错误文本会把完整数据库文件路径
+    // （含真实文件名）拼进消息本身，只隐藏对话框里独立展示的目录字段不够，
+    // 这段原始错误文本也必须脱敏。
+    #[test]
+    fn db_error_sanitization_strips_the_full_path_and_bare_filename() {
+        let db_path = std::path::Path::new("/Users/alice/.we2ai/cc-switch.db");
+        let raw = format!(
+            "unable to open database file: {}",
+            db_path.display()
+        );
+        let sanitized = sanitize_db_error_for_display(&raw, db_path);
+        assert!(
+            !sanitized.contains("cc-switch.db"),
+            "the real database filename must not survive sanitization: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("/Users/alice"),
+            "the full path must not survive sanitization: {sanitized}"
+        );
+
+        // 错误文本里只剩裸文件名、不含目录时（不同 SQLite 版本/平台的错误
+        // 措辞不完全一致）也要覆盖。
+        let bare_filename_only = "database disk image is malformed: cc-switch.db";
+        let sanitized_bare = sanitize_db_error_for_display(bare_filename_only, db_path);
+        assert!(
+            !sanitized_bare.contains("cc-switch.db"),
+            "a bare filename with no directory must also be sanitized: {sanitized_bare}"
+        );
+    }
 
     #[test]
     fn log_url_redaction_strips_credentials_and_query_keeps_path() {

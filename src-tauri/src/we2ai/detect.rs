@@ -204,44 +204,164 @@ fn codex_managed_model() -> Option<String> {
     value.get("model")?.as_str().map(|s| s.to_string())
 }
 
-/// CC Switch 是否在运行（方案 4.1 节检测键）。用户自行改名的便携版检测不到。
-pub fn cc_switch_running() -> bool {
-    use std::process::{Command, Stdio};
+/// 单个检测子进程的超时（Codex 验收 Y1）：`lsappinfo`/`tasklist`/`pgrep`
+/// 正常几十毫秒内就会返回；一旦系统异常导致某次调用挂起，不能让这个检测
+/// 本身无限期阻塞下去——超时按 `Unknown`（未能完成检测）处理（保守，不因为
+/// 检测本身卡住而报告一个无法验证的"正在运行"或"没有在运行"）。
+/// `kill_on_drop` 保证超时发生时子进程被真正杀掉，不留孤儿进程。
+const CC_SWITCH_DETECT_SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+async fn run_detect_subprocess(mut cmd: tokio::process::Command) -> Option<std::process::Output> {
+    cmd.kill_on_drop(true);
+    tokio::time::timeout(CC_SWITCH_DETECT_SUBPROCESS_TIMEOUT, cmd.output())
+        .await
+        .ok()
+        .and_then(Result::ok)
+}
+
+/// CC Switch 是否在运行的检测结果（Codex 验收 Z2）：此前一律折叠成
+/// `bool`，子进程启动失败/等待超时/等待中被杀、以及（此前完全没检查的）
+/// 非零退出码，全部被 `unwrap_or(false)` 悄悄当成"确认没有在运行"——
+/// 而这几种情况其实都是"这次检测没能得出结论"，不该等同于"确认过、真的
+/// 没在运行"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CcSwitchRunningStatus {
+    Running,
+    NotRunning,
+    /// 检测本身没能得出结论：子进程启动失败、等待超时被杀、或者进程正常
+    /// 退出但结果没法按预期解读（macOS `lsappinfo` 非零退出、或者退出码
+    /// 是 0 但 stdout 既不是空也不含 `ASN:` 这种没见过的输出形态；Linux
+    /// `pgrep` 大于 1 的退出码——`pgrep` 的 1 是"语法正确但没有匹配到
+    /// 进程"，是正常结果，只有更大的退出码才代表参数错误/执行故障）。
+    Unknown,
+}
+
+impl CcSwitchRunningStatus {
+    /// 完整 `tool_status()` 报表的 `cc_switch_running` 字段目前仍是布尔值
+    /// （按最小改动选择：这个字段只喂给顶栏横幅，语义本就是"确认在运行才
+    /// 提示，其余情况都不提示"的降级展示，不是这次要收紧精度的边界；真正
+    /// 需要区分"没有在运行"与"没能确认"的是 apply 前的快速检测，那里直接
+    /// 使用这个三态类型本身，不经过这次布尔收窄）。`Unknown` 归到 `false`
+    /// 与收紧之前的行为一致，不是这次改动新引入的精度损失。
+    fn as_bool_for_full_report(self) -> bool {
+        matches!(self, Self::Running)
+    }
+}
+
+/// macOS `lsappinfo find bundleid=<id>` 检测结果 → 三态：退出码是否成功、
+/// 以及 stdout 内容（Codex 验收 W1）。此前用 `osascript -e 'application id
+/// "..." is running'`：目标 bundle id 从未被 Launch Services 登记过时
+/// （用户机器上没装过 CC Switch——这是绝大多数用户的真实状态），
+/// `osascript` 本身会以非零退出码结束并报 AppleScript 层的 `-1728` 错误
+/// （"can't get application ..."），错误文案还随系统语言变化、不宜按文本
+/// 匹配；这会被当前的"非零退出 = Unknown"规则命中，导致几乎所有用户每次
+/// 打开确认弹窗都看到"未能完成检测"，而不是"确认没有在运行"。实测对照：
+/// `lsappinfo find bundleid=<从未安装的 id>` 退出码恒为 0、stdout 为空；
+/// `lsappinfo find bundleid=<正在运行的 id>` 退出码 0、stdout 含
+/// `ASN:<...>`；只有真正的执行故障（进程启动失败、等待超时等）才会走到
+/// 非零退出/无法执行这条路径。
+///
+/// 三条判定规则（Codex 验收 V1，在 W1 的基础上再收紧一档）：① 退出码非 0
+/// → `Unknown`（执行本身失败，见上）；② 退出码 0 且 stdout 去除首尾空白后
+/// 为空 → `NotRunning`（未安装/未运行的正常情况，实测形态）；③ 退出码 0
+/// 但 stdout 非空、又不含 `ASN:` → `Unknown`，不是 `NotRunning`——这是一种
+/// 没见过的输出形态（`lsappinfo` 未来版本改了输出格式、或者传入了非预期
+/// 参数），不能悄悄当成"确认没有在运行"，宁可提示"未能完成检测"。
+///
+/// 抽成不做任何 I/O 的纯函数（Codex 验收 Z2：补各平台分支的单测），不需要
+/// 真的在 macOS 上跑一次 `lsappinfo` 才能验证这段映射逻辑本身对不对，其余
+/// 两个平台的单测同理。`cfg` 加 `test`：这样在非 macOS 主机上跑
+/// `cargo test` 也能编译并测到这段逻辑，而普通（非测试）编译在非 macOS
+/// 目标上不会把它当成从未用到的死代码。
+#[cfg(any(target_os = "macos", test))]
+fn map_lsappinfo_result(success: bool, stdout: &str) -> CcSwitchRunningStatus {
+    if !success {
+        return CcSwitchRunningStatus::Unknown;
+    }
+    if stdout.trim().is_empty() {
+        return CcSwitchRunningStatus::NotRunning;
+    }
+    if stdout.contains("ASN:") {
+        CcSwitchRunningStatus::Running
+    } else {
+        // 退出码 0、stdout 非空，却不含 `ASN:`：没见过的输出形态，不能
+        // 当成"确认没有在运行"。
+        CcSwitchRunningStatus::Unknown
+    }
+}
+
+/// Windows `tasklist` 检测结果 → 三态：退出码是否成功 + stdout 内容。
+#[cfg(any(target_os = "windows", test))]
+fn map_tasklist_result(success: bool, stdout: &str) -> CcSwitchRunningStatus {
+    if !success {
+        return CcSwitchRunningStatus::Unknown;
+    }
+    if stdout.to_ascii_lowercase().contains("cc-switch.exe") {
+        CcSwitchRunningStatus::Running
+    } else {
+        CcSwitchRunningStatus::NotRunning
+    }
+}
+
+/// Linux/其他 Unix `pgrep -x` 的退出码 → 三态：0 = 找到匹配进程，1 = 语法
+/// 正确但没有匹配（正常的"没有在运行"，此前与真正的执行错误混在一起都
+/// 算"未运行"），其余（2 语法错误、3 致命错误等，包括进程被信号杀死、
+/// 没有退出码的情形）才是真正的执行故障。
+#[cfg(any(all(unix, not(target_os = "macos")), test))]
+fn map_pgrep_exit_code(code: Option<i32>) -> CcSwitchRunningStatus {
+    match code {
+        Some(0) => CcSwitchRunningStatus::Running,
+        Some(1) => CcSwitchRunningStatus::NotRunning,
+        _ => CcSwitchRunningStatus::Unknown,
+    }
+}
+
+pub async fn cc_switch_running_status() -> CcSwitchRunningStatus {
+    use tokio::process::Command;
     #[cfg(target_os = "macos")]
     {
-        Command::new("osascript")
-            .args(["-e", "application id \"com.ccswitch.desktop\" is running"])
-            .stderr(Stdio::null())
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
-            .unwrap_or(false)
+        let mut cmd = Command::new("/usr/bin/lsappinfo");
+        cmd.args(["find", "bundleid=com.ccswitch.desktop"])
+            .stderr(std::process::Stdio::null());
+        match run_detect_subprocess(cmd).await {
+            Some(o) => map_lsappinfo_result(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
+            None => CcSwitchRunningStatus::Unknown,
+        }
     }
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq cc-switch.exe", "/NH"])
+        let mut cmd = Command::new("tasklist");
+        cmd.args(["/FI", "IMAGENAME eq cc-switch.exe", "/NH"])
             .creation_flags(CREATE_NO_WINDOW)
-            .stderr(Stdio::null())
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .to_ascii_lowercase()
-                    .contains("cc-switch.exe")
-            })
-            .unwrap_or(false)
+            .stderr(std::process::Stdio::null());
+        match run_detect_subprocess(cmd).await {
+            Some(o) => map_tasklist_result(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
+            None => CcSwitchRunningStatus::Unknown,
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        Command::new("pgrep")
-            .args(["-x", "cc-switch"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let mut cmd = Command::new("pgrep");
+        cmd.args(["-x", "cc-switch"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match run_detect_subprocess(cmd).await {
+            Some(o) => map_pgrep_exit_code(o.status.code()),
+            None => CcSwitchRunningStatus::Unknown,
+        }
     }
+}
+
+/// CC Switch 是否在运行（方案 4.1 节检测键）。用户自行改名的便携版检测不到。
+///
+/// 异步 + 子进程级超时（Codex 验收 Y1）：此前是同步阻塞调用、且没有任何
+/// 超时，只能靠调用方把它塞进 `spawn_blocking`；改成基于 `tokio::process`
+/// 的异步实现后，既能被"只检测这一项"的快速命令直接 `.await`，也能与
+/// `tool_status()` 里其余阻塞检测项通过 `tokio::join!` 并发执行。
+pub async fn cc_switch_running() -> bool {
+    cc_switch_running_status().await.as_bool_for_full_report()
 }
 
 pub async fn tool_status(region: Option<Region>, data_root: PathBuf) -> ToolStatusReport {
@@ -259,12 +379,13 @@ pub async fn tool_status(region: Option<Region>, data_root: PathBuf) -> ToolStat
             claude_managed_model(gateway_root),
             codex_managed_model(),
             super::workbuddy::managed_model(&data_root),
-            cc_switch_running(),
         )
-    })
-    .await;
-    let (wb_installed, wb_version, claude_model, codex_model, wb_model, cc_running) =
-        blocking.unwrap_or((false, None, None, None, None, false));
+    });
+    // `cc_switch_running()` 现在是基于 `tokio::process` 的异步实现，不再需要
+    // 塞进 `spawn_blocking`；与其余阻塞检测项并发执行（Codex 验收 Y1）。
+    let (blocking, cc_running) = tokio::join!(blocking, cc_switch_running());
+    let (wb_installed, wb_version, claude_model, codex_model, wb_model) =
+        blocking.unwrap_or((false, None, None, None, None));
 
     let (claude_version, claude_broken) = version_from_tool_versions(&versions, "claude");
     let (codex_version, codex_broken) = version_from_tool_versions(&versions, "codex");
@@ -303,6 +424,84 @@ pub async fn tool_status(region: Option<Region>, data_root: PathBuf) -> ToolStat
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // Codex 验收 Z2：三个平台的"检测结果 → 三态"映射逻辑，跑在哪个宿主
+    // 平台上都能测——不需要真的在 macOS/Windows/Linux 上各跑一次对应的
+    // 子进程才能验证这段映射本身对不对。
+
+    #[test]
+    fn lsappinfo_result_mapping_covers_running_not_installed_and_unknown() {
+        // Codex 验收 W1：从未安装过目标 bundle id 时，`lsappinfo find` 退出码
+        // 是 0、stdout 为空——不是 osascript 那样的非零退出+文案报错，必须
+        // 映射成 NotRunning，不能是 Unknown（这是绝大多数用户的真实状态，
+        // 旧的 `osascript` 实现会在这里误报"未能完成检测"）。
+        assert_eq!(
+            map_lsappinfo_result(true, ""),
+            CcSwitchRunningStatus::NotRunning
+        );
+        // 正在运行：实测 `lsappinfo find bundleid=com.apple.finder`（运行中）
+        // 输出形如 `ASN:0x0-0x11011-"访达":`。
+        assert_eq!(
+            map_lsappinfo_result(true, "ASN:0x0-0x11011-\"访达\":\n"),
+            CcSwitchRunningStatus::Running
+        );
+        // 非零退出：真正的执行故障，不能当成"未运行"，也不能当成"在运行"。
+        assert_eq!(
+            map_lsappinfo_result(false, "ASN:0x0-0x11011-\"foo\":\n"),
+            CcSwitchRunningStatus::Unknown
+        );
+        // 只有空白字符（无实际内容）同样按"未安装/未运行"处理，不要求
+        // stdout 必须是字面意义上的空字符串。
+        assert_eq!(
+            map_lsappinfo_result(true, "\n"),
+            CcSwitchRunningStatus::NotRunning
+        );
+        // Codex 验收 V1：退出码 0、stdout 非空，却不含 `ASN:`——没见过的
+        // 输出形态（比如 `lsappinfo` 未来版本改了格式），不能悄悄当成
+        // "确认没有在运行"，必须是 Unknown。
+        assert_eq!(
+            map_lsappinfo_result(true, "some unexpected output\n"),
+            CcSwitchRunningStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn tasklist_result_mapping_covers_running_not_running_and_unknown() {
+        assert_eq!(
+            map_tasklist_result(true, "cc-switch.exe  1234"),
+            CcSwitchRunningStatus::Running
+        );
+        assert_eq!(
+            map_tasklist_result(true, "INFO: No tasks..."),
+            CcSwitchRunningStatus::NotRunning
+        );
+        assert_eq!(
+            map_tasklist_result(false, "cc-switch.exe  1234"),
+            CcSwitchRunningStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn pgrep_exit_code_mapping_distinguishes_no_match_from_real_errors() {
+        assert_eq!(map_pgrep_exit_code(Some(0)), CcSwitchRunningStatus::Running);
+        // 1 = 语法正确但没有匹配到进程：正常的"没有在运行"，不是错误。
+        assert_eq!(
+            map_pgrep_exit_code(Some(1)),
+            CcSwitchRunningStatus::NotRunning
+        );
+        // 2/3 等更大的退出码才是真正的执行故障（参数错误、致命错误）。
+        assert_eq!(map_pgrep_exit_code(Some(2)), CcSwitchRunningStatus::Unknown);
+        assert_eq!(map_pgrep_exit_code(Some(3)), CcSwitchRunningStatus::Unknown);
+        // 没有退出码（如被信号杀死）同样算未能确认。
+        assert_eq!(map_pgrep_exit_code(None), CcSwitchRunningStatus::Unknown);
+    }
+
+    #[test]
+    fn unknown_status_is_reported_as_not_running_in_the_full_report_bool() {
+        assert!(CcSwitchRunningStatus::Running.as_bool_for_full_report());
+        assert!(!CcSwitchRunningStatus::NotRunning.as_bool_for_full_report());
+        assert!(!CcSwitchRunningStatus::Unknown.as_bool_for_full_report());
+    }
 
     #[test]
     fn reads_workbuddy_version_from_xml_plist() {

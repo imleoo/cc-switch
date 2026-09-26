@@ -179,7 +179,10 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           )}
           {payload.path && (
             <p className="break-all">
-              {t("dbUpgrade.dbPath", "数据库文件")}：{payload.path}
+              {t("dbUpgrade.dbPath", "数据库所在目录")}：{payload.path}
+              {"（"}
+              {t("dbUpgrade.dbPathNote", "数据库文件位于此目录")}
+              {"）"}
             </p>
           )}
         </div>

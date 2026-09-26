@@ -15,6 +15,15 @@ import { formatWe2aiString, getWe2aiStrings } from "@/we2ai/strings";
 
 const t = getWe2aiStrings("zh");
 
+/** 测试用最简 `We2aiPlanFile`：多数场景 display 与 path 相同即可。 */
+const planFile = (p: string) => ({ display: p, path: p });
+
+/** 测试用最简 `We2aiExtraChange`：多数场景 id 与 display 相同即可。 */
+const extraChange = (display: string, id: string = display) => ({
+  id,
+  display,
+});
+
 if (typeof window.matchMedia !== "function") {
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -84,15 +93,19 @@ const status: We2aiToolStatusReport = {
   ccSwitchRunning: false,
 };
 
-function setup(toolStatus: We2aiToolStatusReport | null = status) {
+function setup(
+  toolStatus: We2aiToolStatusReport | null = status,
+  onBeforeApplyDialogOpen?: () => Promise<boolean>,
+) {
   vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
     keys: [key],
     selectedKeyId: 7,
   });
   vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(models);
   vi.spyOn(we2aiApi, "applyPlan").mockImplementation(async (tool) => ({
-    files: [`/home/u/${tool}.conf`],
+    files: [planFile(`/home/u/${tool}.conf`)],
     fields: ["model"],
+    extraChanges: [],
   }));
   const onApplied = vi.fn();
   render(
@@ -102,6 +115,7 @@ function setup(toolStatus: We2aiToolStatusReport | null = status) {
         onSessionMaybeEnded={vi.fn()}
         toolStatus={toolStatus}
         onApplied={onApplied}
+        onBeforeApplyDialogOpen={onBeforeApplyDialogOpen}
       />
       <Toaster />
     </ThemeProvider>,
@@ -147,6 +161,7 @@ describe("WE2AI apply flow", () => {
       model: "gpt-5",
       claudeSlots: undefined,
       overwrite: false,
+      expectedExtraChanges: [],
     });
     // Codex 未安装：成功提示里带上"安装后即可使用"。
     expect(
@@ -155,6 +170,191 @@ describe("WE2AI apply flow", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+  });
+
+  // Opus 复核中危项 S1：Codex 模型目录文件的真实文件名（上游历史遗留常量，
+  // 字面含 "cc-switch"）绝不能出现在确认弹窗的 DOM 里——只渲染 `display`
+  // 中性标签，`path` 只用作 React key，不出现在任何文本节点。
+  it("never renders the real cc-switch filename in the confirm dialog, only the neutral display label", async () => {
+    setup();
+    vi.spyOn(we2aiApi, "applyPlan").mockResolvedValue({
+      files: [
+        planFile("/home/u/.codex/config.toml"),
+        {
+          display: "~/.codex/ 下的 Codex 模型目录文件",
+          path: "/home/u/.codex/cc-switch-model-catalog.json",
+        },
+      ],
+      fields: ["model_provider", "model"],
+      extraChanges: [],
+    });
+
+    const dialog = await openApply("gpt-5", "Codex");
+    expect(
+      await within(dialog).findByText("~/.codex/ 下的 Codex 模型目录文件"),
+    ).toBeInTheDocument();
+    expect(dialog.textContent?.toLowerCase()).not.toContain("cc-switch");
+  });
+
+  // 偏差修复项 F（方案第 4.1 节"应用启动与每次 apply 前检测 CC Switch
+  // 进程"）：此前只在登录后检查一次工具状态，登录后才启动 CC Switch 时，下
+  // 一次点击工具按钮打开确认弹窗不会得到新的并存提示。现在打开确认弹窗前
+  // 必须先回调一次，让外壳重新拉取工具状态（含 `ccSwitchRunning`）。
+  it("refreshes tool status before opening the apply confirmation dialog", async () => {
+    const onBeforeApplyDialogOpen = vi.fn(async () => true);
+    setup(status, onBeforeApplyDialogOpen);
+    expect(onBeforeApplyDialogOpen).not.toHaveBeenCalled();
+
+    await openApply("gpt-5", "Codex");
+
+    expect(onBeforeApplyDialogOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // Codex 验收 X5：此前 `onBeforeApplyDialogOpen` 只是发起就不再等待，确认
+  // 按钮不受这次检测约束——用户可能在新的并存警告返回之前就已经点了确认。
+  // 现在必须在这次检测完成前禁用确认按钮，完成后才恢复可点。
+  it("disables the confirm button until the before-open tool status check settles", async () => {
+    let resolveDetection: (completed: boolean) => void = () => {};
+    const detectionPromise = new Promise<boolean>((resolve) => {
+      resolveDetection = resolve;
+    });
+    const onBeforeApplyDialogOpen = vi.fn(() => detectionPromise);
+    setup(status, onBeforeApplyDialogOpen);
+
+    const dialog = await openApply("gpt-5", "Codex");
+    const confirmButton = await within(dialog).findByRole("button", {
+      name: t.applyConfirm,
+    });
+    // 计划已经加载完成（否则 `!plan` 本身就会让按钮保持禁用，测不出这次
+    // 检测专属的门控），但检测尚未 resolve，按钮必须仍然是禁用的。
+    await within(dialog).findByTestId("we2ai-apply-plan");
+    expect(confirmButton).toBeDisabled();
+
+    resolveDetection(true);
+    await waitFor(() => expect(confirmButton).not.toBeDisabled());
+  });
+
+  // Codex 验收 Y1：检测超时/失败（`onBeforeApplyDialogOpen` 解出 `false`）
+  // 不应该继续挡着确认按钮——展示"未能完成检测"提示，但仍然放行确认。
+  it("allows confirming even when the before-open detection times out", async () => {
+    const onBeforeApplyDialogOpen = vi.fn(async () => false);
+    setup(status, onBeforeApplyDialogOpen);
+
+    const dialog = await openApply("gpt-5", "Codex");
+    const confirmButton = await within(dialog).findByRole("button", {
+      name: t.applyConfirm,
+    });
+    await within(dialog).findByTestId("we2ai-apply-plan");
+
+    await waitFor(() =>
+      expect(
+        within(dialog).getByTestId("we2ai-apply-detection-incomplete"),
+      ).toBeInTheDocument(),
+    );
+    expect(confirmButton).not.toBeDisabled();
+  });
+
+  // 偏差修复项 B（方案第 4.2 节"只覆盖列出的托管字段，其他内容原样保留"）：
+  // 计划里的 `extraChanges`（上游写入管道会一并改动、但非 WE2AI 托管的内容）
+  // 必须在确认弹窗里如实展示，而不是悄悄发生。
+  it("shows extra changes the upstream writer will make, alongside the managed fields", async () => {
+    setup();
+    vi.spyOn(we2aiApi, "applyPlan").mockResolvedValue({
+      files: [planFile("/home/u/.codex/config.toml")],
+      fields: ["model_provider", "model"],
+      extraChanges: [
+        extraChange(
+          "[model_providers.openai]（写入时会被上游管道一并重命名并规范化，这是 Codex 保留名表，非 WE2AI 托管）",
+        ),
+      ],
+    });
+
+    const dialog = await openApply("gpt-5", "Codex");
+
+    expect(
+      await within(dialog).findByTestId("we2ai-apply-extra-changes"),
+    ).toHaveTextContent("model_providers.openai");
+    expect(within(dialog).getByText(t.applyExtraChangesLabel)).toBeInTheDocument();
+  });
+
+  // 偏差修复项 B 的 L6 追加：确认时必须把用户看到的 `extraChanges` 原样带
+  // 回给 Rust 侧，供写入前重新计算比对（不是只在弹窗里展示一下就忘记）。
+  it("sends the confirmed plan's extraChanges back when applying", async () => {
+    setup();
+    vi.spyOn(we2aiApi, "applyPlan").mockResolvedValue({
+      files: [planFile("/home/u/.codex/config.toml")],
+      fields: ["model_provider", "model"],
+      extraChanges: [extraChange("[model_providers.openai].name（写入时会被补全）")],
+    });
+    const apply = vi.spyOn(we2aiApi, "applyModel").mockResolvedValue({
+      model: "gpt-5",
+      files: ["/home/u/.codex/config.toml"],
+      warnings: [],
+    });
+
+    const dialog = await openApply("gpt-5", "Codex");
+    await within(dialog).findByTestId("we2ai-apply-extra-changes");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: t.applyConfirm }),
+    );
+
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    expect(apply.mock.calls[0][0].expectedExtraChanges).toEqual([
+      "[model_providers.openai].name（写入时会被补全）",
+    ]);
+  });
+
+  // 配置在"计划展示→点击确认"期间被外部改动：Rust 侧拒绝并返回
+  // EXTRA_CHANGES_STALE，前端必须展示明确提示要求重新确认，而不是当成
+  // 普通失败一笔带过。
+  it("shows a clear message and does not report success when the plan went stale before confirming", async () => {
+    setup();
+    vi.spyOn(we2aiApi, "applyModel").mockRejectedValue({
+      code: "EXTRA_CHANGES_STALE",
+      message: "stale",
+    });
+
+    const dialog = await openApply("gpt-5", "Codex");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: t.applyConfirm }),
+    );
+
+    expect(
+      await screen.findByText(t.errorApplyExtraChangesStale),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("shows no extra-changes section when the plan has none", async () => {
+    setup();
+    const dialog = await openApply("gpt-5", "Codex");
+    await within(dialog).findByText("/home/u/codex.conf");
+
+    expect(
+      within(dialog).queryByTestId("we2ai-apply-extra-changes"),
+    ).not.toBeInTheDocument();
+  });
+
+  // Opus 复核低危项 L5：CC Switch 也在运行的提示此前只在顶栏
+  // `ToolStatusBar` 展示，确认弹窗本身看不到；用户此刻正准备点击"确认"
+  // 真正写入，比顶栏更需要在这个时间点看到提示。
+  it("shows the CC Switch running warning inside the confirm dialog when it is running", async () => {
+    setup({ ...status, ccSwitchRunning: true });
+    const dialog = await openApply("gpt-5", "Codex");
+    expect(
+      await within(dialog).findByTestId("we2ai-apply-other-tool-running"),
+    ).toHaveTextContent(t.ccSwitchRunningBanner);
+  });
+
+  it("does not show the CC Switch running warning inside the confirm dialog when it is not running", async () => {
+    setup({ ...status, ccSwitchRunning: false });
+    const dialog = await openApply("gpt-5", "Codex");
+    await within(dialog).findByText("/home/u/codex.conf");
+    expect(
+      within(dialog).queryByTestId("we2ai-apply-other-tool-running"),
+    ).not.toBeInTheDocument();
   });
 
   it("lets Claude Code slots be chosen separately under advanced", async () => {
@@ -325,11 +525,12 @@ describe("ToolStatusBar", () => {
   // 确认，确认后调用 restoreOfficial 并只传当前这一个工具。
   it("only shows the restore action for tools with a WE2AI model, and restores just that tool", async () => {
     vi.spyOn(we2aiApi, "restorePlan").mockResolvedValue({
-      files: ["/home/u/.claude/settings.json"],
+      files: [planFile("/home/u/.claude/settings.json")],
       fields: [
         "env.ANTHROPIC_BASE_URL（移除）",
         "env.ANTHROPIC_API_KEY（如之前保存过用户自己的 Key，则写回）",
       ],
+      extraChanges: [],
     });
     const restoreOfficial = vi
       .spyOn(we2aiApi, "restoreOfficial")
@@ -392,12 +593,14 @@ describe("ToolStatusBar", () => {
       ),
     };
     let resolveClaudePlan: (plan: {
-      files: string[];
+      files: { display: string; path: string }[];
       fields: string[];
+      extraChanges: { id: string; display: string }[];
     }) => void;
     const claudePlanPromise = new Promise<{
-      files: string[];
+      files: { display: string; path: string }[];
       fields: string[];
+      extraChanges: { id: string; display: string }[];
     }>((resolve) => {
       resolveClaudePlan = resolve;
     });
@@ -406,8 +609,9 @@ describe("ToolStatusBar", () => {
         return claudePlanPromise;
       }
       return {
-        files: ["/home/u/.codex/config.toml"],
+        files: [planFile("/home/u/.codex/config.toml")],
         fields: ["model_provider（移除）"],
+        extraChanges: [],
       };
     });
 
@@ -443,8 +647,9 @@ describe("ToolStatusBar", () => {
 
     // Claude 的响应现在才姗姗来迟——不能覆盖掉正在展示的 Codex 计划。
     resolveClaudePlan!({
-      files: ["/home/u/.claude/settings.json"],
+      files: [planFile("/home/u/.claude/settings.json")],
       fields: ["env.ANTHROPIC_BASE_URL（移除）"],
+      extraChanges: [],
     });
     await waitFor(() =>
       expect(

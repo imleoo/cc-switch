@@ -2958,17 +2958,7 @@ fn migrate_stale_reserved_provider_tables(
         .parse::<DocumentMut>()
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
 
-    let stale_ids: Vec<&str> = CODEX_STALE_RESERVED_TABLE_IDS
-        .iter()
-        .copied()
-        .filter(|id| {
-            doc.get("model_providers")
-                .and_then(|item| item.as_table_like())
-                .and_then(|table| table.get(id))
-                .and_then(|item| item.as_table_like())
-                .is_some()
-        })
-        .collect();
+    let stale_ids: Vec<&str> = stale_reserved_provider_table_ids_present(&doc);
     if stale_ids.is_empty() {
         return Ok(None);
     }
@@ -3034,6 +3024,46 @@ fn migrate_stale_reserved_provider_tables(
     Ok(Some(doc.to_string()))
 }
 
+/// Which of [`CODEX_STALE_RESERVED_TABLE_IDS`] currently have a
+/// `[model_providers.<id>]` table in `doc`, without mutating anything.
+///
+/// Kept directly after [`migrate_stale_reserved_provider_tables`] (not
+/// interleaved before it) so that function's own doc comment stays adjacent
+/// to it, minimizing merge conflicts with upstream (we2ai 偏差修复项 B /
+/// Opus 复核低危项 L3).
+fn stale_reserved_provider_table_ids_present(doc: &DocumentMut) -> Vec<&'static str> {
+    CODEX_STALE_RESERVED_TABLE_IDS
+        .iter()
+        .copied()
+        .filter(|id| {
+            doc.get("model_providers")
+                .and_then(|item| item.as_table_like())
+                .and_then(|table| table.get(id))
+                .and_then(|item| item.as_table_like())
+                .is_some()
+        })
+        .collect()
+}
+
+/// Read-only preview of which reserved table ids [`migrate_stale_reserved_provider_tables`]
+/// would migrate, without mutating anything. Exposed `pub(crate)` for
+/// `we2ai::apply`'s confirm-plan preview (we2ai 偏差修复项 B): this migration
+/// runs unconditionally as part of the upstream write pipeline whenever one
+/// of these tables exists, regardless of which provider is actually being
+/// applied, so the confirm plan needs to list it as an "extra change" ahead
+/// of time instead of silently letting it happen.
+pub(crate) fn preview_stale_reserved_provider_table_ids(
+    config_text: &str,
+) -> Result<Vec<&'static str>, AppError> {
+    if !config_text.contains("model_providers") {
+        return Ok(Vec::new());
+    }
+    let doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    Ok(stale_reserved_provider_table_ids_present(&doc))
+}
+
 /// Codex 0.149 rejects the WHOLE config at deserialization when any
 /// non-Bedrock provider table has an empty/missing `name` — active or not
 /// ("provider name must not be empty"). Historic cc-switch updates and
@@ -3085,6 +3115,47 @@ fn backfill_codex_custom_provider_names(config_text: &str) -> Result<Option<Stri
         }
     }
     Ok(changed.then(|| doc.to_string()))
+}
+
+/// Read-only preview of which currently-present custom (non-reserved)
+/// `[model_providers.<id>]` tables are missing a non-empty `name`, without
+/// mutating anything. Exposed `pub(crate)` for `we2ai::apply`'s confirm-plan
+/// preview (Opus 复核中危项 M2 / 偏差修复项 B): `backfill_codex_custom_provider_names`
+/// runs unconditionally on every write (see its call sites) and silently
+/// backfills `name = <id>` into any such table — including ones that have
+/// nothing to do with the provider WE2AI is actually applying — so the
+/// confirm plan needs to list it as an "extra change" ahead of time instead
+/// of letting it happen silently. Kept as an independent read-only pass
+/// (not extracted from `backfill_codex_custom_provider_names`) so this
+/// preview can never itself mutate `doc`.
+pub(crate) fn preview_custom_provider_table_ids_missing_name(
+    config_text: &str,
+) -> Result<Vec<String>, AppError> {
+    if !config_text.contains("model_providers") {
+        return Ok(Vec::new());
+    }
+    let doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let Some(model_providers) = doc.get("model_providers").and_then(|item| item.as_table_like())
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(model_providers
+        .iter()
+        .filter(|(id, item)| {
+            is_custom_codex_model_provider_id(id)
+                && item.as_table_like().is_some_and(|table| {
+                    table
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .is_none()
+                })
+        })
+        .map(|(id, _)| id.to_string())
+        .collect())
 }
 
 /// Codex 0.149 validates EVERY provider table at deserialization — active

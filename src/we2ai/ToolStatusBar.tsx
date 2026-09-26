@@ -189,8 +189,8 @@ export function ToolStatusBar({ t, report, onRestored }: ToolStatusBarProps) {
               <div>
                 <div className="we2ai-label">{t.applyFilesLabel}</div>
                 {plan.files.map((f) => (
-                  <div key={f} className="break-all font-mono">
-                    {f}
+                  <div key={f.path} className="break-all font-mono">
+                    {f.display}
                   </div>
                 ))}
               </div>

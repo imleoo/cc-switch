@@ -89,6 +89,19 @@ pub struct ApplyParams {
     pub gateway_root: String,
     /// B1 返回的可选能力（仅 WorkBuddy 使用），无数据为 `None`。
     pub capabilities: Option<super::api::ModelCapabilities>,
+    /// 前端确认弹窗展示、用户已经看过并点击确认的那份
+    /// [`ApplyPlan::extra_changes`] 里每一条的 `id`（不是 `display`：`id`
+    /// 才是稳定内部标识，`display` 只是给人看的文案，两次预览措辞哪怕因为
+    /// 后续改动而略有不同也不该被误判成"配置变了"）。Claude/Codex 写入前
+    /// 会用当前 live 内容重新计算一次同样的预览并与这份 id 列表对比，不
+    /// 一致（配置在确认期间被外部改动）即拒绝写入、要求重新确认（Opus
+    /// 复核低危项 L6，方案第 4.1 节"跨进程只做尽力检测"同类窗口的延伸：
+    /// 这里覆盖的是"计划展示→点击确认"这段通常最长的窗口；重新计算与真正
+    /// 写入之间仍有一个无法消除的极短窗口，与既有的 TOCTOU 已知限制同源，
+    /// 但 Codex 验收 X1 之后这个重新计算改为直接复用写入时刻的快照字节，
+    /// 不再是独立的第三次读取）。WorkBuddy 走独立的 `apply_workbuddy`，其
+    /// 计划恒为空，不做这个比对。
+    pub expected_extra_changes: Vec<String>,
 }
 
 impl std::fmt::Debug for ApplyParams {
@@ -98,6 +111,7 @@ impl std::fmt::Debug for ApplyParams {
             .field("claude_slots", &self.claude_slots)
             .field("api_key", &"<redacted>")
             .field("gateway_root", &self.gateway_root)
+            .field("expected_extra_changes", &self.expected_extra_changes)
             .finish()
     }
 }
@@ -157,6 +171,8 @@ pub const ERR_READBACK: &str = "APPLY_READBACK_MISMATCH";
 pub const ERR_EXTERNAL: &str = "APPLY_EXTERNAL_MODIFICATION";
 pub const ERR_ROLLBACK: &str = "APPLY_ROLLBACK_INCOMPLETE";
 pub const ERR_SESSION_CHANGED: &str = "SESSION_CHANGED";
+pub const ERR_DATA_ROOT_NOT_HARDENED: &str = "DATA_ROOT_NOT_HARDENED";
+pub const ERR_EXTRA_CHANGES_STALE: &str = "EXTRA_CHANGES_STALE";
 
 /// 在 apply 锁内复查会话：取 Key 之后若已登出（或换了会话），不再写入。登出
 /// 清理 Key 材料也在同一把锁内进行，因此二者不会交错成"清理完又写回 Key"
@@ -247,46 +263,339 @@ fn live_files(tool: ProviderTool, claude_settings: &Path) -> Vec<PathBuf> {
     }
 }
 
+/// 确认弹窗里展示的单个文件项：显示名与真实路径分开（Opus 复核中危项
+/// S1）。前端只渲染 `display`，`path` 只用作 React key / 本地日志，不出现
+/// 在任何界面文本（含 tooltip/title）。绝大多数文件的 `display` 就是真实
+/// 路径本身（路径里不含需要隐藏的内容）；只有 Codex 模型目录文件的真实
+/// 文件名含 `cc-switch`（上游历史遗留常量），用中性标签替换。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanFile {
+    pub display: String,
+    pub path: String,
+}
+
+impl PlanFile {
+    /// 大多数文件：显示名是真实路径经过品牌残留中性化（Codex 验收 W3）：
+    /// 路径来自可配置的目录（`HOME`、Codex 自定义配置目录等，v27 §4.2
+    /// "自定义目录"），如果用户把这类目录本身命名成含 "CC Switch"/
+    /// "cc-switch" 字样（比如 `/Users/cc-switch-fan/`），此前会把这段
+    /// 目录名原样展示在确认弹窗里。`path` 字段保留真实值（只用作
+    /// React key/本地日志，不渲染到界面文本）。
+    pub(crate) fn identity(path: &Path) -> Self {
+        let s = path.display().to_string();
+        Self {
+            display: neutralize_brand_residue(&s),
+            path: s,
+        }
+    }
+}
+
 /// 确认弹窗里展示的"将写入的文件与字段"。
+///
+/// `extra_changes`（偏差修复项 B）：上游写入管道里有几处会无条件改动
+/// `fields` 未列出的内容——Claude 写入器会删除顶层 `api_format`/`apiFormat`
+/// 等内部专用字段（`services/provider/live.rs::sanitize_claude_settings_for_live`），
+/// Codex 写入器会无条件迁移其他保留名 provider 表并补 `name`、改 `wire_api`
+/// （`codex_config.rs::migrate_stale_reserved_provider_tables`）。这些改动与
+/// WE2AI 本次要写入的字段无关，但仍然会在这次写入里真实发生，因此在预览
+/// 阶段检测当前 live 内容是否会触发它们，列进这里，由前端在确认弹窗里
+/// 展示，用户看到后再确认写入——而不是让它们悄悄发生、不出现在计划里。
+/// 检测不到（文件不存在/解析失败）时留空，不阻塞正常确认流程。每条是
+/// [`ExtraChange`]（`id`/`display` 分离，见其文档）而不是裸 `String`：某些
+/// 场景下 `display` 里出现的表名是用户自己起的，直接展示可能带出品牌残留
+/// 文本（Codex 验收 X2②）。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplyPlan {
-    pub files: Vec<String>,
+    pub files: Vec<PlanFile>,
     pub fields: Vec<String>,
+    #[serde(default)]
+    pub extra_changes: Vec<ExtraChange>,
+}
+
+/// 确认弹窗里展示的单条"额外变更"：`id` 是稳定内部标识，只用于 apply 写入
+/// 前重新计算后与 [`ApplyParams::expected_extra_changes`] 的 STALE 比对，
+/// **不出现在任何界面文本里**；`display` 才是真正渲染给用户看的文案。
+///
+/// Claude 侧固定字段名（`api_format` 等）与 Codex 保留名表 id（`openai` 等）
+/// 都来自代码里的固定清单，用户无法自定义，直接展示无风险；但 Codex"缺
+/// `name` 的自定义 provider 表"这一类，表 id 是用户自己起的名字——如果用户
+/// 恰好把某个自定义 provider 表命名为含 `cc-switch` 字样的名字，原样展示
+/// 表 id 就会把这段品牌残留文本带回界面（Codex 验收 X2②）。`display` 在
+/// 构造时就已经对这类情况做了中性化，调用方不需要（也不应该）再对
+/// `display` 做二次处理。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtraChange {
+    pub id: String,
+    pub display: String,
+}
+
+/// 品牌残留匹配用的唯一一份规则：`cc` 与 `switch` 之间夹着至多一个分隔符
+/// （空格/下划线/连字符），大小写不敏感。[`looks_like_brand_residue`]（整段
+/// 候选文本是不是像品牌残留，用于 `ExtraChange.display` 的替换判断）与
+/// [`neutralize_brand_residue`]（消息里任意位置出现这个模式就地替换，用于
+/// [`sanitize_message_for_display`]，Codex 验收 Y3）复用同一份清单，不各写
+/// 一套可能不一致的规则。
+const BRAND_RESIDUE_NEEDLES: [&str; 4] = ["ccswitch", "cc-switch", "cc_switch", "cc switch"];
+
+/// `display` 文案里是否需要把某段用户可控文本（如自定义 provider 表 id）
+/// 中性化。表 id 一类的 TOML key 不是 Rust 标识符，不需要像
+/// `check-guards.sh` 的静态扫描那样额外排除 `ccSwitchRunning` 这类驼峰
+/// 变量名的情形。
+fn looks_like_brand_residue(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    BRAND_RESIDUE_NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
+/// 把 `msg` 里任意位置出现的品牌残留模式原地替换成中性占位符，其余文本
+/// （字段名、修复提示等）原样保留（Codex 验收 Y3）：上游校验错误（如
+/// `codex_config.rs::preflight_codex_provider_table_conflicts`）会把用户
+/// 自己起的 provider 表名原样拼进本地化错误消息，经 `APPLY_FAILED` 一路
+/// 透传到确认弹窗；这里在跨 IPC 边界前统一兜底扫描并替换，不需要每个
+/// 消息构造点各自记得处理。用 `to_ascii_lowercase()`（而不是
+/// `to_lowercase()`）定位匹配区间：needle 全是 ASCII，`to_ascii_lowercase`
+/// 保证字节长度与原串完全一致、只改变 ASCII 字母本身，不会因为大小写折叠
+/// 导致中文等多字节字符的字节偏移错位、切片时越过 UTF-8 字符边界。
+fn neutralize_brand_residue(msg: &str) -> String {
+    let lower = msg.to_ascii_lowercase();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for needle in BRAND_RESIDUE_NEEDLES {
+        let mut start = 0;
+        while let Some(pos) = lower[start..].find(needle) {
+            let begin = start + pos;
+            let end = begin + needle.len();
+            ranges.push((begin, end));
+            start = end;
+        }
+    }
+    if ranges.is_empty() {
+        return msg.to_string();
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (b, e) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if b <= last.1 {
+                last.1 = last.1.max(e);
+                continue;
+            }
+        }
+        merged.push((b, e));
+    }
+    const NEUTRAL_PLACEHOLDER: &str = "<custom>";
+    let mut result = String::with_capacity(msg.len());
+    let mut cursor = 0;
+    for (b, e) in merged {
+        result.push_str(&msg[cursor..b]);
+        result.push_str(NEUTRAL_PLACEHOLDER);
+        cursor = e;
+    }
+    result.push_str(&msg[cursor..]);
+    result
+}
+
+fn extra_change_ids(changes: &[ExtraChange]) -> Vec<String> {
+    changes.iter().map(|c| c.id.clone()).collect()
+}
+
+/// Claude 侧 `extra_changes` 预览的核心逻辑：给定已经读到的 live
+/// `settings.json` 字节（可能来自 [`plan_for`] 单独的一次展示性读取，也
+/// 可能来自 `apply_provider_tool` 里"实际参与合并"的那次快照读取——两处
+/// 共用同一份判定逻辑，不重复实现），看顶层是否已经含有
+/// [`crate::services::provider::live::CLAUDE_LIVE_INTERNAL_ONLY_KEYS`] 中的
+/// 字段——WE2AI 的合并基底会原样带上它们，但上游写入器随后会无条件删除。
+/// 正常情况下这些字段不会出现在真实 live 文件里（Claude Code 自己不写、
+/// 上游写入器早就会清理），只有历史遗留或手工编辑才可能触发，因此这里是
+/// "检测到才提示"，不是常态。
+fn claude_extra_changes_from_bytes(bytes: Option<&[u8]>) -> Vec<ExtraChange> {
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return Vec::new();
+    };
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
+    crate::services::provider::live::CLAUDE_LIVE_INTERNAL_ONLY_KEYS
+        .iter()
+        .filter(|key| obj.contains_key(**key))
+        .map(|key| ExtraChange {
+            id: format!("claude_internal_field:{key}"),
+            display: format!(
+                "{key}（写入时会被上游管道一并移除，这是内部专用字段，非 WE2AI 托管）"
+            ),
+        })
+        .collect()
+}
+
+/// [`plan_for`] 展示性预览专用：独立读一次文件。**不要**在
+/// `apply_provider_tool` 里再调用它——那里必须复用快照读到的同一份字节
+/// （见 [`claude_extra_changes_from_bytes`] 的文档），否则钥匙串授权弹窗
+/// 阻塞期间的外部编辑会在"预览读取"与"合并读取"这两次独立的磁盘读取之间
+/// 溜走，不被 STALE 比对看到（Codex 验收 X1）。
+fn claude_extra_changes_preview(claude_settings: &Path) -> Vec<ExtraChange> {
+    claude_extra_changes_from_bytes(std::fs::read(claude_settings).ok().as_deref())
+}
+
+/// Codex 侧 `extra_changes` 预览的核心逻辑：给定已经读到的 `config.toml`
+/// 文本，检测两类上游写入管道会无条件改动、与本次 WE2AI 要写入的 `we2ai`
+/// 表无关的非托管内容：① `openai`/`ollama`/`lmstudio` 这类保留名 provider
+/// 表——会被迁移改名、补 `name`、把 `wire_api` 规范化为 `"responses"`；
+/// ② 缺 `name` 的其他自定义 provider 表——会被无条件补 `name = <id>`
+/// （Opus 复核中危项 M2：此前遗漏了这一处，`backfill_codex_custom_provider_names`
+/// 在每次写入时都会跑）。② 里**明确排除 WE2AI 自己那张表**（`we2ai`）：
+/// `merged_codex_config` 会用一张恒有 `name` 字段的新表整体替换它，不管替换
+/// 之前它缺不缺 `name`，upstream 的补全逻辑根本没有机会作用在这张表上，
+/// 预览却仍然照原样把它列成"即将被无条件补全的非托管内容"就是误报（Codex
+/// 验收 X6）。
+fn codex_extra_changes_from_text(text: Option<&str>) -> Vec<ExtraChange> {
+    let Some(text) = text else {
+        return Vec::new();
+    };
+    let stale_reserved = crate::codex_config::preview_stale_reserved_provider_table_ids(text)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| ExtraChange {
+            id: format!("codex_stale_reserved_table:{id}"),
+            display: format!(
+                "[model_providers.{id}]（写入时会被上游管道一并重命名并规范化，这是 Codex 保留名表，非 WE2AI 托管）"
+            ),
+        });
+    let missing_name = crate::codex_config::preview_custom_provider_table_ids_missing_name(text)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| id != CODEX_MODEL_PROVIDER)
+        .map(|id| {
+            let display = if looks_like_brand_residue(&id) {
+                "一个自定义 provider 表缺少 name 字段（写入时会被上游管道无条件补全，非 WE2AI 托管）".to_string()
+            } else {
+                format!(
+                    "[model_providers.{id}].name（写入时会被上游管道无条件补全为 \"{id}\"，非 WE2AI 托管）"
+                )
+            };
+            ExtraChange {
+                id: format!("codex_missing_name_table:{id}"),
+                display,
+            }
+        });
+    stale_reserved.chain(missing_name).collect()
+}
+
+/// [`plan_for`] 展示性预览专用，语义与 [`claude_extra_changes_preview`] 的
+/// 注释同理：`apply_provider_tool` 必须复用快照字节，不要调用这个独立读取
+/// 的版本。
+fn codex_extra_changes_preview(codex_config: &Path) -> Vec<ExtraChange> {
+    let text = std::fs::read_to_string(codex_config).ok();
+    codex_extra_changes_from_text(text.as_deref())
+}
+
+/// Codex 模型目录文件在确认弹窗/错误消息里的中性显示名——真实文件名
+/// （`codex_config.rs::CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME`）是上游历史
+/// 遗留常量，字面含 `cc-switch`，不能出现在任何界面文本里（Opus 复核中危
+/// 项 S1）。真实文件名登记在 `docs/we2ai/用户说明.md`（文档不算界面）。
+///
+/// 目录部分用 `catalog_path` 实际解析出的父目录动态拼，不写死 `~/.codex/`：
+/// Codex 配置目录可以在设置里覆盖（v27 §4.2"自定义目录"），写死的话，用户
+/// 改过目录、或在 Windows 下（`~/.codex/` 是 Unix 记法，Windows 实际路径
+/// 形如 `C:\Users\<用户>\.codex`）都会显示不准确的路径（Opus 复核低危项
+/// T2）。确认弹窗的展示（[`plan_for`]）与错误消息脱敏
+/// （[`sanitize_message_for_display`]）共用这一个函数，不重复实现、不会
+/// 出现两处措辞不一致。
+fn codex_model_catalog_display_name(catalog_path: &Path) -> String {
+    let dir = catalog_path.parent().unwrap_or(catalog_path);
+    // Codex 验收 W3：`dir` 同样来自可配置目录，可能含品牌残留字样——这个
+    // 函数被 `plan_for`（直接进 `ApplyPlan`，不经过
+    // `sanitize_message_for_display`）与 `sanitize_message_for_display`
+    // 自己共用，中性化必须做在这里，不能只指望调用方之一事后再兜底。
+    neutralize_brand_residue(&format!("{} 下的 Codex 模型目录文件", dir.display()))
+}
+
+/// Codex 模型目录文件在"只有文件名、不含目录"语境下的中性替身：给它的
+/// 快照备份副本命名（[`save_snapshot_copy`]），以及在错误消息里替换掉只剩
+/// 文件名的场景。**必须在生成备份副本文件名时就使用这个值**，不能只在
+/// 事后的消息文本里做字符串替换——否则错误提示里说"已另存为 xxx"，但磁盘
+/// 上真正生成的文件名却还是真实文件名，提示指向一个并不存在的路径（Opus
+/// 复核低危项 T1）。
+const CODEX_MODEL_CATALOG_NEUTRAL_BASENAME: &str = "codex-model-catalog.json";
+
+/// 判断路径是否就是 Codex 模型目录文件本身（用来决定是否需要用中性替身）。
+fn is_codex_model_catalog_path(path: &Path) -> bool {
+    path == crate::codex_config::get_codex_model_catalog_path()
+}
+
+/// 统一的错误消息脱敏（Opus 复核低危项 S3）：回滚/快照/外部改写等错误消息
+/// 会把涉及的文件路径原样拼进去，上游 `AppError` 的 `Display` 也可能带着
+/// 完整路径透传过来——这类消息构造点分散在本文件多处（`rollback`、快照/
+/// 标记失败、readback 不一致等），逐处替换容易漏掉。改为在 `ApplyError`
+/// 离开本模块、跨 IPC 边界之前统一处理这一处兜底（见
+/// `commands_apply.rs::impl From<ApplyError> for We2aiApiError`），覆盖当前
+/// 与未来任何构造点，不需要逐处记住调用它。
+///
+/// 两步替换：① 完整路径（大多数场景，如 `snap.path.display()` 拼进消息），
+/// 换成 [`codex_model_catalog_display_name`]；② 单独的文件名（如
+/// `apply-snapshots/` 下按 [`CODEX_MODEL_CATALOG_NEUTRAL_BASENAME`] 派生的
+/// 备份副本文件名，只含文件名、不含完整原路径），换成同一个中性替身——
+/// 备份副本本身在写入时就已经用了这个替身命名（T1），这里是再兜底一层，
+/// 覆盖其他可能只剩裸文件名的消息片段。
+pub(crate) fn sanitize_message_for_display(msg: &str) -> String {
+    let catalog_path = crate::codex_config::get_codex_model_catalog_path();
+    let mut result = msg.replace(
+        &catalog_path.display().to_string(),
+        &codex_model_catalog_display_name(&catalog_path),
+    );
+    if let Some(name) = catalog_path.file_name().and_then(|n| n.to_str()) {
+        result = result.replace(name, CODEX_MODEL_CATALOG_NEUTRAL_BASENAME);
+    }
+    // Codex 验收 Y3：模型目录文件名之外，上游校验错误还可能把用户自己起的
+    // provider 表名原样拼进消息（如 `preflight_codex_provider_table_conflicts`
+    // 生成的 `[model_providers.{id}]` 形态错误）；在这一处兜底扫描替换，
+    // 覆盖当前与未来任何构造点，不需要逐处记住调用。
+    neutralize_brand_residue(&result)
 }
 
 pub fn plan_for(tool: ProviderTool) -> ApplyPlan {
     match tool {
-        ProviderTool::ClaudeCode => ApplyPlan {
-            files: vec![crate::config::get_claude_settings_path()
-                .display()
-                .to_string()],
-            fields: vec![
-                "env.ANTHROPIC_BASE_URL".into(),
-                "env.ANTHROPIC_AUTH_TOKEN".into(),
-                "env.ANTHROPIC_MODEL".into(),
-                "env.ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
-                "env.ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
-                "env.ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
-                "env.ANTHROPIC_API_KEY（删除）".into(),
-            ],
-        },
-        ProviderTool::Codex => ApplyPlan {
-            // 上游管道同时维护模型目录文件（快照清单已包含），一并展示。
-            files: vec![
-                crate::codex_config::get_codex_config_path()
-                    .display()
-                    .to_string(),
-                crate::codex_config::get_codex_model_catalog_path()
-                    .display()
-                    .to_string(),
-            ],
-            fields: vec![
-                "model_provider".into(),
-                "model".into(),
-                format!("[model_providers.{CODEX_MODEL_PROVIDER}]"),
-            ],
-        },
+        ProviderTool::ClaudeCode => {
+            let claude_settings = crate::config::get_claude_settings_path();
+            ApplyPlan {
+                extra_changes: claude_extra_changes_preview(&claude_settings),
+                files: vec![PlanFile::identity(&claude_settings)],
+                fields: vec![
+                    "env.ANTHROPIC_BASE_URL".into(),
+                    "env.ANTHROPIC_AUTH_TOKEN".into(),
+                    "env.ANTHROPIC_MODEL".into(),
+                    "env.ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+                    "env.ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+                    "env.ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+                    "env.ANTHROPIC_API_KEY（删除）".into(),
+                ],
+            }
+        }
+        ProviderTool::Codex => {
+            let codex_config = crate::codex_config::get_codex_config_path();
+            let catalog_path = crate::codex_config::get_codex_model_catalog_path();
+            ApplyPlan {
+                extra_changes: codex_extra_changes_preview(&codex_config),
+                // 上游管道同时维护模型目录文件（快照清单已包含），一并展示；
+                // 不确定上游这次调用是否真的会碰它（取决于内部逻辑），保守
+                // 起见始终列出（S1：不确定就始终列出中性标签）。
+                files: vec![
+                    PlanFile::identity(&codex_config),
+                    PlanFile {
+                        display: codex_model_catalog_display_name(&catalog_path),
+                        path: catalog_path.display().to_string(),
+                    },
+                ],
+                fields: vec![
+                    "model_provider".into(),
+                    "model".into(),
+                    format!("[model_providers.{CODEX_MODEL_PROVIDER}]"),
+                ],
+            }
+        }
     }
 }
 
@@ -500,31 +809,55 @@ fn preserve_and_read_users_claude_api_key(
 }
 
 /// 读当前 Claude live 作为基底，只覆盖托管 env，删除 `ANTHROPIC_API_KEY`。
+///
+/// `bytes` **必须**是 [`FileSnapshot::original_bytes`]（`None` 表示快照时
+/// 文件不存在）捕获到的那同一份字节，不能在这里独立重新读一次磁盘：
+/// `apply_provider_tool` 里 extra_changes 的 STALE 比对用的也是这同一份
+/// 字节——两处如果各自独立读盘，钥匙串授权弹窗阻塞期间发生的外部编辑就
+/// 可能只被其中一次读取看到，在"比对用的内容"与"实际合并写入的内容"之间
+/// 产生新的不一致窗口（Codex 验收 X1：此前这里在快照之后又独立
+/// `std::fs::read_to_string` 了一次）。
+///
 /// `saved_key` 是 [`preserve_and_read_users_claude_api_key`] 在快照之前读到
-/// 并已存入钥匙串的值：这里重新读到的 `ANTHROPIC_API_KEY` 若非空且与
-/// `saved_key` 不同，说明文件在"保存到钥匙串"与"这次真正读取"之间的极短
-/// 窗口里又被改过（例如钥匙串授权弹窗其间用户又编辑了一次），此时那份新
-/// 值从未被保存，直接中止、不写入任何内容，比静默丢弃更安全（P6 二轮
-/// Opus 复核高危项 1b）。
+/// 并已存入钥匙串的值：`bytes` 里的 `ANTHROPIC_API_KEY` 若非空且与
+/// `saved_key` 不同，说明文件在"保存到钥匙串"与"快照捕获"之间的极短窗口
+/// 里又被改过（例如钥匙串授权弹窗其间用户又编辑了一次），此时那份新值从
+/// 未被保存，直接中止、不写入任何内容，比静默丢弃更安全（P6 二轮 Opus
+/// 复核高危项 1b）。
 fn merged_claude_settings(
     path: &Path,
+    bytes: Option<&[u8]>,
     params: &ApplyParams,
     saved_key: Option<&str>,
 ) -> Result<Value, ApplyError> {
-    let mut base = match std::fs::read_to_string(path) {
-        Ok(text) if text.trim().is_empty() => json!({}),
-        Ok(text) => serde_json::from_str::<Value>(&text).map_err(|e| {
-            ApplyError::new(
-                ERR_FAILED,
-                format!("{} 不是有效的 JSON，未写入：{e}", path.display()),
-            )
-        })?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(e) => {
-            return Err(ApplyError::new(
-                ERR_FAILED,
-                format!("读取 {} 失败：{e}", path.display()),
-            ))
+    let mut base = match bytes {
+        None => json!({}),
+        Some(b) => {
+            // Codex 验收 Y4：`from_utf8_lossy` 遇到无效 UTF-8 会静默替换成
+            // U+FFFD 再解析——旧实现用 `std::fs::read_to_string`（内部就是
+            // `from_utf8`，无效 UTF-8 直接报错，不写入任何内容），且与
+            // `claude_extra_changes_from_bytes` 走的 `serde_json::from_slice`
+            // （对无效 UTF-8 同样直接报错，不做替换）不一致——同一份字节，
+            // extra_changes 预览判定为"解析失败、当作空"，合并阶段却静默
+            // 替换掉无效字节继续往下走，两处对"这份内容到底能不能用"的
+            // 结论不一致。改回 `from_utf8`，失败时报错并触发回滚，不静默
+            // 写入被替换过的内容。
+            let text = std::str::from_utf8(b).map_err(|e| {
+                ApplyError::new(
+                    ERR_FAILED,
+                    format!("{} 不是有效的 UTF-8，未写入：{e}", path.display()),
+                )
+            })?;
+            if text.trim().is_empty() {
+                json!({})
+            } else {
+                serde_json::from_str::<Value>(text).map_err(|e| {
+                    ApplyError::new(
+                        ERR_FAILED,
+                        format!("{} 不是有效的 JSON，未写入：{e}", path.display()),
+                    )
+                })?
+            }
         }
     };
     let obj = base
@@ -572,18 +905,17 @@ fn we2ai_codex_table(params: &ApplyParams) -> toml_edit::Table {
 
 /// 读当前 config.toml 作为基底（保留格式与注释），覆盖顶层 `model_provider`、
 /// `model` 与整张 `[model_providers.we2ai]`。
-fn merged_codex_config(path: &Path, params: &ApplyParams) -> Result<String, ApplyError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(ApplyError::new(
-                ERR_FAILED,
-                format!("读取 {} 失败：{e}", path.display()),
-            ))
-        }
-    };
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| {
+///
+/// `text` **必须**是快照捕获到的同一份内容解出的字符串（`None` 表示快照时
+/// 文件不存在，等价于空文档）——理由同 [`merged_claude_settings`]：不能在
+/// 这里独立重新读一次磁盘，否则与 extra_changes 的 STALE 比对各自读到不同
+/// 内容（Codex 验收 X1）。
+fn merged_codex_config(
+    path: &Path,
+    text: Option<&str>,
+    params: &ApplyParams,
+) -> Result<String, ApplyError> {
+    let mut doc: toml_edit::DocumentMut = text.unwrap_or_default().parse().map_err(|e| {
         ApplyError::new(
             ERR_FAILED,
             format!("{} 不是有效的 TOML，未写入：{e}", path.display()),
@@ -735,8 +1067,35 @@ fn readback(
 // 主流程
 // ---------------------------------------------------------------------------
 
+/// 数据根（`~/.we2ai`）权限收紧是否已确认成功。写入三个工具（Claude、
+/// Codex、WorkBuddy）任一个之前都必须先通过这个检查——调用点是
+/// [`tighten_all`]，它是 `apply_provider_tool`（覆盖 Claude 与 Codex 两个
+/// `ProviderTool` 分支）与 `apply_workbuddy` 这**两个**写入入口共同的写入
+/// 前置，早于任何含 Key 的数据库行或工具 live 文件写入。启动时若收紧失败
+/// （数据根为符号链接、chmod 失败等），只记日志不足以阻止后续 Key 落盘到
+/// 一个权限不安全的目录，因此在此处把日志态提升为硬性拒绝。
+fn ensure_data_root_hardened() -> Result<(), ApplyError> {
+    if super::mode::data_root_hardened() {
+        return Ok(());
+    }
+    let root = super::mode::data_root();
+    let mut message = format!(
+        "数据目录 {} 权限收紧失败，为避免账号 Key 明文写入不安全位置，已停止写入。\
+         请确认该目录不是符号链接、属主为当前用户且可设为仅本人可访问（0700），\
+         修复后重启应用重试。",
+        root.display()
+    );
+    let failures = super::mode::data_root_harden_failures();
+    if !failures.is_empty() {
+        message.push_str("具体原因：");
+        message.push_str(&failures.join("；"));
+    }
+    Err(ApplyError::new(ERR_DATA_ROOT_NOT_HARDENED, message))
+}
+
 /// 目录与文件收紧；任一目录失败即停止（快照与任何写入之前）。
 pub(crate) fn tighten_all(claude_settings: &Path) -> Result<(), ApplyError> {
+    ensure_data_root_hardened()?;
     for dir in config_dirs() {
         fsguard::tighten_dir(&dir).map_err(|e| ApplyError::new(ERR_DIR, e.to_string()))?;
     }
@@ -784,7 +1143,7 @@ fn check_preconditions(state: &AppState, tool: ProviderTool) -> Result<(), Apply
     {
         return Err(ApplyError::new(
             ERR_TAKEOVER,
-            "CC Switch 正在代理接管此工具，请先在 CC Switch 中关闭接管",
+            "该工具正被其他程序代理接管，请先在该程序中关闭接管",
         ));
     }
     Ok(())
@@ -804,14 +1163,47 @@ fn save_snapshot_copy(snapshot: &FileSnapshot) -> Option<PathBuf> {
     let dir = crate::config::get_app_config_dir().join("apply-snapshots");
     fsguard::tighten_dir(&dir).ok()?;
     let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
-    let name = snapshot
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "snapshot".into());
+    // Codex 模型目录文件用中性替身命名（Opus 复核低危项 T1）：错误提示会把
+    // 这个备份路径原样展示给用户（经 `sanitize_message_for_display` 脱敏），
+    // 如果这里仍然按真实文件名生成，脱敏后的提示文本和磁盘上真正的文件名
+    // 就会对不上——用户按提示去找这个文件会找不到。
+    let name = if is_codex_model_catalog_path(&snapshot.path) {
+        CODEX_MODEL_CATALOG_NEUTRAL_BASENAME.to_string()
+    } else {
+        snapshot
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "snapshot".into())
+    };
     let path = dir.join(format!("{stamp}-{name}"));
     crate::config::atomic_write_private(&path, bytes).ok()?;
     Some(path)
+}
+
+/// 外部改写、备份成功时给用户看的提示文案（Codex 验收 Z6②）：这条消息
+/// 跨 IPC 边界前会经过 `sanitize_message_for_display` 里的
+/// `neutralize_brand_residue`——如果备份路径本身恰好含品牌残留模式（沿用
+/// 了真实文件名的备份，目前只有 Codex 模型目录文件这一种，已经在
+/// `save_snapshot_copy` 里用中性替身命名，但这里不假设"以后也只有这一
+/// 种"），路径会被替换成 `<custom>`，用户就没法凭这条消息找到真正的备份
+/// 文件了。检测到这种情况就不展示（会被替换掉的）路径本身，换成一句
+/// 明确可操作的提示。抽成独立函数方便单测：不需要真的走一遍 apply 失败/
+/// 回滚流程也能验证这条文案分支的逻辑对不对。
+pub(crate) fn external_modified_message(original_path: &Path, backup_path: &Path) -> String {
+    let backup_display = backup_path.display().to_string();
+    if looks_like_brand_residue(&backup_display) {
+        format!(
+            "{}（原内容已另存为一份快照，可在数据目录 apply-snapshots 下按时间戳查找）",
+            original_path.display()
+        )
+    } else {
+        format!(
+            "{}（原内容已另存为 {}）",
+            original_path.display(),
+            backup_display
+        )
+    }
 }
 
 /// 失败恢复：数据库与本地设置、live 文件（`restore_files=false` 时跳过，用于
@@ -832,9 +1224,7 @@ fn rollback(
                 RestoreResult::ExternalModified => {
                     let copy = save_snapshot_copy(snap);
                     external.push(match copy {
-                        Some(c) => {
-                            format!("{}（原内容已另存为 {}）", snap.path.display(), c.display())
-                        }
+                        Some(c) => external_modified_message(&snap.path, &c),
                         None => snap.path.display().to_string(),
                     });
                 }
@@ -1044,9 +1434,7 @@ impl RestoreTool {
 pub fn restore_plan_for(tool: RestoreTool) -> ApplyPlan {
     match tool {
         RestoreTool::ClaudeCode => ApplyPlan {
-            files: vec![crate::config::get_claude_settings_path()
-                .display()
-                .to_string()],
+            files: vec![PlanFile::identity(&crate::config::get_claude_settings_path())],
             fields: CLAUDE_MANAGED_ENV_KEYS
                 .iter()
                 .map(|k| format!("env.{k}（移除）"))
@@ -1054,21 +1442,25 @@ pub fn restore_plan_for(tool: RestoreTool) -> ApplyPlan {
                     "env.ANTHROPIC_API_KEY（如之前保存过用户自己的 Key，则写回）".to_string(),
                 ))
                 .collect(),
+            // 恢复走 WE2AI 自有的 `restore_codex`/`restore_claude`（见本文件），
+            // 不经过上游 `switch` 管道，因此不会触发 `extra_changes` 描述的那类
+            // 上游写入器副作用。
+            extra_changes: Vec::new(),
         },
         RestoreTool::Codex => ApplyPlan {
-            files: vec![crate::codex_config::get_codex_config_path()
-                .display()
-                .to_string()],
+            files: vec![PlanFile::identity(&crate::codex_config::get_codex_config_path())],
             fields: vec![
                 "model_provider（移除）".into(),
                 "model（移除）".into(),
                 format!("[model_providers.{CODEX_MODEL_PROVIDER}]（移除）"),
                 "auth.json（ChatGPT 登录）不受影响".into(),
             ],
+            extra_changes: Vec::new(),
         },
         RestoreTool::Workbuddy => ApplyPlan {
-            files: vec![super::workbuddy::models_path().display().to_string()],
+            files: vec![PlanFile::identity(&super::workbuddy::models_path())],
             fields: vec!["WE2AI 条目（移除）".into()],
+            extra_changes: Vec::new(),
         },
     }
 }
@@ -1129,7 +1521,7 @@ pub fn restore_official(
                         keychain_cleanup_failed,
                     }) => {
                         outcome.unchanged.push(
-                            "Claude Code：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复".into(),
+                            "Claude Code：未指向 WE2AI 或正被其他程序代理接管，无需恢复".into(),
                         );
                         if let Some(e) = keychain_cleanup_failed {
                             outcome.skipped.push(format!("Claude Code：{e}"));
@@ -1152,7 +1544,7 @@ pub fn restore_official(
                     Ok(Some(path)) => outcome.restored.push(path),
                     Ok(None) => outcome
                         .unchanged
-                        .push("Codex：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复".into()),
+                        .push("Codex：未指向 WE2AI 或正被其他程序代理接管，无需恢复".into()),
                     Err(reason) => outcome.skipped.push(reason),
                 }
                 if let Err(e) = cleanup_db_for_app(state, AppType::Codex, CODEX_PROVIDER_ID) {
@@ -1340,7 +1732,7 @@ fn restore_claude(
         .detect_takeover_in_live_config_for_app(&AppType::Claude)
     {
         return Err(format!(
-            "{}：检测到 CC Switch 代理接管，未恢复",
+            "{}：检测到其他程序的代理接管，未恢复",
             path.display()
         ));
     }
@@ -1526,7 +1918,7 @@ fn restore_codex(
         .detect_takeover_in_live_config_for_app(&AppType::Codex)
     {
         return Err(format!(
-            "{}：检测到 CC Switch 代理接管，未恢复",
+            "{}：检测到其他程序的代理接管，未恢复",
             path.display()
         ));
     }
@@ -1611,7 +2003,11 @@ pub fn apply_provider_tool(
     // Claude：钥匙串写入可能阻塞在系统授权弹窗上，必须在捕获任何文件快照
     // 之前完成——这样快照的 H0 天然反映弹窗结束后的最新内容，不会把弹窗
     // 期间发生的外部编辑误判成需要保护的旧状态（P6 二轮 Opus 复核高危项
-    // 1b）。
+    // 1b）。这一步必须排在 extra_changes 比对与快照捕获之前（Codex 验收
+    // X1）：旧实现把 extra_changes 比对放在这一步之前，比对用的是钥匙串
+    // 弹窗弹出前的旧内容；弹窗停留期间外部发生的编辑（例如新增了一个会被
+    // 上游删除的内部专用字段）不会被那次比对看到，随后的合并阶段却又独立
+    // 重读了一次文件，整个钥匙串等待窗口完全不受 STALE 保护。
     let claude_saved_key = if tool == ProviderTool::ClaudeCode {
         preserve_and_read_users_claude_api_key(&claude_settings, secret_store)?
     } else {
@@ -1630,15 +2026,81 @@ pub fn apply_provider_tool(
 
     let fail = |files: &[FileSnapshot], err: ApplyError| rollback(state, &db, files, true, err);
 
+    // 从快照里取出"实际参与合并"的那份字节：extra_changes 的 STALE 比对与
+    // 随后的合并复用同一份 `FileSnapshot::original_bytes()`，不各自独立
+    // 读盘。这是收窄 Codex 验收 X1 描述的窗口的关键——两处如果各自读一次，
+    // 钥匙串授权弹窗阻塞期间的外部编辑可能只被其中一次读取看到；现在两处
+    // 都直接读同一份内存里的字节，逐字节保证一致。
+    let codex_config_path = crate::codex_config::get_codex_config_path();
+    let claude_settings_bytes: Option<Vec<u8>> = if tool == ProviderTool::ClaudeCode {
+        let snap = files
+            .iter()
+            .find(|f| f.path == claude_settings)
+            .expect("live_files always includes the Claude settings path for ClaudeCode");
+        snap.original_bytes().map(<[u8]>::to_vec)
+    } else {
+        None
+    };
+    let codex_config_text: Option<String> = if tool == ProviderTool::Codex {
+        let snap = files
+            .iter()
+            .find(|f| f.path == codex_config_path)
+            .expect("live_files always includes the Codex config path for Codex");
+        match snap.original_bytes() {
+            None => None,
+            Some(b) => match std::str::from_utf8(b) {
+                Ok(s) => Some(s.to_string()),
+                Err(e) => {
+                    return Err(fail(
+                        &files,
+                        ApplyError::new(
+                            ERR_FAILED,
+                            format!(
+                                "{} 不是有效的 UTF-8，未写入：{e}",
+                                codex_config_path.display()
+                            ),
+                        ),
+                    ))
+                }
+            },
+        }
+    } else {
+        None
+    };
+
+    // 用这份"实际参与合并"的内容重新计算一次 extra_changes 预览，与前端
+    // 确认弹窗展示、用户已经点击确认的那份对比（按 `id` 比较，不是
+    // `display`）：配置在"计划展示→点击确认"期间被外部改动（如手工编辑了
+    // config.toml，也包括钥匙串授权弹窗阻塞期间发生的编辑）时，用户看到的
+    // 确认信息已经过时，拒绝写入并要求重新打开确认弹窗（偏差修复项 B 的
+    // L6 追加，Codex 验收 X1 收紧）。
+    let live_extra_changes = match tool {
+        ProviderTool::ClaudeCode => claude_extra_changes_from_bytes(claude_settings_bytes.as_deref()),
+        ProviderTool::Codex => codex_extra_changes_from_text(codex_config_text.as_deref()),
+    };
+    if extra_change_ids(&live_extra_changes) != params.expected_extra_changes {
+        return Err(fail(
+            &files,
+            ApplyError::new(
+                ERR_EXTRA_CHANGES_STALE,
+                "确认弹窗展示的额外变更与当前配置不一致（配置在确认期间被修改），未写入，请重新打开确认弹窗核对后再试",
+            ),
+        ));
+    }
+
     let merged = match tool {
-        ProviderTool::ClaudeCode => {
-            merged_claude_settings(&claude_settings, params, claude_saved_key.as_deref())
-        }
-        ProviderTool::Codex => {
-            merged_codex_config(&crate::codex_config::get_codex_config_path(), params).map(
-                |config| json!({ "auth": { "OPENAI_API_KEY": params.api_key }, "config": config }),
-            )
-        }
+        ProviderTool::ClaudeCode => merged_claude_settings(
+            &claude_settings,
+            claude_settings_bytes.as_deref(),
+            params,
+            claude_saved_key.as_deref(),
+        ),
+        ProviderTool::Codex => merged_codex_config(
+            &codex_config_path,
+            codex_config_text.as_deref(),
+            params,
+        )
+        .map(|config| json!({ "auth": { "OPENAI_API_KEY": params.api_key }, "config": config })),
     };
     let merged = match merged {
         Ok(v) => v,
@@ -1700,7 +2162,7 @@ pub fn apply_provider_tool(
         Err(e) => Err(ApplyError::new(ERR_FAILED, e)),
         Ok(()) => ProviderService::switch(state, tool.app_type(), tool.provider_id()).map_err(|e| {
             if matches!(&e, crate::error::AppError::Localized { key, .. } if *key == TAKEOVER_LOCALIZED_KEY) {
-                ApplyError::new(ERR_TAKEOVER, "CC Switch 正在代理接管此工具，请先在 CC Switch 中关闭接管")
+                ApplyError::new(ERR_TAKEOVER, "该工具正被其他程序代理接管，请先在该程序中关闭接管")
             } else {
                 ApplyError::new(ERR_FAILED, e.to_string())
             }

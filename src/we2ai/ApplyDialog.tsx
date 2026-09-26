@@ -38,6 +38,9 @@ const DETAIL_CODES = new Set([
   "APPLY_READBACK_MISMATCH",
   "APPLY_EXTERNAL_MODIFICATION",
   "APPLY_ROLLBACK_INCOMPLETE",
+  // 偏差修复项 A：数据根权限收紧失败时的具体路径与原因，同样值得展示，
+  // 不能落进只显示通用文案的 default 分支。
+  "DATA_ROOT_NOT_HARDENED",
 ]);
 
 export function describeApplyError(t: We2aiStrings, error: unknown): string {
@@ -54,6 +57,9 @@ export function describeApplyError(t: We2aiStrings, error: unknown): string {
     case "KEY_NOT_FOUND":
     case "NO_ACTIVE_SESSION":
       return getWe2aiErrorMessage(t, error.code);
+    // 偏差修复项 B 的 L6 追加：确认期间配置被外部改动，计划已经过时。
+    case "EXTRA_CHANGES_STALE":
+      return t.errorApplyExtraChangesStale;
     default:
       return DETAIL_CODES.has(error.code)
         ? `${t.errorApplyGeneric}：${error.message}`
@@ -76,6 +82,22 @@ interface ApplyDialogProps {
   /** 该 Key 下支持 Claude Code 的模型，供"高级"槽位选择。 */
   claudeModels: string[];
   toolInstalled: boolean;
+  /**
+   * CC Switch 也在运行时提示——此前只有顶栏 `ToolStatusBar` 展示这个警告，
+   * 确认弹窗本身看不到（Opus 复核低危项 L5）。用户此刻正准备点击"确认"
+   * 真正写入，比顶栏更需要在这个时间点看到提示。
+   */
+  ccSwitchRunning: boolean;
+  /**
+   * 打开确认弹窗时触发一次工具状态检测（含 CC Switch 是否在运行），并在
+   * 这里等待它完成（Codex 验收 X5）：此前调用方只是发起就不再等待，确认
+   * 按钮不受这次检测约束——用户可能在检测结果（尤其是新出现的并存警告）
+   * 返回之前就已经点了确认。改为本组件自己持有一个"正在检测"状态，检测
+   * 完成前禁用确认按钮。返回 `false`（Codex 验收 Y1）表示这次检测在超时
+   * 前没能完成（网络异常等）：不再继续阻塞确认按钮，改为展示一条"未能
+   * 完成检测"的提示，让用户知情后自行决定是否继续。
+   */
+  onBeforeApplyDialogOpen?: () => Promise<boolean>;
   onClose: () => void;
   onApplied: (outcome: We2aiApplyOutcome) => void;
 }
@@ -90,6 +112,8 @@ export function ApplyDialog({
   target,
   claudeModels,
   toolInstalled,
+  ccSwitchRunning,
+  onBeforeApplyDialogOpen,
   onClose,
   onApplied,
 }: ApplyDialogProps) {
@@ -98,6 +122,13 @@ export function ApplyDialog({
   const [applying, setApplying] = useState(false);
   const [needsOverwrite, setNeedsOverwrite] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // Codex 验收 X5：本次打开弹窗触发的工具状态检测是否仍在进行。确认按钮
+  // 在它完成前必须禁用，否则用户可能在新的并存警告返回之前就已经点了
+  // 确认。没有传入回调（如旧版本调用方）时视为"从不检测"，不阻塞确认。
+  const [checkingToolStatus, setCheckingToolStatus] = useState(false);
+  // Codex 验收 Y1：本次检测是否在超时前完成。超时后不再继续禁用确认
+  // 按钮（见 `checkingToolStatus` 的清理逻辑），只展示一条提示。
+  const [detectionIncomplete, setDetectionIncomplete] = useState(false);
   const [slots, setSlots] = useState({
     sonnet: SAME_AS_MAIN,
     opus: SAME_AS_MAIN,
@@ -110,6 +141,8 @@ export function ApplyDialog({
     setNeedsOverwrite(false);
     setShowAdvanced(false);
     setSlots({ sonnet: SAME_AS_MAIN, opus: SAME_AS_MAIN, haiku: SAME_AS_MAIN });
+    setCheckingToolStatus(false);
+    setDetectionIncomplete(false);
     if (!target) return;
     let cancelled = false;
     we2aiApi
@@ -121,10 +154,20 @@ export function ApplyDialog({
         // 不展示将写入的文件与字段就不允许确认（方案第 1 节）。
         if (!cancelled) setPlanFailed(true);
       });
+    if (onBeforeApplyDialogOpen) {
+      setCheckingToolStatus(true);
+      void onBeforeApplyDialogOpen()
+        .then((completed) => {
+          if (!cancelled) setDetectionIncomplete(!completed);
+        })
+        .finally(() => {
+          if (!cancelled) setCheckingToolStatus(false);
+        });
+    }
     return () => {
       cancelled = true;
     };
-  }, [target]);
+  }, [target, onBeforeApplyDialogOpen]);
 
   if (!target) return null;
   const toolLabel = WE2AI_TOOL_LABELS[target.tool];
@@ -147,6 +190,7 @@ export function ApplyDialog({
               }
             : undefined,
         overwrite,
+        expectedExtraChanges: plan?.extraChanges.map((c) => c.id) ?? [],
       });
       const notes = [...outcome.warnings];
       if (!toolInstalled) {
@@ -240,7 +284,7 @@ export function ApplyDialog({
                 {t.applyCancel}
               </Button>
               <Button
-                disabled={applying}
+                disabled={applying || checkingToolStatus}
                 onClick={() => void handleApply(true)}
                 className={primaryButtonClass}
               >
@@ -259,6 +303,24 @@ export function ApplyDialog({
               </DialogTitle>
               <DialogDescription>{t.applyConfirmDescription}</DialogDescription>
             </DialogHeader>
+            {ccSwitchRunning && (
+              <p
+                role="alert"
+                data-testid="we2ai-apply-other-tool-running"
+                className="mx-6 text-xs text-[var(--we2ai-orange)]"
+              >
+                {t.ccSwitchRunningBanner}
+              </p>
+            )}
+            {detectionIncomplete && (
+              <p
+                role="alert"
+                data-testid="we2ai-apply-detection-incomplete"
+                className="mx-6 text-xs text-[var(--we2ai-orange)]"
+              >
+                {t.applyDetectionIncomplete}
+              </p>
+            )}
             {plan && (
               <div
                 className="mx-6 space-y-2 border-2 border-[var(--we2ai-ink)] p-3 text-xs"
@@ -267,8 +329,8 @@ export function ApplyDialog({
                 <div>
                   <div className="we2ai-label">{t.applyFilesLabel}</div>
                   {plan.files.map((f) => (
-                    <div key={f} className="break-all font-mono">
-                      {f}
+                    <div key={f.path} className="break-all font-mono">
+                      {f.display}
                     </div>
                   ))}
                 </div>
@@ -276,6 +338,18 @@ export function ApplyDialog({
                   <div className="we2ai-label">{t.applyFieldsLabel}</div>
                   <div className="font-mono">{plan.fields.join("、")}</div>
                 </div>
+                {plan.extraChanges.length > 0 && (
+                  <div data-testid="we2ai-apply-extra-changes">
+                    <div className="we2ai-label text-[var(--we2ai-orange)]">
+                      {t.applyExtraChangesLabel}
+                    </div>
+                    {plan.extraChanges.map((c) => (
+                      <div key={c.id} className="break-all font-mono">
+                        {c.display}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {planFailed && (
@@ -314,7 +388,7 @@ export function ApplyDialog({
                 {t.applyCancel}
               </Button>
               <Button
-                disabled={applying || !plan}
+                disabled={applying || !plan || checkingToolStatus}
                 onClick={() => void handleApply(false)}
                 className={primaryButtonClass}
               >

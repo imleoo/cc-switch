@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { http, HttpResponse, type JsonBodyType } from "msw";
@@ -396,7 +396,7 @@ describe("We2aiShell logout restoring official config", () => {
       we2ai_restore_official: () => ({
         restored: ["/u/.claude/settings.json"],
         unchanged: [
-          "Codex：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复",
+          "Codex：未指向 WE2AI 或正被其他程序代理接管，无需恢复",
           "WorkBuddy：未指向 WE2AI，无需恢复",
         ],
         skipped: [],
@@ -429,8 +429,8 @@ describe("We2aiShell logout restoring official config", () => {
       we2ai_restore_official: () => ({
         restored: [],
         unchanged: [
-          "Claude Code：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复",
-          "Codex：未指向 WE2AI 或正被 CC Switch 代理接管，无需恢复",
+          "Claude Code：未指向 WE2AI 或正被其他程序代理接管，无需恢复",
+          "Codex：未指向 WE2AI 或正被其他程序代理接管，无需恢复",
           "WorkBuddy：未指向 WE2AI，无需恢复",
         ],
         skipped: [],
@@ -686,6 +686,471 @@ describe("We2aiShell logout with local cleanup failure", () => {
     });
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "本机保存的登录凭据未能完全清除，请重试",
+    );
+  });
+});
+
+// Opus 复核低危项 L5：`ModelSquarePage` 的 `onBeforeApplyDialogOpen` 必须真的
+// 接到 We2aiShell 的 `refreshToolStatus`，而不是只在 `ModelSquarePage`
+// 自身的单元测试里验证过回调"被调用"这件事——这里从 We2aiShell 整体渲染，
+// 断言点击工具按钮打开确认弹窗时，`we2ai_tool_status` 确实被再次调用。
+describe("We2aiShell apply dialog refreshes tool status", () => {
+  afterEach(() => {
+    server.resetHandlers();
+  });
+
+  it("wires ModelSquarePage's onBeforeApplyDialogOpen to refreshToolStatus", async () => {
+    let toolStatusCalls = 0;
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: () => ({
+        loggedIn: true,
+        region: "international",
+        emailMasked: "u****@we2ai.com",
+        keyringDegraded: false,
+        indexDegraded: false,
+        offlineRetryInSeconds: null,
+        localCleanupPending: false,
+      }),
+      we2ai_list_keys: () => ({
+        keys: [
+          {
+            id: 1,
+            name: "工作",
+            groupName: "Claude 组",
+            status: "active",
+            maskedKey: "sk-we2…1111",
+          },
+        ],
+        selectedKeyId: 1,
+      }),
+      we2ai_key_models: () => ({
+        models: [
+          {
+            id: "claude-sonnet-4-5",
+            provider: "anthropic",
+            tools: ["claude_code"],
+          },
+        ],
+        callable: true,
+        blockedReason: null,
+      }),
+      we2ai_apply_plan: () => ({
+        files: ["/home/u/.claude/settings.json"],
+        fields: ["model"],
+        extraChanges: [],
+      }),
+      we2ai_tool_status: () => {
+        toolStatusCalls += 1;
+        return {
+          tools: [
+            {
+              tool: "claude_code",
+              installed: true,
+              broken: false,
+              version: "2.1.0",
+              downloadUrl: "https://docs.anthropic.com/en/docs/claude-code/setup",
+              managedModel: null,
+            },
+            {
+              tool: "codex",
+              installed: false,
+              broken: false,
+              version: null,
+              downloadUrl: "https://github.com/openai/codex/releases",
+              managedModel: null,
+            },
+            {
+              tool: "workbuddy",
+              installed: false,
+              broken: false,
+              version: null,
+              downloadUrl: "https://www.workbuddy.ai/downloads",
+              managedModel: null,
+            },
+          ],
+          ccSwitchRunning: false,
+        };
+      },
+    });
+
+    const user = userEvent.setup();
+    renderShell();
+
+    const card = await screen.findByTestId("we2ai-model-card");
+    // 登录后已经会拉取一次工具状态（`loggedInIdentity` 变化触发）。
+    await waitFor(() => expect(toolStatusCalls).toBeGreaterThanOrEqual(1));
+    const callsBeforeOpen = toolStatusCalls;
+
+    await user.click(
+      within(card).getByRole("button", { name: /^Claude Code/ }),
+    );
+    await screen.findByRole("dialog");
+
+    await waitFor(() =>
+      expect(toolStatusCalls).toBeGreaterThan(callsBeforeOpen),
+    );
+  });
+
+  // Codex 验收 Z1：快速检测结果此前直接塞回 `toolStatus`（`prev ? {...} :
+  // prev`），首次登录后完整检测仍在等 npm（`toolStatus` 还是 `null`）时，
+  // 快速检测查到 CC Switch 正在运行也会被这个分支悄悄丢弃——弹窗既无
+  // 并存警告也无"未能完成检测"提示。快速检测结果现在存在独立 state，不
+  // 依赖 `toolStatus` 是否已经加载完成。
+  it("shows the running banner from the quick check even while the first full tool-status request is still pending", async () => {
+    const baseHandlers = {
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: () => ({
+        loggedIn: true,
+        region: "international",
+        emailMasked: "u****@we2ai.com",
+        keyringDegraded: false,
+        indexDegraded: false,
+        offlineRetryInSeconds: null,
+        localCleanupPending: false,
+      }),
+      we2ai_list_keys: () => ({
+        keys: [
+          {
+            id: 1,
+            name: "工作",
+            groupName: "Claude 组",
+            status: "active",
+            maskedKey: "sk-we2…1111",
+          },
+        ],
+        selectedKeyId: 1,
+      }),
+      we2ai_key_models: () => ({
+        models: [
+          {
+            id: "claude-sonnet-4-5",
+            provider: "anthropic",
+            tools: ["claude_code"],
+          },
+        ],
+        callable: true,
+        blockedReason: null,
+      }),
+      we2ai_apply_plan: () => ({
+        files: ["/home/u/.claude/settings.json"],
+        fields: ["model"],
+        extraChanges: [],
+      }),
+    };
+    mockShellCommands(baseHandlers);
+    // 覆盖 `we2ai_tool_status`：模拟"完整检测仍在等 npm 返回"，这次请求
+    // 永远不 resolve；覆盖 `we2ai_cc_switch_running_quick`：立即查到
+    // "running"。两个 `server.use()` 叠加在 `mockShellCommands` 之上，
+    // 对这两个命令的匹配优先级更高。
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/we2ai_tool_status`, () => new Promise(() => {})),
+      http.post(`${TAURI_ENDPOINT}/we2ai_cc_switch_running_quick`, () =>
+        HttpResponse.json("running"),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderShell();
+
+    const card = await screen.findByTestId("we2ai-model-card");
+    await user.click(
+      within(card).getByRole("button", { name: /^Claude Code/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+
+    await waitFor(() =>
+      expect(
+        within(dialog).getByTestId("we2ai-apply-other-tool-running"),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  // Codex 验收 Z1：快速请求此前没有序号保护——关闭弹窗后立即重开会再触发
+  // 一次快速检测，如果前一次（更旧）的请求碰巧更晚才 resolve，会用一个
+  // 过期结果覆盖掉后一次（更新）请求已经生效的结果。
+  it("keeps only the latest quick check result when the dialog is closed and reopened with out-of-order responses", async () => {
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: () => ({
+        loggedIn: true,
+        region: "international",
+        emailMasked: "u****@we2ai.com",
+        keyringDegraded: false,
+        indexDegraded: false,
+        offlineRetryInSeconds: null,
+        localCleanupPending: false,
+      }),
+      we2ai_list_keys: () => ({
+        keys: [
+          {
+            id: 1,
+            name: "工作",
+            groupName: "Claude 组",
+            status: "active",
+            maskedKey: "sk-we2…1111",
+          },
+        ],
+        selectedKeyId: 1,
+      }),
+      we2ai_key_models: () => ({
+        models: [
+          {
+            id: "claude-sonnet-4-5",
+            provider: "anthropic",
+            tools: ["claude_code"],
+          },
+        ],
+        callable: true,
+        blockedReason: null,
+      }),
+      we2ai_apply_plan: () => ({
+        files: ["/home/u/.claude/settings.json"],
+        fields: ["model"],
+        extraChanges: [],
+      }),
+      we2ai_tool_status: () => ({
+        tools: [
+          {
+            tool: "claude_code",
+            installed: true,
+            broken: false,
+            version: "2.1.0",
+            downloadUrl: "https://docs.anthropic.com/en/docs/claude-code/setup",
+            managedModel: null,
+          },
+        ],
+        ccSwitchRunning: false,
+      }),
+    });
+
+    let quickCheckCalls = 0;
+    let resolveFirstQuickCheck: (status: string) => void = () => {};
+    const firstQuickCheckPromise = new Promise<string>((resolve) => {
+      resolveFirstQuickCheck = resolve;
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/we2ai_cc_switch_running_quick`, async () => {
+        quickCheckCalls += 1;
+        if (quickCheckCalls === 1) {
+          // 第一次（旧）请求：先挂起，等测试手动放行,验证它稍后 resolve
+          // 时不会覆盖掉第二次（新）请求已经生效的结果。
+          const status = await firstQuickCheckPromise;
+          return HttpResponse.json(status);
+        }
+        return HttpResponse.json("running");
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderShell();
+    const card = await screen.findByTestId("we2ai-model-card");
+
+    // 第一次打开：触发第一次（挂起中的）快速检测，随后关闭弹窗。
+    await user.click(
+      within(card).getByRole("button", { name: /^Claude Code/ }),
+    );
+    await screen.findByRole("dialog");
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    // 第二次打开：触发第二次（立即返回 "running"）快速检测。
+    await user.click(
+      within(card).getByRole("button", { name: /^Claude Code/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(
+        within(dialog).getByTestId("we2ai-apply-other-tool-running"),
+      ).toBeInTheDocument(),
+    );
+
+    // 现在才放行第一次（更旧）的请求，给一个不同的结果（"not_running"）——
+    // 它必须被当作过期结果丢弃，不能覆盖掉第二次请求已经生效的 "running"。
+    resolveFirstQuickCheck("not_running");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      within(dialog).getByTestId("we2ai-apply-other-tool-running"),
+    ).toBeInTheDocument();
+  });
+
+  // Codex 验收 W2：快速检测取得确定结果时必须优先于旧的完整报告，而不是
+  // 与之 OR 合并——旧的完整报告说"在运行"（`ccSwitchRunning: true`），
+  // 但这次最新的快速检测明确查到"没有在运行"，警告不应该继续显示。
+  it("does not show the warning when the latest quick check says not_running even if the old full report said true", async () => {
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: () => ({
+        loggedIn: true,
+        region: "international",
+        emailMasked: "u****@we2ai.com",
+        keyringDegraded: false,
+        indexDegraded: false,
+        offlineRetryInSeconds: null,
+        localCleanupPending: false,
+      }),
+      we2ai_list_keys: () => ({
+        keys: [
+          {
+            id: 1,
+            name: "工作",
+            groupName: "Claude 组",
+            status: "active",
+            maskedKey: "sk-we2…1111",
+          },
+        ],
+        selectedKeyId: 1,
+      }),
+      we2ai_key_models: () => ({
+        models: [
+          {
+            id: "claude-sonnet-4-5",
+            provider: "anthropic",
+            tools: ["claude_code"],
+          },
+        ],
+        callable: true,
+        blockedReason: null,
+      }),
+      we2ai_apply_plan: () => ({
+        files: ["/home/u/.claude/settings.json"],
+        fields: ["model"],
+        extraChanges: [],
+      }),
+      // 旧的完整报告：ccSwitchRunning: true。
+      we2ai_tool_status: () => ({
+        tools: [
+          {
+            tool: "claude_code",
+            installed: true,
+            broken: false,
+            version: "2.1.0",
+            downloadUrl: "https://docs.anthropic.com/en/docs/claude-code/setup",
+            managedModel: null,
+          },
+        ],
+        ccSwitchRunning: true,
+      }),
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/we2ai_cc_switch_running_quick`, () =>
+        HttpResponse.json("not_running"),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderShell();
+    const card = await screen.findByTestId("we2ai-model-card");
+    // 登录后已经会拉取一次完整报告，等它落地成 ccSwitchRunning: true。
+    await waitFor(() =>
+      expect(screen.queryByTestId("we2ai-model-card")).toBeInTheDocument(),
+    );
+
+    await user.click(
+      within(card).getByRole("button", { name: /^Claude Code/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("we2ai-apply-plan");
+
+    // 快速检测（"not_running"）落地后，警告不应该出现——即使旧的完整
+    // 报告仍然是 true。
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      within(dialog).queryByTestId("we2ai-apply-other-tool-running"),
+    ).not.toBeInTheDocument();
+  });
+
+  // Codex 验收 V2：顶栏（`ToolStatusBar`）必须与确认弹窗展示一致的
+  // "CC Switch 是否在运行"——复用同一份 `resolveCcSwitchRunning`，不能
+  // 只在弹窗里修好、顶栏还是旧的 OR 合并逻辑。
+  it("shows the top bar warning based on the quick check result instead of the stale full report", async () => {
+    mockShellCommands({
+      we2ai_resume_session: () => "restored",
+      we2ai_session_status: () => ({
+        loggedIn: true,
+        region: "international",
+        emailMasked: "u****@we2ai.com",
+        keyringDegraded: false,
+        indexDegraded: false,
+        offlineRetryInSeconds: null,
+        localCleanupPending: false,
+      }),
+      we2ai_list_keys: () => ({
+        keys: [
+          {
+            id: 1,
+            name: "工作",
+            groupName: "Claude 组",
+            status: "active",
+            maskedKey: "sk-we2…1111",
+          },
+        ],
+        selectedKeyId: 1,
+      }),
+      we2ai_key_models: () => ({
+        models: [
+          {
+            id: "claude-sonnet-4-5",
+            provider: "anthropic",
+            tools: ["claude_code"],
+          },
+        ],
+        callable: true,
+        blockedReason: null,
+      }),
+      we2ai_apply_plan: () => ({
+        files: ["/home/u/.claude/settings.json"],
+        fields: ["model"],
+        extraChanges: [],
+      }),
+      // 旧的完整报告：ccSwitchRunning: true。
+      we2ai_tool_status: () => ({
+        tools: [
+          {
+            tool: "claude_code",
+            installed: true,
+            broken: false,
+            version: "2.1.0",
+            downloadUrl: "https://docs.anthropic.com/en/docs/claude-code/setup",
+            managedModel: null,
+          },
+        ],
+        ccSwitchRunning: true,
+      }),
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/we2ai_cc_switch_running_quick`, () =>
+        HttpResponse.json("not_running"),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderShell();
+    const card = await screen.findByTestId("we2ai-model-card");
+    const statusBar = await screen.findByTestId("we2ai-tool-status");
+    // 顶栏最初展示旧的完整报告：ccSwitchRunning: true，警告应该可见。
+    await waitFor(() =>
+      expect(within(statusBar).getByRole("status")).toBeInTheDocument(),
+    );
+
+    // 打开一次确认弹窗触发快速检测（快速结果是 "not_running"），随后
+    // 关闭弹窗，只关注顶栏。
+    await user.click(
+      within(card).getByRole("button", { name: /^Claude Code/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByTestId("we2ai-apply-plan");
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    // 顶栏的警告现在应该消失——即使 toolStatus.ccSwitchRunning 仍然是
+    // true，最新的快速检测结果（"not_running"）必须优先。
+    await waitFor(() =>
+      expect(within(statusBar).queryByRole("status")).not.toBeInTheDocument(),
     );
   });
 });

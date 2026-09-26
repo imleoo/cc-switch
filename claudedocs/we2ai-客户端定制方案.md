@@ -143,11 +143,11 @@ WE2AI 进程内没有其他切换入口：托盘的供应商切换菜单隐藏�
 | 写入后 | `switch` 返回后立即回读文件计算 H1，这样现有写入器的规范化、MCP 重投影都已计入，不改上游写入层。回读前的瞬间若有外部写入会被误记为 H1，归入本节已知限制 |
 | 失败恢复前 | 当前哈希 = H1 才恢复（= H0 说明未写入，无需恢复）；否则判定被外部改写，不自动恢复，报告"检测到其他程序修改，未回滚"，并给出快照文件路径供用户手动恢复 |
 | `switch` 中途失败（无 H1） | 上游管道可能已改写部分文件后才报错（如 Codex 先改模型目录、再在配置写入处失败，`codex_config.rs:2720`），此时拿不到 H1。规则：当前哈希 = H0 的文件跳过；≠ H0 的文件视为本次 `switch` 的部分写入，按快照写回。`switch` 执行期间若恰有外部程序改写同一文件，会被误判为部分写入而覆盖，归入本节已知限制（窗口为 `switch` 执行时长，毫秒级） |
-| 应用启动与每次 apply 前 | 检测 CC Switch 进程是否在运行，在运行则在顶栏提示"CC Switch 也在管理这些工具，可能互相覆盖"。检测键：macOS 按 bundle id `com.ccswitch.desktop`；Windows 按进程名 `cc-switch.exe`；Linux 按可执行名 `cc-switch`。用户自行改名的便携版检测不到，列为已知限制 |
+| 应用启动与每次 apply 前 | 检测 CC Switch 进程是否在运行，在运行则在顶栏提示"检测到另一个配置管理工具也在运行，可能与 WE2AI 互相覆盖这些工具的配置"（**实现阶段调整（N1，用户新决定）**：界面文案不点名具体是哪个程序，进程检测本身——bundle id / 进程名——不变）。检测键：macOS 按 bundle id `com.ccswitch.desktop`；Windows 按进程名 `cc-switch.exe`；Linux 按可执行名 `cc-switch`。用户自行改名的便携版检测不到，列为已知限制（**实现阶段调整（Codex 验收 W1）**：macOS 检测机制从 `osascript -e 'application id "..." is running"'` 改为 `/usr/bin/lsappinfo find bundleid=...`——目标 bundle id 从未被 Launch Services 登记过时（用户机器上没装过 CC Switch，这是绝大多数用户的真实状态），`osascript` 会以非零退出码结束并报随系统语言变化的 AppleScript 层错误文案，与"检测本身执行失败"无法区分，导致几乎所有用户每次打开确认弹窗都看到"未能完成检测"；`lsappinfo find` 对"从未安装"与"已安装但未运行"都返回退出码 0、空输出，只有真正的执行故障才会非零退出，bundle id 判定依据不变） |
 
 **热切换拒绝（改上游一行）：** `switch` 在检测到接管（数据库有代理备份或 live 有接管标记，`services/provider/mod.rs:5751-5761`）后会走热切换，而热切换用**本进程**的代理配置生成地址写入 live（`services/proxy.rs:1948,3074`）。WE2AI 若进入该分支，会把自己的代理地址写进 CC Switch 正在接管的文件，端口不同时工具将指向未运行的代理。因此在该判定之后加一行：WE2AI 模式下 `is_app_taken_over || live_taken_over` 为真即返回 `TakeoverConflict` 错误，不进入热切换、不写 live、不写 `proxy_live_backup`。这是 WE2AI 对 `services/provider/mod.rs` 的唯一改动，登记到第 7 节触点。它同时消除前置检查与 `switch` 内部判定之间的竞态：竞态发生时 `switch` 直接失败，不会产生任何 live 写入。
 
-**前置条件：** ① apply 前校验 WE2AI 数据库中该应用只有固定 id 一条供应商、current 指向它或为空；② 用现有 `detect_takeover_in_live_configs` 同款判定检查目标 live 文件不处于代理接管状态（Claude `env` 含 `PROXY_MANAGED`、Codex 含本地代理路由）。任一不满足则拒绝并提示；接管状态的提示为"CC Switch 正在代理接管此工具，请先在 CC Switch 中关闭接管"。第 ② 条防止现有 `switch` 走热切换分支（`services/provider/mod.rs:5759-5797`）只改数据库、不写 live 却返回成功。"更新公共配置片段"分支由供应商 `meta.common_config_enabled == true` 门控（`services/provider/mod.rs:6229-6236`），与接管无关，由第 4.2 节"固定 id 供应商不启用公共配置"保证不进入。第 ① 条保证现有 `switch` 不会进入"回填旧供应商行"分支（`services/provider/mod.rs:5844`），快照清单无需覆盖旧供应商行。启动导入已禁用，正常使用下前置条件恒成立。
+**前置条件：** ① apply 前校验 WE2AI 数据库中该应用只有固定 id 一条供应商、current 指向它或为空；② 用现有 `detect_takeover_in_live_configs` 同款判定检查目标 live 文件不处于代理接管状态（Claude `env` 含 `PROXY_MANAGED`、Codex 含本地代理路由）。任一不满足则拒绝并提示；接管状态的提示为"该工具正被其他程序代理接管，请先在该程序中关闭接管"（**实现阶段调整（N1，用户新决定）**：界面文案不点名具体是哪个程序）。第 ② 条防止现有 `switch` 走热切换分支（`services/provider/mod.rs:5759-5797`）只改数据库、不写 live 却返回成功。"更新公共配置片段"分支由供应商 `meta.common_config_enabled == true` 门控（`services/provider/mod.rs:6229-6236`），与接管无关，由第 4.2 节"固定 id 供应商不启用公共配置"保证不进入。第 ① 条保证现有 `switch` 不会进入"回填旧供应商行"分支（`services/provider/mod.rs:5844`），快照清单无需覆盖旧供应商行。启动导入已禁用，正常使用下前置条件恒成立。
 
 ```mermaid
 sequenceDiagram
@@ -180,7 +180,7 @@ sequenceDiagram
 | 数据库 | 该应用的代理备份记录 `proxy_live_backup`（含不存在状态）。热切换会把供应商配置（含 Key）写进这里（`services/proxy.rs:2933,3074`），且"存在备份"本身会让以后的 `switch` 一律走热切换（`services/provider/mod.rs:5751-5756`） | |
 | 本地设置 | 该应用的本地 current 供应商 | `services/provider/mod.rs:5963` |
 | Claude Code | apply 开始时调用上游 `get_claude_settings_path()` 解析出的实际文件并固定该路径：`settings.json` 不存在而旧版 `claude.json` 存在时，上游写的是 `claude.json`（`config.rs:243-255`、`services/provider/live.rs:1312-1317`）。快照、H0/H1、权限收紧、回滚、回读门都针对这个固定路径 | |
-| Codex | WE2AI 自行读取 `auth.json`、`config.toml`、模型目录、托管 marker 的原字节与"是否存在"（文件清单参照 `CodexLiveStateSnapshot`，`codex_config.rs:251-290`；该结构字段为模块私有，不复用其恢复函数）；恢复由 WE2AI 用 `atomic_write_private` 写回，原先不存在的文件删除 | |
+| Codex | WE2AI 自行读取 `config.toml`、模型目录、托管 marker 的原字节与"是否存在"（文件清单参照 `CodexLiveStateSnapshot`，`codex_config.rs:251-290`；该结构字段为模块私有，不复用其恢复函数）；恢复由 WE2AI 用 `atomic_write_private` 写回，原先不存在的文件删除。**不包含 `auth.json`**（实现阶段调整，`apply.rs::live_files`）：WE2AI 模式下下方"保留 ChatGPT 登录"固定让 `preserve_codex_official_auth_on_switch` 恒为 `true`，`switch` 管道在这个设置下保证不写 `auth.json`——这次调用从职责上就不会碰这个文件，纳入快照/标记/回滚清单只会徒增判定面，不带来实际收益；`credential_files()`（权限收紧用途）与 `restore_codex`（恢复官方配置用途）仍分别覆盖它 | |
 | WorkBuddy | `models.json`、托管状态记录 | 第 4.3 节 |
 
 `switch` 返回成功不等于成功。回读 live 后以下四项全部满足才向用户报成功：① 模型等于期望值；② 网关地址等于 WE2AI 网关（Claude `env.ANTHROPIC_BASE_URL`、Codex `[model_providers.we2ai].base_url`），不是本地代理地址；③ 认证字段等于所选 Key（Claude `env.ANTHROPIC_AUTH_TOKEN`、Codex provider 级 `experimental_bearer_token`），不是 `PROXY_MANAGED`；④ 接管判定函数返回未接管。任一不满足且接管判定为已接管时，**只恢复 WE2AI 自有的数据库（供应商行、current 标记、`proxy_live_backup`）与本地设置，不恢复工具 live 文件**：此时 live 已被 CC Switch 的代理路由接管，按快照恢复会拔掉正在运行的代理。有了上面的热切换拒绝，这条路径只作为兜底（例如 `switch` 之后、回读之前 CC Switch 才开启接管）。提示"检测到代理接管，未生效"。不满足但未接管时，按正常失败走完整恢复清单。只核对模型不够：热切换会保留目标模型、把地址改成本地代理（`services/proxy.rs:694,8765` 的测试即断言此结果）。这覆盖前置条件检查与 `switch` 内部再判定之间 CC Switch 恰好开启接管的窗口（`services/provider/mod.rs:5778-5797`）。
@@ -197,6 +197,8 @@ sequenceDiagram
 | Codex | 顶层 `model_provider`、`model`；整张 `[model_providers.we2ai]` 表 | 其他顶层键、其他 provider 表、`[mcp_servers]`、profiles 等原样保留；用 `toml_edit` 保持格式与注释 |
 
 live 文件不存在时以空对象或空文档为基底。
+
+**例外（额外变更，Codex 验收 X7）：** 上表"其余内容"不是绝对原样保留——上游写入管道有三类无条件触发、与本次 WE2AI 写入无关的例外，写入前会在确认弹窗里如实列出（`extra_changes`），不是悄悄发生：① Claude 写入器无条件删除顶层 `api_format`/`apiFormat`/`openrouter_compat_mode`/`openrouterCompatMode` 等内部专用字段（`services/provider/live.rs::sanitize_claude_settings_for_live`）；② Codex 写入器无条件迁移 `openai`/`ollama`/`lmstudio` 等保留名 provider 表（改名、补 `name`、把 `wire_api` 规范化为 `"responses"`，`codex_config.rs::migrate_stale_reserved_provider_tables`）；③ Codex 写入器无条件给缺 `name` 的其他自定义 provider 表补 `name = <表 id>`（`codex_config.rs::backfill_codex_custom_provider_names`；WE2AI 自己的 `[model_providers.we2ai]` 表除外——它每次都被整表替换，不管替换前缺不缺 `name`）。确认弹窗展示的文案（`display`）对用户自定义的表名做过品牌残留中性化，不直接回显原始表名；写入前会用当时刻的 live 内容重新计算一次这份额外变更列表，与用户确认时看到的对比，不一致（如钥匙串授权弹窗期间配置被外部改动）即拒绝写入。
 
 **凭据文件保护（Unix）：** `~/.claude/settings.json`、`~/.codex/config.toml`、WorkBuddy `models.json` 写入后都含明文 Key。写入这些文件的路径很多：上游 Claude 与 Codex 写入器、Codex MCP 重投影（`mcp/codex.rs:458` 整份重写 `config.toml`）、WorkBuddy 写入器，它们都用"临时文件 + 原子替换"，临时文件按进程 umask 创建、写完 Key 之后才调整权限（`config.rs:425`、`localwrite.rs:110,135`）。逐个改写入调用无法穷尽，也会持续增加上游触点。因此**以目录权限为主防线**：
 
@@ -228,7 +230,7 @@ Codex 的实际登录态无法可靠观察：凭据可能在 `auth.json`、系�
 
 | 项 | 取值 | 效果 |
 |---|---|---|
-| `preserve_codex_official_auth_on_switch` | WE2AI 模式固定 true，初始化本地设置时写入，不在 `we2ai_save_settings` 可改字段内 | 管道永不删除 `auth.json`，用户的 ChatGPT 登录材料保留 |
+| `preserve_codex_official_auth_on_switch` | WE2AI 模式固定 true；**实现阶段调整**：不是应用启动时全局写入，而是在**首次对 Codex 执行 apply 时**（`apply.rs::ensure_codex_login_preservation`，早于本次 switch）按需设置为 true，之后保持不变；不在 `we2ai_save_settings` 可改字段内 | 管道永不删除 `auth.json`，用户的 ChatGPT 登录材料保留 |
 | `[model_providers.we2ai].requires_openai_auth` | `switch` 之后、回读之前，由 `we2ai_apply_model` 用 `toml_edit` 只改 WE2AI 自己这张表，写为 `false`，覆盖上游按上一项盖的 `true` | Codex 使用 WE2AI 时不弹登录页，与用户是否登录 ChatGPT、凭据存哪里、何时登录登出都无关 |
 
 已知限制：用户使用 WE2AI 期间，Codex 不显示 ChatGPT 账户状态，也不刷新那份 ChatGPT 令牌；日后切回官方 ChatGPT 时若令牌已过期需重新登录。这只影响 WE2AI 之外的官方登录体验，不影响 WE2AI 请求。
@@ -241,7 +243,7 @@ Codex 的实际登录态无法可靠观察：凭据可能在 `auth.json`、系�
 |---|---|
 | 目录 | `$WORKBUDDY_CONFIG_DIR` → `$CODEBUDDY_CONFIG_DIR` → `<home>/.workbuddy`；home 用 cc-switch 的 `dirs::home_dir()`，不读 `HOME`（Windows 上 Git/MSYS 的 `HOME` 可能错误，`src-tauri/src/config.rs:9-16`） |
 | 条目模型 | 一个条目 = 一个模型（WorkBuddy 以 `id` 作模型名）。WE2AI 在自有数据库记录"上次托管的 id" |
-| 托管记录 | 数据库记录上次写入条目的 `id` 与**内容指纹**（规范化 JSON 的 SHA-256） |
+| 托管记录 | **实现阶段调整**：不是存本节标题所写的"自有数据库"，而是存 WE2AI 数据根下的自有文件 `~/.we2ai/workbuddy_managed.json`（`workbuddy.rs`，0600，不含 Key），避免为这一条记录新增数据库表；记录上次写入条目的 `id` 与**内容指纹**（规范化 JSON 的 SHA-256） |
 | 切换 | 按 id 找到旧条目并比较指纹。**新旧 id 不同**：指纹一致则删除旧条目；不一致说明被改过，保留并提示"检测到手工修改，未删除"；然后写入新条目。**新旧 id 相同**（同一模型再次指定，如换 Key）：指纹一致则原地替换；不一致时弹窗让用户选择"覆盖为 WE2AI 配置"或"取消"，不产生重复 id。新 id 与非托管条目重名时同样弹窗确认后覆盖 |
 | 字段 | `id, name:"WE2AI <model>", vendor:"Custom", url:<网关>/v1, apiKey, useCustomProtocol:false`；能力字段仅在 B1 返回时写入，未返回则省略，键名映射：`supports_tool_call → supportsToolCall`、`supports_images → supportsImages`、`reasoning_efforts → supportsReasoning:true + reasoning.supportedEfforts` |
 | 写入 | 读原数组并记录文件哈希 → 修改 → 替换前再算一次哈希，变化则重读重算（最多 3 次，仍冲突则报错）→ 原子替换；不触碰非托管条目。WorkBuddy 自身不使用文件锁，最终比对与替换之间的窗口无法消除，同 4.1 属于尽力检测 |
@@ -256,7 +258,7 @@ WorkBuddy 事实（本机核实）：腾讯出品，`/Applications/WorkBuddy.app
 |---|---|---|
 | Claude Code | 复用 `get_tool_versions` | Anthropic 官方文档页 |
 | Codex | 复用 `get_tool_versions` | openai/codex 发布页 |
-| WorkBuddy | macOS 读 `/Applications/WorkBuddy.app/Contents/Info.plist` 版本；Windows 查 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe`；兜底查配置目录 | 国际 `workbuddy.ai/downloads`，国内 `workbuddy.cn/downloads/` |
+| WorkBuddy | macOS 读 `/Applications/WorkBuddy.app/Contents/Info.plist` 版本（仅解析 XML 格式；**实现阶段调整**：`Info.plist` 为二进制格式时视为已安装、版本显示未知，不解析二进制 plist，`detect.rs`）；Windows 查 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe`；兜底查配置目录 | 国际 `workbuddy.ai/downloads`，国内 `workbuddy.cn/downloads/` |
 
 ## 5. 会话与安全
 
@@ -304,7 +306,7 @@ sequenceDiagram
 | API Key 落盘位置 | 复用供应商管道意味着明文 Key 会进入：① 三个工具的 live 配置文件；② WE2AI 数据库供应商表的 `settings_config`（`database/dao/providers.rs:219,249`）；③ 数据库定期备份（`database/backup.rs:412`）。v1–v8 的"数据库不存 Key"与此矛盾，予以删除 |
 | 落盘权限 | Unix：`~/.we2ai` 目录 0700，数据库与备份文件 0600，启动时校验并收紧；Windows：数据根位于用户目录，继承当前用户 ACL，不额外处理 |
 | 外来密钥 | apply 过程中用户 live 文件里的其他密钥会短暂进入数据库行，`switch` 成功后立即收敛清除（第 4.2 节）；若恰在此窗口触发定期备份，备份中会带上这些密钥，登出时随备份一并删除。列为已知限制 |
-| 登出处理 | 登出时清空 WE2AI 数据库中两条固定供应商行的整个 `settings_config`、删除 `proxy_live_backup` 表中 Claude 与 Codex 的记录，并删除 `~/.we2ai/backups` 下全部备份；工具 live 文件中的 Key 保留（否则工具立即不可用），登出确认弹窗说明这一点，并提供"同时从工具配置中移除 Key"勾选项 |
+| 登出处理 | 登出时清空 WE2AI 数据库中两条固定供应商行的整个 `settings_config`、删除 `proxy_live_backup` 表中 Claude 与 Codex 的记录，并删除 `~/.we2ai/backups` 下全部备份；工具 live 文件中的 Key 保留（否则工具立即不可用），登出确认弹窗说明这一点，并提供"同时从工具配置中移除 Key"勾选项。**实现阶段调整（P6，方案外增补，见自定义开发功能列表.md 功能 17）**：该勾选项已被"同时恢复工具的官方配置"取代——不再只移除 Key，而是移除 WE2AI 为该工具写入的一切（Claude 六个托管 env 键、Codex 顶层 `model_provider`/`model` 与整张 `[model_providers.we2ai]` 表、WorkBuddy 的 WE2AI 条目），只有 Claude 会额外写回 apply 前用户自己保存的 `ANTHROPIC_API_KEY`；恢复官方默认 ≠ 恢复 apply 前配置，apply 前自己配置的其他字段（如 Codex 的 `model`/`model_provider`）不会被还原 |
 | Key 吊销 | 客户端不吊销 Key；需要作废时去网页端删除或禁用 Key |
 
 ## 6. 品牌与数据隔离
@@ -413,7 +415,7 @@ identifier、productName、scheme 在首次发版前冻结，之后不再改。
 | 数据根 | 单测断言 WE2AI 模式下 `get_app_config_dir()` 以 `.we2ai` 结尾，含存在 override 的负例 |
 | 启动白名单 | 单测断言禁用项返回 false |
 | scheme 唯一 | `tauri.conf.json` 只有 `we2ai`；单测断言 `we2ai://` 能解析、`ccswitch://` 被拒、WE2AI 模式下导入请求被拒 |
-| 品牌残留 | 用户可见字符串中无 `CC Switch` |
+| 品牌残留 | WE2AI 界面可达文案无 `CC Switch` 字样（进程检测标识除外，N1） |
 | 写死路径 | 非测试代码中 `.join(".cc-switch")` 只出现在第 6.1 节登记的 4 处 |
 | IPC 白名单 | 单测断言白名单外的任一已注册命令被拒 |
 | 插件权限 | `capabilities/default.json` 权限集与登记清单一致，上游新增权限即失败 |
@@ -428,7 +430,7 @@ identifier、productName、scheme 在首次发版前冻结，之后不再改。
 | P1 SubPanel 改动 | B1–B7（B3 为前端路由，其余为后端）+ 契约测试（真实 Gin router，含分页、2FA、B1 全部负例、登出撤销家族、并发 refresh、登出后旧 access token 401、四种错误响应形态（含认证路由与受保护路由两种 429 均保留凭证并退避重试）、后端模式错误码） | SubPanel 单测通过；在 jiwu 测试环境部署 |
 | P2 登录会话 | 5.1、5.2 | 重启免登录；升级版本后续期不掉线；并发 10 个请求同时过期（受保护接口返回 `TOKEN_EXPIRED`）只发生一次 refresh 且会话保留；断网不回登录页；钥匙串写入失败进入"需重新登录"；refresh 返回 `REFRESH_TOKEN_REUSED` 或 `REFRESH_TOKEN_EXPIRED` 后钥匙串已清空、界面回到登录页且不再重试；登出后旧 refresh 无效；三家验证码各自开启时发短信与登录均通过 |
 | P3 Key 与模型广场 | Key 分页拉取、B1 渲染 | 不同分组 Key 显示不同模型与按钮 |
-| P4 写入 | 4.1–4.4 | 三工具各指定两次，live 文件托管字段符合第 4 节、非托管内容不变；三阶段故障注入后快照清单全部回到原状；同工具并发 apply 不挂起；WorkBuddy 手改条目保留；Windows 下错误 `HOME` + 正确 `USERPROFILE` 仍写对目录 |
+| P4 写入 | 4.1–4.4 | 三工具各指定两次，live 文件托管字段符合第 4 节、非托管内容不变（第 4.2 节登记的额外变更例外，且已在确认弹窗如实列出、写入前重新核对一致才放行）；三阶段故障注入后快照清单全部回到原状；同工具并发 apply 不挂起；WorkBuddy 手改条目保留；Windows 下错误 `HOME` + 正确 `USERPROFILE` 仍写对目录 |
 | P5 收尾 | 功能列表、守卫、macOS/Windows 安装升级卸载并存矩阵、发版；检查实际产出的 DMG 内 `.app` 名与卷名为 WE2AI、Windows 便携版 ZIP 内为 `WE2AI.exe`，并与 CC Switch 并存安装；两款应用分别开启、查询、关闭开机自启互不影响；Unix 下 `~/.we2ai` 为 0700、数据库与备份为 0600；登出后数据库供应商行与 `proxy_live_backup` 表均无 Key、备份目录为空 | `pnpm test`、`cargo test` 通过 |
 
 分支：cc-switch 从 `we2ai` 切 `feature/we2ai-client`；SubPanel 从 `zhiguofan` 切 `feature/desktop-api`，按其 CHANGELOG 与功能列表规则提交。

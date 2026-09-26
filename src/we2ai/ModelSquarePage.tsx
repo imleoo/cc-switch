@@ -9,7 +9,9 @@ import {
 } from "@/components/ui/select";
 import {
   isWe2aiApiError,
+  resolveCcSwitchRunning,
   we2aiApi,
+  type We2aiCcSwitchRunningStatus,
   type We2aiKeyModels,
   type We2aiKeyView,
   type We2aiToolStatusReport,
@@ -73,16 +75,56 @@ interface ModelSquarePageProps {
   onSessionMaybeEnded: () => void;
   /** 工具安装与当前生效模型，用于标记"当前使用中"与安装提示。 */
   toolStatus?: We2aiToolStatusReport | null;
+  /**
+   * apply 前快速检测（`onBeforeApplyDialogOpen`）查到的三态结果，独立于
+   * `toolStatus`（Codex 验收 Z1）：完整的 `toolStatus` 可能仍在等待（如
+   * 首次登录后联网查版本尚未返回，此时是 `null`），不能让确认弹窗的并存
+   * 警告因此错过快速检测已经查到的结果。
+   *
+   * 取得确定结果（`"running"`/`"not_running"`）时优先于旧的完整报告
+   * （Codex 验收 W2）：此前用 `quickRunning || toolStatus?.ccSwitchRunning`
+   * 这种 OR 合并，快速检测查到 `"not_running"` 时 `quickRunning` 是
+   * `false`，如果旧的完整报告恰好还是 `true`（如另一个工具刚退出、新一轮
+   * 完整检测还没返回或失败），OR 合并会让警告继续显示——这次最新的、更
+   * 准确的快速结果被旧数据盖过去了。只有快速结果是 `"unknown"`（检测本身
+   * 没能得出结论）或还没有过一次快速结果（`null`）时才回退到
+   * `toolStatus?.ccSwitchRunning`。
+   */
+  quickCcSwitchStatus?: We2aiCcSwitchRunningStatus | null;
   /** 写入成功后回调，外壳据此刷新顶栏工具状态。 */
   onApplied?: () => void;
+  /**
+   * 打开确认弹窗前回调，外壳据此刷新一次工具状态（含 CC Switch 是否在
+   * 运行）。修复：此前只在登录后检查一次（方案第 4.1 节"应用启动与每次
+   * apply 前检测 CC Switch 进程"），登录后才启动 CC Switch 时，下一次点击
+   * 工具按钮打开确认弹窗不会得到新的并存提示；确认写入的硬性拒绝（接管
+   * 冲突）本就在 Rust 侧每次 apply 时实时判定，不受这里的前端缓存影响。
+   *
+   * 返回 `Promise`（Codex 验收 X5）：此前这里只是发起就不再等待，确认弹窗
+   * 打开后立即可点确认，看到的仍是这次检测开始前的旧 `toolStatus`——改为
+   * 把这个 Promise 原样转交给 `ApplyDialog`，由它在本次检测完成前禁用
+   * 确认按钮。返回值 `true`/`false` 表示检测是否在超时前完成（Codex
+   * 验收 Y1）：`false` 时 `ApplyDialog` 会提示"未能完成检测"，但仍然放行
+   * 确认——避免网络异常时把确认按钮永久挡住。
+   */
+  onBeforeApplyDialogOpen?: () => Promise<boolean>;
 }
 
 export function ModelSquarePage({
   t,
   onSessionMaybeEnded,
   toolStatus = null,
+  quickCcSwitchStatus = null,
   onApplied,
+  onBeforeApplyDialogOpen,
 }: ModelSquarePageProps) {
+  // Codex 验收 W2/V2：快速检测取得确定结果时优先于旧的完整报告，而不是
+  // 与之 OR 合并（见 `quickCcSwitchStatus` 的文档）；复用与顶栏
+  // （`We2aiShell.tsx`）同一份判定函数，不要各写一套。
+  const ccSwitchRunning = resolveCcSwitchRunning(
+    quickCcSwitchStatus,
+    toolStatus?.ccSwitchRunning,
+  );
   const [applyTarget, setApplyTarget] = useState<ApplyTarget | null>(null);
   const [keys, setKeys] = useState<We2aiKeyView[] | null>(null);
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
@@ -383,9 +425,9 @@ export function ModelSquarePage({
                                 : undefined
                               : describeBlockedReason(t, models.blockedReason)
                           }
-                          onClick={() =>
-                            setApplyTarget({ tool, model: model.id })
-                          }
+                          onClick={() => {
+                            setApplyTarget({ tool, model: model.id });
+                          }}
                           className={
                             inUse
                               ? "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-ink)]"
@@ -423,6 +465,8 @@ export function ModelSquarePage({
                   ?.installed ?? true)
               : true
           }
+          ccSwitchRunning={ccSwitchRunning}
+          onBeforeApplyDialogOpen={onBeforeApplyDialogOpen}
           onClose={() => setApplyTarget(null)}
           onApplied={() => onApplied?.()}
         />

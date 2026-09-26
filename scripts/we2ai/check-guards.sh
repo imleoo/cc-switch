@@ -472,6 +472,19 @@ pkg_name="$(awk '/^\[package\]/{f=1;next} f&&/^\[/{exit} f&&/^[[:space:]]*name[[
 if [[ "$pkg_name" != "cc-switch" ]]; then
   err "$cargo_toml: [package] name 被改成了 ${pkg_name:-<空>}（应保持 cc-switch，见功能 14——scripts/we2ai/lib.sh 的版本号定位依赖这个包名）"
 fi
+
+# Codex 验收 Z3：`we2ai::detect::cc_switch_running_status`（Y1/Z2）用
+# `tokio::process::Command` 异步执行检测子进程并带超时/`kill_on_drop`，
+# 依赖 tokio 的 `process` feature；上游同步改这一行（新增/调整 tokio
+# features 列表）时如果误删这个 feature，只有编译才会报错，且这个依赖
+# 只在 we2ai 分支需要——同步演练里如果没跑一次 cargo check/test，可能被
+# 忽略过去。这里加一道机械检查提前拦下。
+tokio_line="$(grep -nE '^tokio = ' "$cargo_toml" | head -1)"
+if [[ -z "$tokio_line" ]]; then
+  err "$cargo_toml: 找不到 tokio 依赖声明行，无法核对 process feature（功能 9/Z3）"
+elif [[ "$tokio_line" != *'"process"'* ]]; then
+  err "$cargo_toml: tokio 的 features 列表缺少 \"process\"（we2ai::detect::cc_switch_running_status 依赖它异步执行检测子进程，功能 9/Z3）：${tokio_line}"
+fi
 lib_name="$(awk '/^\[lib\]/{f=1;next} f&&/^\[/{exit} f&&/^[[:space:]]*name[[:space:]]*=/{print;exit}' "$cargo_toml" | sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p')"
 if [[ "$lib_name" != "cc_switch_lib" ]]; then
   err "$cargo_toml: [lib] name 被改成了 ${lib_name:-<空>}（应保持 cc_switch_lib，见功能 14——测试/CI 里大量 cc_switch_lib:: 引用依赖这个 crate 名）"
@@ -515,6 +528,704 @@ if ! grep -q 'we2ai::commands_apply::we2ai_restore_official' src-tauri/src/lib.r
 fi
 if ! grep -q 'we2ai::commands_apply::we2ai_restore_plan' src-tauri/src/lib.rs; then
   err "src-tauri/src/lib.rs: 找不到 we2ai::commands_apply::we2ai_restore_plan 注册（功能 17：恢复确认弹窗的独立计划命令，Opus 复核中危项 2）"
+fi
+# Codex 验收 Y1：apply 前只等"CC Switch 是否在运行"这一项快速检测的独立
+# 命令，同样是 `we2ai_` 前缀、同样只需要确认出现在 lib.rs 的注册列表里。
+if ! grep -q 'we2ai::commands_apply::we2ai_cc_switch_running_quick' src-tauri/src/lib.rs; then
+  err "src-tauri/src/lib.rs: 找不到 we2ai::commands_apply::we2ai_cc_switch_running_quick 注册（Codex 验收 Y1：apply 前快速检测命令）"
+fi
+
+# 4.10 Codex 验收报告 r0 偏差修复项 A：数据根（~/.we2ai）权限收紧失败不能
+# 只打日志，必须在写入任何含 Key 数据（数据库行 / 工具 live 文件）之前被
+# 拒绝，且必须 fail-closed（Opus 复核中危项 M1）。lib.rs 必须记录
+# harden_data_root() 的结果，且记录点必须早于 We2aiSessionState 被
+# app.manage()（会话管理器一旦可用，登录命令就可能开始写 ~/.we2ai）；
+# tighten_all() 是 apply_provider_tool（Claude/Codex）与 apply_workbuddy
+# 共同的写入前置，必须紧接着调用 ensure_data_root_hardened()；mode.rs 不得
+# 出现 `unwrap_or(true)` 这类"未记录/异常时默认放行"的写法（fail-open 回归）。
+lib_rs=src-tauri/src/lib.rs
+if ! grep -q 'we2ai::mode::record_harden_result(' "$lib_rs"; then
+  err "$lib_rs: 找不到 we2ai::mode::record_harden_result 调用，harden_data_root() 的失败结果不会被记录，apply 无法据此拒绝写入（偏差修复项 A）"
+else
+  # 排除纯注释行再取行号（保留原始行号）：注释里若提到这两个调用的字面
+  # 写法（供人类读者理解顺序要求），不能被误当成真正的调用点。
+  record_line="$(grep -n 'we2ai::mode::record_harden_result(' "$lib_rs" | grep -vE '^[0-9]+:[[:space:]]*//' | head -1 | cut -d: -f1)"
+  manage_line="$(grep -n 'app\.manage(We2aiSessionState(' "$lib_rs" | grep -vE '^[0-9]+:[[:space:]]*//' | head -1 | cut -d: -f1)"
+  if [[ -z "$manage_line" ]]; then
+    err "$lib_rs: 找不到 app.manage(We2aiSessionState(...))，无法核对与 record_harden_result 的先后顺序（偏差修复项 A / Opus 复核中危项 M1）"
+  elif [[ "$record_line" -gt "$manage_line" ]]; then
+    err "$lib_rs: we2ai::mode::record_harden_result（第 ${record_line} 行）必须早于 app.manage(We2aiSessionState(...))（第 ${manage_line} 行），否则会话管理器可用后、收紧结果记录前存在窗口（Opus 复核中危项 M1）"
+  fi
+fi
+apply_rs=src-tauri/src/we2ai/apply.rs
+if ! grep -A1 'pub(crate) fn tighten_all(claude_settings: &Path)' "$apply_rs" | grep -q 'ensure_data_root_hardened()'; then
+  err "$apply_rs: tighten_all() 必须紧接着调用 ensure_data_root_hardened()，否则数据根收紧失败时仍可能写入含 Key 的数据（偏差修复项 A）"
+fi
+mode_rs=src-tauri/src/we2ai/mode.rs
+if grep -q 'unwrap_or(true)' "$mode_rs"; then
+  err "$mode_rs: 出现 unwrap_or(true)，data_root_hardened() 必须 fail-closed（未记录/锁中毒都视为未通过），不能默认放行（Opus 复核中危项 M1）"
+fi
+
+# 4.11 N1（用户新决定）：WE2AI 用户界面文案不得残留 "CC Switch" 字样（含
+# 大小写与连字符/下划线/空格变体：CC Switch / CC-Switch / ccswitch /
+# cc-switch / cc_switch，大小写不敏感），只改显示文案，进程检测本身（bundle
+# id `com.ccswitch.desktop`、可执行名 `cc-switch`/`cc-switch.exe`）保留不变。
+# 这是按行的启发式扫描，不是真正的语法分析：
+#   - 排除整行是注释的行（Rust `//`/`///`/`//!`、TS/CSS `//`/`*`/`/*` 开头）；
+#   - 排除 `*_tests.rs` 文件（独立测试文件）；
+#   - 只跳过 `#[cfg(test)]` **紧跟 `mod <name> {` 的整块**（按花括号深度找到
+#     匹配的收尾 `}`），而不是遇到文件里第一个 `#[cfg(test)]` 就整段停止
+#     扫描——本仓库里同一文件常有多处 `#[cfg(test)]`（散落的测试钩子/字段/
+#     单个函数），只有真正的 `mod tests { ... }` 才是测试模块，其余一律照常
+#     扫描（Opus 复核中危项 R1：旧版在第一个 `#[cfg(test)]` 就 `exit`，导致
+#     apply.rs/session.rs/mode.rs/workbuddy.rs 中段以后的生产代码完全没被
+#     扫描过）；
+#   - 匹配加了前后单词边界，排除 `ccSwitchRunning`/`cc_switch_running` 这类
+#     标识符（"switch" 后面紧跟标识符字符时不算命中）。
+# 不保证覆盖跨行拼接等刁钻写法。
+brand_pattern='(^|[^A-Za-z0-9_])cc[ _-]?switch([^A-Za-z0-9_]|$)'
+# 白名单按"文件 + 精确字面量"配对，收窄到 detect.rs 的进程检测调用形态本身
+# （Opus 复核中危项 R2：旧版按字符串内容判断，任何文件只要含这几个子串都会
+# 被放行；改为同时要求命中来自 detect.rs）。
+#
+# Codex 验收 X4③：仅要求"文件是 detect.rs"还不够——`$content` 是
+# grep -n 输出的整行（"行号:整行原文"），旧版用 `case "$content" in
+# *'子串'*)` 做的是"这一行任意位置包含这个子串就整行放行"；如果同一行
+# 除了合法的检测调用之外还夹带其他需要被扫到的品牌残留文本，也会被这个
+# 子串命中一并放过。改成：去掉行号前缀与首尾空白后，要求剩下的整行内容
+# 逐字等于下列四种已知检测调用形态之一（不是"包含"）。
+is_whitelisted_process_detection_literal() {
+  local file="$1" content="$2" text
+  case "$file" in
+    */we2ai/detect.rs) ;;
+    *) return 1 ;;
+  esac
+  text="${content#*:}"
+  text="${text#"${text%%[![:space:]]*}"}"
+  text="${text%"${text##*[![:space:]]}"}"
+  case "$text" in
+    'cmd.args(["find", "bundleid=com.ccswitch.desktop"])') return 0 ;;
+    'cmd.args(["/FI", "IMAGENAME eq cc-switch.exe", "/NH"])') return 0 ;;
+    'if stdout.to_ascii_lowercase().contains("cc-switch.exe") {') return 0 ;;
+    'cmd.args(["-x", "cc-switch"])') return 0 ;;
+  esac
+  return 1
+}
+
+# apply.rs 的 `looks_like_brand_residue`（Codex 验收 X2②/X6：额外变更 display
+# 文案的中性化判定）需要把品牌残留的字面量本身写进代码里才能识别、进而把它
+# 从确认弹窗的界面文案里替换掉——这几个字面量本身是内部匹配用途，从不
+# 展示给用户，性质与 detect.rs 的进程检测标识相同：都不适合用"登记豁免
+# 界面可见文字"的宽松方式处理，因此同样只精确匹配这一行本身（文件 +
+# 逐字整行），不做子串匹配、也不做别的形式的放宽。
+is_whitelisted_brand_residue_matcher_literal() {
+  local file="$1" content="$2" text
+  case "$file" in
+    */we2ai/apply.rs) ;;
+    *) return 1 ;;
+  esac
+  text="${content#*:}"
+  text="${text#"${text%%[![:space:]]*}"}"
+  text="${text%"${text##*[![:space:]]}"}"
+  case "$text" in
+    'const BRAND_RESIDUE_NEEDLES: [&str; 4] = ["ccswitch", "cc-switch", "cc_switch", "cc switch"];') return 0 ;;
+  esac
+  return 1
+}
+
+# 跳过"紧跟 `mod <name> {` 的 `#[cfg(test)]` 整块"，其余行原样透传（保留
+# 原始行号，供 grep -n 使用）。
+#
+# Opus 复核低危项 S4：花括号计数不能把字符串/字符字面量、行注释里的
+# `{`/`}` 也算进去——测试模块内一行 `let s = "{";` 会让计数多算一个从不
+# 被抵消的开括号，导致"跳过"状态永远退不出来，一路跳到文件尾，把这之后
+# （如果有）的生产代码也漏扫。计数前用 `strip_lexical_noise()` 粗略剔除
+# 双引号字符串（含反斜杠转义）、字符字面量（含转义）、`//` 行注释，以及
+# Rust 原始字符串 `r#"…"#`（含跨行——原始字符串允许内部出现未转义的 `"`
+# 和裸换行，必须在遇到匹配的收尾定界符之前，把跨越的每一行都当作字符串
+# 内容整行剔除，不能只按单行处理）。跳出"跳过"状态那一刻，额外断言当前
+# 这一行的原始文本里确实含有 `}`（S4 要求的"断言该行确为 `}`"）——按剔除
+# 只做减法、不改变幸存字符相对位置的构造方式，这个断言在数学上必然成立，
+# 这里显式检查是为了在假设被违反时能看见诊断信息，而不是静默按错误的
+# 行号继续。
+we2ai_strip_inline_test_mod() {
+  awk '
+    BEGIN { SQ = sprintf("%c", 39) }  # 单引号字符（避免在单引号包裹的 awk 脚本里直接写字面量）
+    function is_mod_open(l) {
+      return (l ~ /^[[:space:]]*(pub([(][a-z]*[)])?[[:space:]]+)?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{[[:space:]]*$/)
+    }
+    # 剔除字符串/字符字面量/行注释/块注释后的干净文本，供花括号计数使用。
+    # 输入/输出都是单行；跨行状态（原始字符串 in_raw_string、块注释
+    # in_block_comment、普通双引号字符串 in_str）都用全局变量在多次调用之间
+    # 保持——Rust 的普通字符串本可以用行尾反斜杠续行，块注释 `/* ... */`
+    # 也可以跨多行，这两类此前只按单行处理，跨行时会把后续几行也一起吞掉
+    # 或者相反漏判（Opus 复核低危项 T3）。字符字面量与生命周期标注
+    # （如 static 生命周期标注）单靠单引号无法区分：字符字面量总是紧跟一个
+    # 转义序列或单字符、再跟一个收尾单引号，生命周期标注后面不会再出现
+    # 单引号——用向前看几个字符的方式区分，而不是无条件把单引号当成字符串
+    # 起点。
+    function strip_lexical_noise(line,    i, n, c, out, closer, j, hashes, idx, jdx, k, nx, found, m) {
+      n = length(line)
+      out = ""
+      i = 1
+      if (in_raw_string) {
+        closer = raw_string_delim
+        idx = index(line, closer)
+        if (idx == 0) {
+          return ""  # 整行仍在原始字符串里，没有出现收尾定界符。
+        }
+        in_raw_string = 0
+        i = idx + length(closer)
+      }
+      while (i <= n) {
+        if (in_block_comment) {
+          # Rust 的块注释允许嵌套（`/* outer /* inner */ still outer */`），
+          # `in_block_comment` 是深度计数而不是布尔值：找到的下一个 `/*`（嵌套
+          # 加深）或 `*/`（退一层，退到 0 才真正算退出注释）里更靠前的那个，
+          # 逐个处理，而不是不管嵌套、只找最近的一个 `*/` 就直接退出（Codex
+          # 验收 X4②：旧版遇到内层的 `*/` 就当整个注释结束，把外层注释剩余
+          # 部分里的 `{` 误当成真实代码计入花括号深度）。
+          while (i <= n) {
+            idx = index(substr(line, i), "*/")
+            jdx = index(substr(line, i), "/*")
+            if (idx == 0 && jdx == 0) {
+              i = n + 1
+              break
+            }
+            if (jdx > 0 && (idx == 0 || jdx < idx)) {
+              in_block_comment++
+              i = i + jdx + 1
+            } else {
+              in_block_comment--
+              i = i + idx + 1
+              if (in_block_comment == 0) break
+            }
+          }
+          if (in_block_comment > 0) {
+            return out  # 整行剩余部分仍在（可能嵌套的）块注释里，没有完全收尾。
+          }
+          continue
+        }
+        if (in_str) {
+          c = substr(line, i, 1)
+          if (c == "\\") { i += 2; continue }
+          if (c == "\"") { in_str = 0 }
+          i++
+          continue
+        }
+        c = substr(line, i, 1)
+        if (c == "/" && substr(line, i + 1, 1) == "/") {
+          break  # 行注释：本行剩余部分全部丢弃。
+        }
+        if (c == "/" && substr(line, i + 1, 1) == "*") {
+          in_block_comment = 1
+          i += 2
+          continue
+        }
+        # 原始字符串起始：`r` 或 `br`，后面跟 0 个以上 `#`，再跟 `"`。
+        if (c == "r" || (c == "b" && substr(line, i + 1, 1) == "r")) {
+          j = i + (c == "b" ? 2 : 1)
+          hashes = 0
+          while (substr(line, j, 1) == "#") { hashes++; j++ }
+          if (substr(line, j, 1) == "\"") {
+            closer = "\""
+            for (k = 0; k < hashes; k++) { closer = closer "#" }
+            idx = index(substr(line, j + 1), closer)
+            if (idx == 0) {
+              in_raw_string = 1
+              raw_string_delim = closer
+              i = n + 1
+              continue
+            } else {
+              i = j + 1 + idx + length(closer) - 1
+              continue
+            }
+          }
+        }
+        if (c == "\"") { in_str = 1; i++; continue }
+        if (c == SQ) {
+          nx = substr(line, i + 1, 1)
+          if (nx == "\\") {
+            # 转义字符字面量（换行符/反斜杠/引号本身/十六进制或 unicode 转义
+            # 等），粗略地在接下来几个字符里找收尾单引号。
+            found = 0
+            for (m = i + 2; m <= i + 10 && m <= n; m++) {
+              if (substr(line, m, 1) == SQ) { found = m; break }
+            }
+            if (found) { i = found + 1; continue }
+            else { i++; while (i <= n && substr(line, i, 1) ~ /[A-Za-z0-9_]/) i++; continue }
+          } else if (nx != "" && substr(line, i + 2, 1) == SQ) {
+            # 普通单字符字面量（引号包住一个字符再收尾）。
+            i = i + 3
+            continue
+          } else {
+            # 生命周期标注：跳过引号和随后的标识符字符，不进入字符串状态。
+            i++
+            while (i <= n && substr(line, i, 1) ~ /[A-Za-z0-9_]/) i++
+            continue
+          }
+        }
+        out = out c
+        i++
+      }
+      return out
+    }
+    {
+      raw_line = $0
+      if (skipping) {
+        clean = strip_lexical_noise(raw_line)
+        o = gsub(/\{/, "{", clean)
+        c = gsub(/\}/, "}", clean)
+        depth += o - c
+        if (depth <= 0) {
+          skipping = 0
+          if (raw_line !~ /\}/) {
+            # Codex 验收 Y2：此前这里只打印到 stderr，awk 自身仍然以退出码 0
+            # 结束——调用方（`we2ai_verify_scan_or_die`）能不能发现这个内部
+            # 断言失败，完全要看它凑巧有没有顺带触发行数不匹配；断言真正
+            # 失败时必须让 awk 本身非零退出，不依赖旁的不变量凑巧生效。
+            print "we2ai_strip_inline_test_mod: 内部断言失败——退出跳过状态但原始行不含 }：" raw_line > "/dev/stderr"
+            exit 2
+          }
+        }
+        print ""   # 占位，保持行号不变，内容清空避免误命中
+        next
+      }
+      if (pending) {
+        pending = 0
+        if (is_mod_open(raw_line)) {
+          skipping = 1
+          depth = 1
+          print ""
+          next
+        }
+        print raw_line
+        next
+      }
+      if (raw_line ~ /^#\[cfg\(test\)\]/) {
+        pending = 1
+        print raw_line
+        next
+      }
+      print raw_line
+    }
+    END {
+      # Codex 验收 Y2：文件在仍处于"跳过"状态时结束（`mod tests { ... }`
+      # 从未真正闭合、花括号深度从未回到 0）——此前这种情况下行数不变量
+      # 依然成立（跳过状态下每行仍然打印一个占位空行，行数没有减少），
+      # 不会被 `we2ai_verify_scan_or_die` 的行数检查捕捉到，导致文件末尾
+      # 剩余的全部生产代码被永久当成"测试模块内容"悄悄跳过、从未报告任何
+      # 错误。显式在这里检查并让 awk 非零退出。
+      if (skipping) {
+        print "we2ai_strip_inline_test_mod: 内部断言失败——文件在跳过状态未闭合时结束（mod tests 未找到匹配的收尾 }）：" FILENAME > "/dev/stderr"
+        exit 2
+      }
+    }
+  ' "$1"
+}
+
+# Codex 验收 X4①：任何一步扫描输入/执行失败都必须让整个脚本非零退出，不能
+# 被悄悄吞掉——`set -euo pipefail` 在这里不够用。已证实的具体原因分开列，
+# 不合并成一个笼统的推测（Codex 验收 Z6：此前这里在"未确认"的机制上继续
+# 断言，把命令替换与 herestring 混为一谈）：
+#   已证实 A（临时文件创建失败）：herestring（`<<<`）/`mktemp` 在只读沙箱
+#      环境下确实会失败——直接注入验证过：`mktemp` 因文件系统只读而报错时，
+#      自测正确返回非零，且没有真的创建出临时文件。这类失败发生的位置
+#      通常是 `while` 循环的条件（或为它准备输入的重定向），而 `errexit`
+#      明确不对 `while`/`until` 的条件生效——会被"当次循环就当作 0 次
+#      迭代"悄悄吞掉。
+#   已证实 B（退出码被吞）：`... | grep ... || true` 这类写法，以及
+#      `find`/`grep` 的真实退出码在赋值语句本身就被 `errexit` 拦截、根本
+#      没运行到下一行的检查代码，都会让真正的执行失败被当成"没有命中"
+#      悄悄放过。本轮直接故障注入复验过：`find` 返回 73 → 整个脚本退出
+#      1；品牌匹配阶段 `grep` 返回 2 → 退出 1；`grep` 返回 1（无匹配，
+#      正常情况）→ 不受影响、仍退出 0；真实扫描函数在跳过状态未闭合的
+#      输入上 → 退出 2。这些都是本轮在真实主扫描循环（不是自测里包在
+#      `if (...)` 子 shell 条件里的隔离用例）上跑出来的结果，不是推测。
+#   未确认（曾观察到但没有定位到确切机制）：`region="$(cmd)"` 整体捕获
+#      **较大输出**（一份 800 多行、含 `#[cfg(test)] mod tests {}` 块的
+#      真实源文件即可复现）时，捕获到的内容比 `cmd` 实际写出的少，`cmd`
+#      本身退出码却是 0、没有任何报错。已经排除的假设：这不是 bash 3.2
+#      本身对较大字符串命令替换的固有缺陷（实测常规、可写的 bash 3.2.57
+#      环境下，命令替换可以完整保留几十万行输出，不会仅因为体积就截断）。
+#      是否与"已证实 A"的临时文件失败同源尚未验证，不下结论。不管具体
+#      诱因是什么，把同一个 `cmd` 的输出直接用管道接给下一个命令
+#      （`cmd | next`），或者只捕获 `next` 处理后的一个很小的结果（如
+#      `cmd | wc -l` 只捕获一个数字），观察到的问题都不会出现，因此仍然
+#      值得在"命令替换整体捕获较大字符串"这一种用法上加一道不依赖具体
+#      诱因的兜底——但这是防御性措施，不是"已经查明并规避了某个机制"的
+#      断言。
+#
+# 因此这里的验证函数不再把整份扫描结果整体捕获成一个 bash 变量，只捕获
+# 两个小整数（源文件行数、扫描结果行数）来验证不变量：`strip_lexical_noise`
+# 逐行处理，永远一行输入对应一行输出（跳过状态时打印占位空行，其余原样
+# 透传），无论走哪条分支都不会改变行数，只要两个数对不上就说明扫描管道
+# 某处提前中断或产生了不完整的结果——这个不变量的检测不依赖于失败具体
+# 发生在哪一步（herestring、进程替换、awk 本身、命令替换捕获不完整），
+# 只要结果不对就一律判定为失败。真正需要用到扫描结果内容的调用方（主
+# 扫描循环、自测）必须在这个函数返回成功之后，用**管道**（不是命令替换）
+# 重新消费一次 `we2ai_strip_inline_test_mod` 的输出去提取少量命中行——
+# 命中行本身很短、数量很少，命令替换捕获它们是安全的，真正大的中间结果
+# 全程只走管道。
+we2ai_verify_scan_or_die() {
+  local f="$1" expected_lines actual_lines
+  expected_lines="$(awk 'END{print NR}' "$f")"
+  if ! actual_lines="$(we2ai_strip_inline_test_mod "$f" | awk 'END{print NR}')"; then
+    echo "FAIL: $f: we2ai_strip_inline_test_mod 执行失败（退出码非 0），扫描结果不可信，判定为守卫失效而非通过" >&2
+    exit 1
+  fi
+  if [[ "$actual_lines" != "$expected_lines" ]]; then
+    # 注意：CJK 全角标点紧跟裸 `$var`（不加花括号）在部分 bash/locale 组合下
+    # 会被 `set -u` 误判成"变量名的一部分"触发 unbound variable（真实复现于
+    # 本仓库的 bash 环境）；一律用 `${var}` 带花括号形式，两侧用花括号明确
+    # 变量名边界，不能省略。
+    echo "FAIL: $f: 扫描输出行数（${actual_lines}）与源文件行数（${expected_lines}）不一致，怀疑扫描管道中途失败或被截断，判定为守卫失效而非通过" >&2
+    exit 1
+  fi
+}
+
+# Codex 验收 Y2：`find` 通过进程替换喂给 `while read` 时，`find` 自身的退出码
+# 不会被观察到——`< <(find ...)` 不是一个可以直接 `$?` 检查的简单命令，
+# `find` 失败（权限问题、路径不存在等，实测注入过 73）时这个循环只是读到
+# 0 个文件、悄悄跳过，不会被当成错误。改为先用命令替换捕获 `find` 的输出
+# （换成换行分隔而不是 `-print0`：NUL 字节在 `$(...)` 里会被截断，这是
+# bash 的已知限制，仓库源码路径不含换行符，可以接受）、显式检查退出码，
+# 再用进程替换把这份已经验证过的列表喂给循环体（继续避免 herestring 依赖
+# 磁盘临时文件、避免把循环体放进子 shell 丢失 `we2ai_brand_leak` 累积）。
+we2ai_check_find_status() {
+  local status="$1" context="$2"
+  if (( status != 0 )); then
+    echo "FAIL: ${context}：find 枚举失败（退出码 ${status}），判定为守卫失效而非通过" >&2
+    exit 1
+  fi
+}
+
+# grep 的退出码只有 0（找到匹配）与 1（没有匹配）是正常结果，其余（参数
+# 错误、正则语法错误、读取输入失败等）必须让守卫整体失败——此前用
+# `... || true` 兜底，会把这些真正的执行故障也一并当成"没有命中"悄悄放过
+# （Codex 验收 Y2：故障注入 grep 返回 2 后，旧写法仍报 "all passed"）。
+we2ai_check_grep_status() {
+  local status="$1" context="$2"
+  if (( status > 1 )); then
+    echo "FAIL: ${context}：grep 执行失败（退出码 ${status}），判定为守卫失效而非通过" >&2
+    exit 1
+  fi
+}
+
+# 对 grep 做"捕获输出 + 检查真实退出码"这一组合动作，且总是以退出码 0
+# 返回（除非判定为真失败并直接 `exit 1`）：grep 退出码 1（无匹配）是绝大
+# 多数文件的正常情况，而 `set -e` 会把 `var="$(grep ...)"` 这条赋值语句
+# 本身的非零退出码当成命令失败、不等运行到下一行检查就直接终止整个脚本
+# ——这正是 Codex 验收 Y2 复测发现的真问题：`we2ai_check_grep_status "$?"`
+# 写在赋值语句的下一行，本意是"赋值之后再检查"，但赋值语句本身在多数
+# 文件上就会先因为 grep 返回 1 被 errexit 拦下，下一行的检查代码根本没有
+# 机会运行，跟旧版的 `|| true` 殊途同归——都是"看起来检查了、实际上检查
+# 代码从未被执行到"。用 `grep ... || status=$?` 这个不触发 errexit 的写法
+# 先把真实状态接住，再交给 `we2ai_check_grep_status` 判断，调用方只需要
+# `result="$(we2ai_grep_or_die context grep-args...)"`，不用在外面再单独
+# 处理 `$?`。
+we2ai_grep_or_die() {
+  local context="$1"
+  shift
+  local out status
+  out="$(grep "$@")" || status=$?
+  we2ai_check_grep_status "${status:-0}" "$context"
+  printf '%s' "$out"
+}
+
+# 守卫自测（Opus 复核中危项 R1、低危项 S4，Codex 验收 X4）：验证 4.11 的
+# 核心逻辑本身没有回归到"遇到第一个 #[cfg(test)] 就整段停止扫描"的旧
+# bug，且真正的 mod tests {} 块内容确实不被误报；同时验证花括号计数不会
+# 被测试模块内部的字符串/字符字面量（其中恰好含花括号）搞乱，导致跳过
+# 状态该结束时没结束、把 mod tests 块之后的生产代码也漏扫。构造一个临时
+# 探针文件（`mktemp -d`，退出前自动清理，不在仓库留任何文件）：
+#   1) 不相关的内联 `#[cfg(test)] struct`；
+#   2) "文件后段"的生产代码违规三行（模拟 apply.rs/session.rs/mode.rs/
+#      workbuddy.rs 中"先有散落的 #[cfg(test)] 测试钩子，后面还有很长一段
+#      生产代码"的真实结构）；
+#   3) 真正的 `mod tests { ... }` 块，内部既写同款违规文本，也故意写一个
+#      含花括号的字符串字面量、一个含花括号的字符字面量、一处生命周期标注
+#      （验证不会被误当成字符字面量起点）、一个跨行的普通字符串（行尾反
+#      斜杠续行，含花括号）、一个单行块注释、一个多行块注释（都含花括号，
+#      T3），以及一个**嵌套**块注释（含花括号，X4②）；
+#   4) mod tests 块**之后**的第四段生产代码违规——只有花括号计数没被搞乱、
+#      跳过状态在 mod tests 真正的收尾花括号处准确结束，这一段才会被扫到。
+# 用法：`./scripts/we2ai/check-guards.sh --self-test-brand-guard`。
+if [[ "${1:-}" == "--self-test-brand-guard" ]]; then
+  self_test_failed=0
+
+  # X4①：mktemp 失败必须给出明确信息并非零退出，不能静默继续、让后面的
+  # 探针写入一个从未真正创建的目录（那样会在别的地方产生更难懂的报错）。
+  if ! self_test_dir="$(mktemp -d)"; then
+    echo "self-test FAIL: mktemp -d 创建自测临时目录失败，无法继续自测" >&2
+    exit 1
+  fi
+  trap 'rm -rf "$self_test_dir"' EXIT
+  probe="$self_test_dir/probe.rs"
+  {
+    echo 'fn producer_code_before() -> i32 { 1 }'
+    echo ''
+    echo '#[cfg(test)]'
+    echo 'struct Unrelated { field: i32 }'
+    echo ''
+    echo 'fn producer_code_after_inline_cfg_test() -> i32 {'
+    echo '    // 注入点：模拟"散落的内联 #[cfg(test)] 之后、真正的 mod tests'
+    echo '    // 之前"的生产代码，三种大小写/连字符/空格变体各一行。'
+    echo '    let _a = "CC Switch";'
+    echo '    let _b = "cc switch";'
+    echo '    let _c = "Cc-Switch";'
+    echo '    2'
+    echo '}'
+    echo ''
+    echo '#[cfg(test)]'
+    echo 'mod tests {'
+    echo '    // 真正的测试模块：这里面即使写 CC Switch 也不该被扫到。'
+    echo '    const NOTE: &str = "CC Switch inside a real test mod, must NOT be flagged";'
+    echo '    // S4：花括号计数不能被字符串/字符字面量里的花括号搞乱。'
+    printf '    const BRACE_STR: &str = "{";\n'
+    printf "    const BRACE_CHAR: char = '{';\n"
+    echo '    fn with_lifetime() -> &'"'"'static str {'
+    echo '        "y"'
+    echo '    }'
+    echo '    // T3：跨行的普通字符串（行尾反斜杠续行）与块注释，二者都'
+    echo '    // 含花括号，且都跨越多行。'
+    echo '    const MULTILINE_STR: &str = "start \'
+    echo '        middle { still same string \'
+    echo '        end";'
+    echo '    /* a single-line block comment with a brace { inside */'
+    echo '    /* a multi-line block comment'
+    echo '       with a brace { inside'
+    echo '       still going */'
+    echo '    // X4②：嵌套块注释——内层的 */ 不该被当成整个注释的收尾，里面'
+    echo '    // 的 { 必须仍然算在注释里，不能被当成真实代码计入花括号深度。'
+    echo '    /* outer comment /* inner comment */ still outer, with a stray { in here */'
+    echo '}'
+    echo ''
+    echo 'fn producer_code_after_real_test_mod() -> i32 {'
+    echo '    // 只有跳过状态在 mod tests 真正的收尾花括号处准确结束，'
+    echo '    // 这一行才会被扫描器看到并检出。'
+    echo '    let _d = "cc_switch";'
+    echo '    4'
+    echo '}'
+  } >"$probe"
+
+  we2ai_verify_scan_or_die "$probe"
+  self_test_hits="$(we2ai_strip_inline_test_mod "$probe" | grep -inE "$brand_pattern" | grep -vE '^[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
+  self_test_hit_count="$(printf '%s\n' "$self_test_hits" | grep -c '.' || true)"
+
+  if [[ "$self_test_hit_count" -eq 4 ]]; then
+    echo "self-test PASS: 生产代码里的 4 处 CC Switch 变体（含 mod tests 块之后那一处）被正确检出，真正 mod tests 块内的同款文本、花括号字面量与嵌套块注释均未被误报/未打乱计数"
+  else
+    echo "self-test FAIL: 期望检出 4 处，实际检出 ${self_test_hit_count} 处：" >&2
+    printf '%s\n' "$self_test_hits" >&2
+    self_test_failed=1
+  fi
+
+  # X4①负例：扫描管道产出被截断（行数对不上）时，必须判定为失败而不是
+  # "碰巧没扫到就当作通过"。在子 shell 里局部替换成一个故意截断输出的桩
+  # 函数（只输出源文件的第一行），不影响脚本其余部分对真实实现的使用。
+  if (
+    we2ai_strip_inline_test_mod() { head -n 1 "$1"; }
+    we2ai_verify_scan_or_die "$probe" >/dev/null 2>/dev/null
+  ); then
+    echo "self-test FAIL: 扫描输出被截断（行数与源文件不符）时，we2ai_verify_scan_or_die 竟然返回 0，未能检测出扫描失败" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: 扫描输出被截断时会被判定为失败并非零退出，不会被当成'碰巧没扫到'而放行"
+  fi
+
+  # X4①负例（第二例）：修复过程中在真实源文件 keys.rs 上实测复现过"命令
+  # 替换 `region="$(cmd)"` 整体捕获较大输出时，捕获到的内容比 `cmd` 实际
+  # 写出的少"这一现象。根因未确认（Codex 验收 Z6：已排除"bash 3.2 本身对
+  # 较大字符串命令替换有固有缺陷"这个假设——常规、可写的 bash 3.2.57
+  # 环境下命令替换可以完整保留几十万行输出；是否与只读沙箱下临时文件
+  # 创建失败同源尚未验证，不下结论）。不管具体诱因是什么，"全程走管道、
+  # 不整体捕获大字符串"这个写法本身是有效的防御性兜底，构造一个足够大
+  # 的探针文件（在真正违规行之前填充大量占位内容）验证：① `we2ai_verify_
+  # scan_or_die` 不会对这份合法的大文件误报失败；② 随后用管道从
+  # `we2ai_strip_inline_test_mod` 提取到的命中确实包含填充内容之后、文件
+  # 末尾的那一条真实违规——两点合在一起才能证明这个写法真的有效，而不是
+  # 恰好躲开了旧探针的问题。
+  large_probe="$self_test_dir/large_probe.rs"
+  {
+    i=0
+    while [[ "$i" -lt 900 ]]; do
+      echo "// filler line $i to pad this file with enough content to exercise the pipe-only scanning path"
+      i=$((i + 1))
+    done
+    echo 'fn producer_code_at_the_very_end() -> i32 {'
+    echo '    let _e = "cc-switch";'
+    echo '    5'
+    echo '}'
+  } >"$large_probe"
+  if ! we2ai_verify_scan_or_die "$large_probe" 2>/dev/null; then
+    echo "self-test FAIL: we2ai_verify_scan_or_die 对一份合法的大文件误报失败" >&2
+    self_test_failed=1
+  elif ! we2ai_strip_inline_test_mod "$large_probe" \
+    | grep -inE "$brand_pattern" | grep -vE '^[0-9]+:[[:space:]]*(//|/\*|\*)' \
+    | grep -q 'cc-switch'; then
+    echo "self-test FAIL: 大文件末尾的真实违规没有被扫到，怀疑命令替换捕获较大扫描输出时不完整" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: 较大文件末尾的违规仍被正确扫到（全程走管道、不整体捕获大字符串这个防御性写法本身有效）"
+  fi
+
+  # X4③负例：白名单必须锚定整行，而不是"行内任意位置含有这个子串就整行
+  # 放行"。构造一行"合法检测调用文本 + 额外的品牌残留文本"拼在一起的假
+  # 命中，确认不再被放行（旧版会因为整行仍然包含合法调用子串而误放行）。
+  tampered_hit='213:            cmd.args(["find", "bundleid=com.ccswitch.desktop"])  // 顺手提一句 cc-switch 也在用'
+  if is_whitelisted_process_detection_literal "src-tauri/src/we2ai/detect.rs" "$tampered_hit"; then
+    echo "self-test FAIL: 白名单对'合法检测调用 + 额外品牌残留文本'拼在同一行的假命中仍然放行，说明锚定的是子串而不是整行" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: 白名单不再对'整行任意位置含有已知子串'放行，混入额外文本后正确判定为未放行"
+  fi
+  # 正例照旧必须放行，证明上面的负例不是因为规则整体失效才被拒绝的。
+  clean_hit='213:            cmd.args(["find", "bundleid=com.ccswitch.desktop"])'
+  if ! is_whitelisted_process_detection_literal "src-tauri/src/we2ai/detect.rs" "$clean_hit"; then
+    echo "self-test FAIL: 白名单连 detect.rs 里真正的检测调用本身都不再放行，规则收得过紧" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: 白名单仍然放行 detect.rs 里真正的检测调用本身"
+  fi
+
+  # Codex 验收 Y2 负例 1：`find` 失败（实测注入过退出码 73）必须让流程
+  # 非零退出，不能被"读到 0 个文件就当作正常"悄悄放过。用一个返回非零的
+  # 桩函数局部替换 `find`，只在这个子 shell 里生效。
+  if (
+    find() { return 73; }
+    file_list="$(find /nonexistent -name '*.rs')"
+    we2ai_check_find_status "$?" "self-test probe"
+  ); then
+    echo "self-test FAIL: find 返回非零（模拟退出码 73）时未能让流程非零退出" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: find 失败（模拟退出码 73）被正确判定为守卫失效"
+  fi
+
+  # Codex 验收 Y2 负例 2：grep 返回真正的执行错误（不是"无匹配"的退出码
+  # 1）必须让流程非零退出；同时确认退出码 1（无匹配，正常情况）不会被
+  # 误判为失败——两个方向都要验证，否则不能证明这条判断规则本身是对的。
+  if (
+    grep() { return 2; }
+    matched="$(grep -inE "pattern" /dev/null)"
+    we2ai_check_grep_status "$?" "self-test probe"
+  ); then
+    echo "self-test FAIL: grep 返回真实错误码（模拟退出码 2）时未能让流程非零退出" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: grep 执行错误（模拟退出码 2）被正确判定为守卫失效"
+  fi
+  if (
+    grep() { return 1; }
+    matched="$(grep -inE "pattern" /dev/null)"
+    we2ai_check_grep_status "$?" "self-test probe"
+  ); then
+    echo "self-test PASS: grep 返回 1（无匹配）被正确视为正常，不误判为失败"
+  else
+    echo "self-test FAIL: grep 返回 1（无匹配，属于正常情况）被错误地当成了失败" >&2
+    self_test_failed=1
+  fi
+
+  # Codex 验收 Y2 负例 3：跳过状态结束但原始行不含 `}` 这个内部断言必须让
+  # awk 本身以非零退出码结束，不能只打印到 stderr、自己却仍报退出码 0。
+  # 真实实现里这个分支只应该在未知的计数 bug 下触发，这里用一段独立的
+  # 最小 awk 片段复现同样的判断结构，直接验证"断言触发 → 非零退出"这条
+  # 兜底路径本身有效，不依赖真的先找到一个计数 bug。
+  if printf 'no closing brace here\n' | awk '
+    BEGIN { skipping = 1; depth = 1 }
+    {
+      depth = 0
+      if (depth <= 0) {
+        skipping = 0
+        if ($0 !~ /\}/) {
+          print "assertion probe: exiting skip state without a closing brace" > "/dev/stderr"
+          exit 2
+        }
+      }
+    }
+  ' 2>/dev/null; then
+    echo "self-test FAIL: 内部断言（跳过状态结束但原始行不含 }）触发时 awk 未能以非零退出码结束" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: 内部断言（跳过状态结束但原始行不含 }）会让 awk 以非零退出码结束"
+  fi
+
+  # Codex 验收 Y2 负例 4：`mod tests { ... }` 从未闭合（文件在跳过状态下
+  # 结束）必须被 END 块里的检查兜住——这种情况下行数不变量本身依然成立
+  # （跳过状态下每行仍打印一个占位空行），不能指望它顺带发现这个问题。
+  unclosed_probe="$self_test_dir/unclosed_probe.rs"
+  {
+    echo '#[cfg(test)]'
+    echo 'mod tests {'
+    echo '    const NOTE: &str = "never closed";'
+  } >"$unclosed_probe"
+  if we2ai_strip_inline_test_mod "$unclosed_probe" >/dev/null 2>/dev/null; then
+    echo "self-test FAIL: mod tests 块未闭合时 we2ai_strip_inline_test_mod 仍然以退出码 0 结束" >&2
+    self_test_failed=1
+  else
+    echo "self-test PASS: mod tests 块未闭合（跳过状态未闭合结束）被正确判定为失败"
+  fi
+
+  if [[ "$self_test_failed" == 0 ]]; then
+    exit 0
+  else
+    exit 1
+  fi
+fi
+
+we2ai_brand_leak=""
+# `|| we2ai_find_status=$?` 而不是让下一行去读 `$?`（Codex 验收 Y2）：
+# `find` 正常情况下返回 0（哪怕枚举到 0 个文件），但一旦它真的失败，
+# `set -e` 会把这条赋值语句本身的非零退出码当成命令失败、直接终止整个
+# 脚本——下一行的检查代码根本没有机会运行，跟旧版的悄悄放过殊途同归。
+we2ai_rs_files="$(find src-tauri/src/we2ai -name '*.rs')" || we2ai_find_status=$?
+we2ai_check_find_status "${we2ai_find_status:-0}" "src-tauri/src/we2ai 下的 .rs 文件枚举"
+unset we2ai_find_status
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  case "$f" in
+    *_tests.rs) continue ;;
+  esac
+  we2ai_verify_scan_or_die "$f"
+  # 用 `we2ai_grep_or_die` 而不是"赋值后再读 `$?`"（Codex 验收 Y2）：grep
+  # 退出码 1（无匹配）是绝大多数文件的正常情况，直接在赋值语句上会被
+  # errexit 拦下，下一行的 `we2ai_check_grep_status "$?"` 根本运行不到——
+  # 这正是本轮复测在真实扫描（而不是自测探针）上发现的问题：自测的负例
+  # 都包在 `if (...)` 子 shell 条件里，errexit 在条件位置本就不生效，掩盖
+  # 了这个赋值语句本身会被 errexit 拦下的问题。
+  we2ai_matched="$(we2ai_strip_inline_test_mod "$f" | we2ai_grep_or_die "$f 品牌残留匹配" -inE "$brand_pattern")"
+  hits="$(printf '%s\n' "$we2ai_matched" | we2ai_grep_or_die "$f 排除注释行" -vE '^[0-9]+:[[:space:]]*(//|/\*|\*)')"
+  # 用进程替换而不是 herestring（`<<<`）喂给内层循环（Codex 验收 X4①）：
+  # herestring 在 bash 里通过临时文件实现，沙箱环境里 `/tmp` 不可写会导致
+  # 创建失败；进程替换走匿名管道/`/dev/fd`，不依赖磁盘临时文件，且同样不会
+  # 把内层循环放进子 shell（不像结尾用 `|` 接管道那样会丢失 `we2ai_brand_leak`
+  # 的累积）。
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    if ! is_whitelisted_process_detection_literal "$f" "$hit" \
+      && ! is_whitelisted_brand_residue_matcher_literal "$f" "$hit"; then
+      we2ai_brand_leak+="$f:$hit"$'\n'
+    fi
+  done < <(printf '%s\n' "$hits")
+done < <(printf '%s\n' "$we2ai_rs_files")
+
+we2ai_frontend_files="$(find src/we2ai -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \))" || we2ai_find_status=$?
+we2ai_check_find_status "${we2ai_find_status:-0}" "src/we2ai 下的前端文件枚举"
+unset we2ai_find_status
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  we2ai_matched="$(we2ai_grep_or_die "$f 品牌残留匹配" -inE "$brand_pattern" "$f")"
+  hits="$(printf '%s\n' "$we2ai_matched" | we2ai_grep_or_die "$f 排除注释行" -vE '^[0-9]+:[[:space:]]*(//|/\*|\*)')"
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    we2ai_brand_leak+="$f:$hit"$'\n'
+  done < <(printf '%s\n' "$hits")
+done < <(printf '%s\n' "$we2ai_frontend_files")
+
+if [[ -n "$we2ai_brand_leak" ]]; then
+  err "WE2AI 用户界面文案残留 CC Switch 字样（N1，非注释/非测试代码；进程检测标识除外）：
+${we2ai_brand_leak}"
 fi
 
 if [[ "$fail" == 0 ]]; then

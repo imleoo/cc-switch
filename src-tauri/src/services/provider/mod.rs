@@ -4,7 +4,10 @@
 
 mod endpoints;
 mod gemini_auth;
-mod live;
+// we2ai: 从 `mod` 放宽为 `pub(crate) mod`，供 `we2ai::apply` 的确认计划预览
+// 读取 `live::CLAUDE_LIVE_INTERNAL_ONLY_KEYS`（偏差修复项 B），避免在
+// we2ai 侧另存一份可能漂移的字段名列表。
+pub(crate) mod live;
 mod pi;
 mod usage;
 
@@ -5767,8 +5770,8 @@ impl ProviderService {
         if should_hot_switch && crate::we2ai::apply::is_managed_provider_id(id) {
             return Err(AppError::localized(
                 crate::we2ai::apply::TAKEOVER_LOCALIZED_KEY,
-                "CC Switch 正在代理接管此工具，请先在 CC Switch 中关闭接管",
-                "CC Switch is proxy-managing this tool. Turn off takeover in CC Switch first.",
+                "该工具正被其他程序代理接管，请先在该程序中关闭接管",
+                "This tool is being proxy-managed by another program. Turn off takeover there first.",
             ));
         }
 

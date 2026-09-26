@@ -33,6 +33,67 @@ pub fn harden_data_root() -> Vec<String> {
     harden_data_root_at(&data_root())
 }
 
+/// 进程级记录：本次启动 `harden_data_root()` 的执行结果。`None` 表示尚未
+/// 记录（理论上只会发生在 apply 相关命令不可达的极早期，或未走真实启动流程
+/// 的测试环境）。用 `Mutex` 而非 `OnceLock`，是为了让单测能显式设置/重置这
+/// 个全局状态覆盖失败与成功两种场景（`OnceLock` 一旦写入无法在同一进程内
+/// 改写，测试无法覆盖"先失败后成功"）。
+static HARDEN_RESULT: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// 记录一次 [`harden_data_root`] 的执行结果，供 [`data_root_hardened`] 判断。
+/// 正常运行时在启动阶段调用一次；重复调用直接覆盖为最新结果。
+///
+/// 锁中毒（曾有线程持锁期间 panic）时不静默跳过写入——用
+/// `PoisonError::into_inner()` 拿回锁继续写，保证这次调用的结果一定被记录，
+/// 不会因为某次无关的 panic 就让后续 apply 永远拿不到最新状态（Opus 复核
+/// 中危项 M1）。
+pub fn record_harden_result(failures: Vec<String>) {
+    let mut guard = HARDEN_RESULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = Some(failures);
+}
+
+/// 数据根权限是否已确认收紧成功：写入任何含 Key 的凭据（数据库行或工具 live
+/// 文件）之前必须先检查这个函数。**fail-closed**：尚未记录过结果（`None`）
+/// 或锁中毒都视为"未通过"，只有明确记录到"空失败列表"才视为通过——反过来
+/// "未记录时默认放行"的写法（旧实现用 `Option::unwrap_or` 搭配 `true` 兜底）
+/// 曾是 Opus 复核中危项 M1 指出的问题：一旦记录环节因为某种原因没跑到（如
+/// 启动逻辑被上游同步改动打乱顺序），旧实现会默默放行写入，而不是拒绝。
+/// 记录了非空失败项时同样视为"未通过"。
+/// 非 Unix 平台 [`harden_data_root`] 恒返回空 `Vec`，正常启动流程下这里恒为
+/// `true`。真实启动流程保证在任何写入入口可达之前就完成一次记录（`lib.rs`，
+/// 早于 `app.manage(We2aiSessionState(...))`），测试环境需要显式调用
+/// [`record_harden_result`] 模拟这一步（见 `apply_tests::TestHome::new`）。
+pub fn data_root_hardened() -> bool {
+    match HARDEN_RESULT.lock() {
+        Ok(guard) => matches!(&*guard, Some(failures) if failures.is_empty()),
+        Err(poisoned) => {
+            // 锁中毒：状态不可信，一律视为未通过；立即释放拿回的守卫，不
+            // 读取、不信任其中的内容。
+            drop(poisoned.into_inner());
+            false
+        }
+    }
+}
+
+/// 供错误提示展示具体的收紧失败原因；未记录、已成功或锁中毒时返回空。
+pub fn data_root_harden_failures() -> Vec<String> {
+    match HARDEN_RESULT.lock() {
+        Ok(guard) => guard.clone().unwrap_or_default(),
+        Err(poisoned) => poisoned.into_inner().clone().unwrap_or_default(),
+    }
+}
+
+/// 仅供测试设置/重置 [`HARDEN_RESULT`]，覆盖失败/成功/未记录三种场景。
+#[cfg(test)]
+pub(crate) fn set_harden_result_for_test(result: Option<Vec<String>>) {
+    let mut guard = HARDEN_RESULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = result;
+}
+
 pub(crate) fn harden_data_root_at(root: &std::path::Path) -> Vec<String> {
     let mut failures = Vec::new();
     // 数据根本身是符号链接时不处理：收紧会改到链接目标（可能是用户其他目录）
@@ -336,12 +397,14 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn data_root_ends_with_we2ai_dir() {
         let root = data_root();
         assert!(root.ends_with(".we2ai"), "got {}", root.display());
     }
 
     #[test]
+    #[serial_test::serial]
     fn data_root_ignores_app_config_dir_override() {
         // 负例：`get_app_config_dir()` 是 WE2AI 模式下真正被全局调用的函数。
         // 预置一个指向 `~/.cc-switch` 的 Store override 后，它仍必须返回
@@ -877,5 +940,88 @@ mod tests {
         std::os::unix::fs::symlink(&target, &linked_root).unwrap();
         assert_eq!(harden_data_root_at(&linked_root).len(), 1);
         assert_eq!(mode(&target), 0o755);
+    }
+
+    /// [`data_root_hardened`] 三态：未记录（**fail-closed，视为未通过**——
+    /// Opus 复核中危项 M1 之后的语义，真实启动流程保证在任何写入入口可达
+    /// 之前就完成一次记录）、记录为空失败列表（通过）、记录非空失败列表
+    /// （不通过）。测试结束前把全局状态复原为 `None`，避免影响同进程内其他
+    /// 测试。与 `apply_tests.rs` 中同样操作这个全局状态的用例共用
+    /// `#[serial]` 默认组，避免并行测试线程互相踩踏。
+    #[test]
+    #[serial_test::serial]
+    fn data_root_hardened_reflects_recorded_result() {
+        set_harden_result_for_test(None);
+        assert!(
+            !data_root_hardened(),
+            "fail-closed: an unrecorded result must NOT default to hardened (Opus 复核中危项 M1)"
+        );
+        assert!(data_root_harden_failures().is_empty());
+
+        record_harden_result(Vec::new());
+        assert!(data_root_hardened());
+        assert!(data_root_harden_failures().is_empty());
+
+        record_harden_result(vec!["/tmp/x 属主不是当前用户".to_string()]);
+        assert!(!data_root_hardened());
+        assert_eq!(
+            data_root_harden_failures(),
+            vec!["/tmp/x 属主不是当前用户".to_string()]
+        );
+
+        // 复原，避免污染其他测试。
+        set_harden_result_for_test(None);
+    }
+
+    /// 锁中毒：`record_harden_result` 不能静默跳过写入，`data_root_hardened`
+    /// 必须 fail-closed（Opus 复核中危项 M1）。用一个真的会 panic 的临界区
+    /// 制造真实的 `PoisonError`，而不是只测试 API 契约。`HARDEN_RESULT` 是
+    /// 整个测试二进制共享的 `static`，`std::sync::Mutex` 中毒是永久的
+    /// （直到显式 `clear_poison()`）——用 Drop 守卫保证无论断言是否 panic，
+    /// 测试结束前都会清除中毒状态并把内容复原为安全默认值，不会污染同进程
+    /// 内其他依赖这个全局状态的测试（`apply_tests::TestHome` 等）。
+    #[test]
+    #[serial_test::serial]
+    fn poisoned_lock_is_fail_closed_and_record_still_writes() {
+        struct ClearPoisonOnDrop;
+        impl Drop for ClearPoisonOnDrop {
+            fn drop(&mut self) {
+                HARDEN_RESULT.clear_poison();
+                if let Ok(mut guard) = HARDEN_RESULT.lock() {
+                    *guard = None;
+                }
+            }
+        }
+        let _restore_on_drop = ClearPoisonOnDrop;
+
+        set_harden_result_for_test(None);
+        record_harden_result(Vec::new());
+        assert!(data_root_hardened(), "sanity: recorded success is hardened");
+
+        // 真的把锁弄中毒：临界区内 panic 后释放锁即中毒。
+        let poison_result = std::panic::catch_unwind(|| {
+            let _guard = HARDEN_RESULT.lock().unwrap();
+            panic!("intentionally poisoning HARDEN_RESULT for the test");
+        });
+        assert!(poison_result.is_err());
+
+        // 锁确实中毒了：直接 .lock() 会返回 Err。
+        assert!(HARDEN_RESULT.lock().is_err());
+        // fail-closed：即便锁中毒前的内容是"已收紧"，中毒之后也必须视为未通过。
+        assert!(!data_root_hardened());
+
+        // 中毒后仍能继续记录新结果（不能静默跳过写入）。
+        record_harden_result(Vec::new());
+        // 锁本身仍处于"中毒"状态（未调用 `clear_poison` 之前），但内容已经
+        // 被更新——`record_harden_result` 用 `into_inner()` 恢复锁继续写入。
+        // `data_root_hardened()` 对"中毒"统一判 false、不读取内容，这是有意
+        // 的保守选择（见其文档注释），因此这里断言的是"写入没有被跳过"这件
+        // 事本身，而不是 `data_root_hardened()` 的返回值。
+        match HARDEN_RESULT.lock() {
+            Ok(_) => panic!("lock should still be reported as poisoned"),
+            Err(poisoned) => {
+                assert_eq!(poisoned.into_inner().as_deref(), Some(&[][..]));
+            }
+        }
     }
 }

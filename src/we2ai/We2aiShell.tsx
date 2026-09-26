@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "sonner";
 // 故意从 "i18next" 直接拿单例，而不是 "@/i18n"：后者的顶层代码会立即执行
@@ -15,7 +15,9 @@ import { WE2AI_WEBSITE_URL } from "@/config/we2ai";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import "./we2ai-theme.css";
 import {
+  resolveCcSwitchRunning,
   we2aiApi,
+  type We2aiCcSwitchRunningStatus,
   type We2aiSessionSummary,
   type We2aiSettings,
   type We2aiToolStatusReport,
@@ -476,13 +478,35 @@ export function We2aiShell() {
   const [toolStatus, setToolStatus] = useState<We2aiToolStatusReport | null>(
     null,
   );
+  // 只采纳最后一次工具状态请求的结果（Opus 复核低危项 L5）：现在打开确认
+  // 弹窗前也会触发一次刷新（`onBeforeApplyDialogOpen`），与登录后、写入
+  // 成功后的刷新可能连续触发，较晚发出但更早返回的请求不能被更早发出、
+  // 但更晚返回的过期响应覆盖——与 `ModelSquarePage.tsx` 的
+  // `modelsRequestSeq`/`keysRequestSeq` 同一模式。
+  const toolStatusRequestSeq = useRef(0);
   const refreshToolStatus = useCallback(async () => {
+    const seq = ++toolStatusRequestSeq.current;
     try {
-      setToolStatus(await we2aiApi.toolStatus());
+      const report = await we2aiApi.toolStatus();
+      if (seq === toolStatusRequestSeq.current) {
+        setToolStatus(report);
+      }
     } catch {
       // 检测失败不影响使用，保留上一次结果。
     }
   }, []);
+  // 快速检测结果存独立 state，不依赖 `toolStatus`（Codex 验收 Z1）：此前
+  // 直接 `setToolStatus((prev) => prev ? {...} : prev)`——首次登录后完整
+  // 检测仍在等 npm（`toolStatus` 还是 `null`）时，快速检测就算查到 CC
+  // Switch 正在运行，结果也会被 `prev` 为 `null` 这个分支悄悄丢弃，函数
+  // 却仍然返回 `true`（"检测完成"），弹窗因此既无并存警告也无"未能完成
+  // 检测"提示。加序号丢弃过期结果：关闭重开弹窗会再触发一次这个回调，旧的
+  // （更慢的）请求不能在新请求之后才返回并覆盖它。
+  const [quickCcSwitchCheck, setQuickCcSwitchCheck] = useState<{
+    seq: number;
+    status: We2aiCcSwitchRunningStatus;
+  } | null>(null);
+  const quickCcSwitchCheckSeq = useRef(0);
   const loggedInIdentity = session?.loggedIn
     ? `${session.region ?? ""}:${session.emailMasked ?? ""}`
     : null;
@@ -492,7 +516,54 @@ export function We2aiShell() {
     } else {
       setToolStatus(null);
     }
+    // 登出/切换账号（`loggedInIdentity` 变化）时快速检测的旧结果同样要
+    // 清空（Codex 验收 W4）：不然新会话第一次打开确认弹窗，可能还短暂
+    // 展示着上一个账号/上一次登录期间残留的检测结果。同时让序号"作废"
+    // （递增而不是清零，避免与旧序号 0 巧合相等），任何还在途的旧请求
+    // 即使这时才返回也不会再被采纳。
+    quickCcSwitchCheckSeq.current += 1;
+    setQuickCcSwitchCheck(null);
   }, [loggedInIdentity, refreshToolStatus]);
+
+  // apply 前只等"CC Switch 是否在运行"这一项快速检测（Codex 验收 Y1）：
+  // 此前这里直接等待完整的 `refreshToolStatus()`——它连带调用
+  // `get_tool_versions`，每次都无缓存联网查询 npm 最新版本，单次超时
+  // `LATEST_PROBE_TIMEOUT`=15s（`commands/misc.rs`），国内网络下可能让确认
+  // 按钮被禁用近 30 秒。改为只等 `ccSwitchRunningQuick()`（Rust 侧本身已有
+  // 子进程级超时），并在这里再加一层更短的客户端超时兜底——防的是极端情况
+  // 下 IPC 往返本身异常缓慢，而不是重复子进程那层超时；超时按"未能完成
+  // 检测"处理并放行（返回 `false`），不无限期挡住确认按钮。完整的顶栏刷新
+  // 仍然异步、独立进行，不等待也不阻塞这次调用。
+  const APPLY_QUICK_CHECK_TIMEOUT_MS = 2500;
+  const checkCcSwitchRunningBeforeApply = useCallback(async (): Promise<boolean> => {
+    void refreshToolStatus();
+    const seq = ++quickCcSwitchCheckSeq.current;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const status = await Promise.race([
+        we2aiApi.ccSwitchRunningQuick(),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error("we2ai: quick tool-status check timed out")),
+            APPLY_QUICK_CHECK_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      if (seq === quickCcSwitchCheckSeq.current) {
+        setQuickCcSwitchCheck({ seq, status });
+      }
+      // "unknown"（Codex 验收 Z2）：检测子进程启动失败/非零退出等，没能
+      // 得出结论，跟超时一样按"未能完成检测"处理，不能当成"确认完成"。
+      return status !== "unknown";
+    } catch {
+      if (seq === quickCcSwitchCheckSeq.current) {
+        setQuickCcSwitchCheck({ seq, status: "unknown" });
+      }
+      return false;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+  }, [refreshToolStatus]);
 
   // macOS 用 `titleBarStyle: "Overlay"`（`src-tauri/tauri.conf.json`），红绿灯
   // 悬浮在内容之上、不占布局空间：顶栏需要预留左侧空间，否则 logo/文字会被
@@ -583,7 +654,22 @@ export function We2aiShell() {
 
       <ToolStatusBar
         t={t}
-        report={toolStatus}
+        // Codex 验收 V2：顶栏与确认弹窗必须展示一致的"CC Switch 是否在
+        // 运行"——复用同一份 `resolveCcSwitchRunning`（快速检测取得确定
+        // 结果时优先，`unknown`/尚无结果时回退完整报告），不要各写一套。
+        // `toolStatus` 为 `null` 时（完整报告还没加载）`ToolStatusBar`
+        // 本身就整体不渲染，这里不需要特殊处理。
+        report={
+          toolStatus
+            ? {
+                ...toolStatus,
+                ccSwitchRunning: resolveCcSwitchRunning(
+                  quickCcSwitchCheck?.status,
+                  toolStatus.ccSwitchRunning,
+                ),
+              }
+            : null
+        }
         onRestored={() => void refreshToolStatus()}
       />
 
@@ -719,7 +805,9 @@ export function We2aiShell() {
                   t={t}
                   onSessionMaybeEnded={() => void refreshSessionStatus()}
                   toolStatus={toolStatus}
+                  quickCcSwitchStatus={quickCcSwitchCheck?.status ?? null}
                   onApplied={() => void refreshToolStatus()}
+                  onBeforeApplyDialogOpen={checkCcSwitchRunningBeforeApply}
                 />
               </CardContent>
             </Card>

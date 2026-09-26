@@ -165,14 +165,27 @@ fn apply_kimi_for_coding_context_defaults(settings: &mut Value, provider: &Provi
     }
 }
 
+/// Internal-only top-level fields that [`sanitize_claude_settings_for_live`]
+/// strips before writing `settings.json`. Exposed (`pub(crate)`) so callers
+/// that build a settings object *before* it reaches this sanitizer — e.g.
+/// `we2ai::apply`'s pre-write plan preview — can detect ahead of time that
+/// the upstream pipeline will silently drop these keys, instead of hardcoding
+/// a second copy of this list that could drift from this one (we2ai 偏差
+/// 修复项 B：确认计划需要如实列出这类"非托管但会被上游管道改动"的内容）.
+pub(crate) const CLAUDE_LIVE_INTERNAL_ONLY_KEYS: &[&str] = &[
+    "api_format",
+    "apiFormat",
+    "openrouter_compat_mode",
+    "openrouterCompatMode",
+];
+
 pub(crate) fn sanitize_claude_settings_for_live(settings: &Value) -> Value {
     let mut v = settings.clone();
     if let Some(obj) = v.as_object_mut() {
         // Internal-only fields - never write to Claude Code settings.json
-        obj.remove("api_format");
-        obj.remove("apiFormat");
-        obj.remove("openrouter_compat_mode");
-        obj.remove("openrouterCompatMode");
+        for key in CLAUDE_LIVE_INTERNAL_ONLY_KEYS {
+            obj.remove(*key);
+        }
     }
     v
 }
