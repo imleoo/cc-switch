@@ -1228,6 +1228,19 @@ if [[ -n "$we2ai_brand_leak" ]]; then
 ${we2ai_brand_leak}"
 fi
 
+# 4.12 功能 18（B1 定价扩展）+ We2aiShell 更新检查修复：Opus 复核两处只需
+# 机械字面量检查就能防回归的点。不重新实现完整语义（那部分交给
+# `cargo test --locked we2ai::keys --lib` 与 `tests/integration/We2aiShellUpdateCheck.test.tsx`），
+# 这里只确认关键常量/判断没有被静默删掉。
+keys_rs=src-tauri/src/we2ai/keys.rs
+if ! grep -q '"usd_per_1m_tokens"' "$keys_rs"; then
+  err "$keys_rs: 找不到 \"usd_per_1m_tokens\" 字面量，pricing.unit 校验（功能 18，Opus 复核 P1）可能已被移除"
+fi
+we2ai_shell_tsx=src/we2ai/We2aiShell.tsx
+if ! grep -q 'update\.error' "$we2ai_shell_tsx"; then
+  err "$we2ai_shell_tsx: 找不到 update.error 判断，检查更新失败状态展示（Opus 复核 P9）可能已回归"
+fi
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi

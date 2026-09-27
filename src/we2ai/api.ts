@@ -104,10 +104,62 @@ export interface We2aiKeyList {
   selectedKeyId: number | null;
 }
 
+/**
+ * B1 定价扩展顶层 `pricing`（`src-tauri/src/we2ai/keys.rs` 的 `PricingView`，
+ * 见 `docs/we2ai/B1定价契约.md`）：Key 分组缺失或倍率无法解析时
+ * 整个 `pricing` 为 `null`，前端不显示价格区。
+ */
+export interface We2aiPricing {
+  cnyRate: number;
+  rateMultiplier: number;
+  peakMultiplier: number;
+  peakActive: boolean;
+  effectiveMultiplier: number;
+  unit: string;
+}
+
+/**
+ * B1 定价扩展每模型 `price`（`ModelPriceView`）：与实际扣费同源的标准
+ * 首档价，折后价已乘该模型实际 `multiplier`（旧服务端缺省时回退
+ * `pricing.effectiveMultiplier`），`base*` 为未乘倍率的原价，均为美元单价；
+ * 人民币换算 = 美元 × `pricing.cnyRate`。无法解析价格的
+ * 模型该字段为 `null`。
+ */
+export interface We2aiModelPrice {
+  billingMode: string;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+  cacheWrite1h: number | null;
+  perRequest: number | null;
+  baseInput: number | null;
+  baseOutput: number | null;
+  baseCacheRead: number | null;
+  baseCacheWrite: number | null;
+  baseCacheWrite1h: number | null;
+  basePerRequest: number | null;
+  /**
+   * v2 契约新增：该模型实际扣费倍率（token 类 = 分组倍率 × 分组高峰；
+   * image/video 类是独立的图片/视频倍率，不叠加高峰）。折后字段 =
+   * `base_* × multiplier`。缺失或服务端给出的值无效（非有限/≤0，已在
+   * Rust 侧过滤）时为 `null`，客户端回退到顶层 `pricing.effectiveMultiplier`
+   * （见 `pricing.ts` 的 `resolveWe2aiEffectiveMultiplier`）。
+   */
+  multiplier: number | null;
+  /**
+   * v3 契约新增：按次计费的单位，已在 Rust 侧归一化为 `"request"`（缺省
+   * 即此）/`"second"`（视频按秒）之一；服务端给出未识别的值时为 `null`，
+   * 客户端据此不展示按次这一行，避免展示错误单位。
+   */
+  perRequestUnit: "request" | "second" | null;
+}
+
 export interface We2aiModelView {
   id: string;
   provider: string | null;
   tools: We2aiTool[];
+  price: We2aiModelPrice | null;
 }
 
 /** SubPanel B1 结果：模型、支持的工具与 Key 级准入。 */
@@ -115,6 +167,7 @@ export interface We2aiKeyModels {
   models: We2aiModelView[];
   callable: boolean;
   blockedReason: string | null;
+  pricing: We2aiPricing | null;
 }
 
 /** 工具安装与当前生效模型（`src-tauri/src/we2ai/detect.rs`）。 */

@@ -55,12 +55,19 @@ const models: We2aiKeyModels = {
       id: "claude-sonnet-4-5",
       provider: "anthropic",
       tools: ["claude_code", "workbuddy"],
+      price: null,
     },
-    { id: "claude-haiku-4-5", provider: "anthropic", tools: ["claude_code"] },
-    { id: "gpt-5", provider: null, tools: ["codex"] },
+    {
+      id: "claude-haiku-4-5",
+      provider: "anthropic",
+      tools: ["claude_code"],
+      price: null,
+    },
+    { id: "gpt-5", provider: null, tools: ["codex"], price: null },
   ],
   callable: true,
   blockedReason: null,
+  pricing: null,
 };
 
 const status: We2aiToolStatusReport = {

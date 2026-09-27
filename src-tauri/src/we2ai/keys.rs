@@ -17,7 +17,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::api::{ModelCapabilities, RemoteApiKey, RemoteKeyModels};
+use super::api::{
+    ModelCapabilities, RemoteApiKey, RemoteKeyModels, RemoteModelPrice, RemotePricing,
+};
 use super::commands_auth::We2aiApiError;
 use super::session::{SessionError, SessionIdentity, SessionManager, We2aiSessionState};
 
@@ -157,20 +159,182 @@ pub struct KeyListView {
     pub selected_key_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelView {
     pub id: String,
     pub provider: Option<String>,
     pub tools: Vec<String>,
+    /// B1 定价扩展（`docs/we2ai/B1定价契约.md`）：无法解析价格的
+    /// 模型为 `None`，前端显示"暂无定价"。
+    pub price: Option<ModelPriceView>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyModelsView {
     pub models: Vec<ModelView>,
     pub callable: bool,
     pub blocked_reason: Option<String>,
+    /// Key 分组缺失或倍率无法解析时为 `None`，前端整体不显示价格区。
+    pub pricing: Option<PricingView>,
+}
+
+/// 顶层 `pricing.unit` 唯一接受的值（token 类）；未知单位不可信，见
+/// [`to_pricing_view`]（Opus 复核 P1）。
+const PRICING_UNIT_USD_PER_1M_TOKENS: &str = "usd_per_1m_tokens";
+
+/// 前端展示用的定价倍率信息，对应 [`super::api::RemotePricing`]。核心字段
+/// 只有 `cny_rate` 与 `effective_multiplier`（必须有限且 > 0，任一缺失/无效
+/// 都视为整个定价不可用）；`rate_multiplier`/`peak_multiplier` 缺失或无效时
+/// 各自回退到 `1.0`（"无倍率影响"），不影响整体可用性（Opus 复核 P6）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PricingView {
+    pub cny_rate: f64,
+    pub rate_multiplier: f64,
+    pub peak_multiplier: f64,
+    pub peak_active: bool,
+    pub effective_multiplier: f64,
+    pub unit: String,
+}
+
+/// 前端展示用的模型定价，对应 [`super::api::RemoteModelPrice`]。已乘倍率的
+/// 折后价与 `base_*` 原价都是美元，人民币换算由前端用 `PricingView.cnyRate`
+/// 完成（B1 契约"客户端展示规则"）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPriceView {
+    pub billing_mode: String,
+    pub input: Option<f64>,
+    pub output: Option<f64>,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+    pub cache_write_1h: Option<f64>,
+    pub per_request: Option<f64>,
+    pub base_input: Option<f64>,
+    pub base_output: Option<f64>,
+    pub base_cache_read: Option<f64>,
+    pub base_cache_write: Option<f64>,
+    pub base_cache_write_1h: Option<f64>,
+    pub base_per_request: Option<f64>,
+    /// v2 契约：该模型实际扣费倍率，缺失或无效（非有限/≤0）时为 `None`，
+    /// 前端回退到顶层 `pricing.effectiveMultiplier`（`docs/we2ai/B1定价契约.md`）。
+    pub multiplier: Option<f64>,
+    /// v3 契约：按次计费单位，归一化为 `"request"`/`"second"` 之一；缺省
+    /// 按 `"request"` 处理，未识别的值为 `None`（前端据此不展示按次行）。
+    pub per_request_unit: Option<String>,
+}
+
+/// 有限且严格为正；核心字段（`cny_rate`/`effective_multiplier`）用这个
+/// 校验，0、负数、`NaN`、`Infinity` 都视为不可信（Opus 复核 P6）。
+fn finite_positive(v: Option<f64>) -> Option<f64> {
+    v.filter(|x| x.is_finite() && *x > 0.0)
+}
+
+/// 只要求有限，不要求为正；用于非核心的 `rate_multiplier`/`peak_multiplier`
+/// ——缺失或非有限时由调用方决定回退值，这里只负责过滤掉不可信的数值。
+fn finite_only(v: Option<f64>) -> Option<f64> {
+    v.filter(|x| x.is_finite())
+}
+
+/// 有限且非负；每个模型价格字段（`input`/`output`/`base_*` 等）用这个校验，
+/// 负数或非有限视为该字段无法解析，单独置 `None`，不影响其余字段
+/// （Opus 复核 P6）。允许为 0（免费档位）。
+fn finite_nonnegative(v: Option<f64>) -> Option<f64> {
+    v.filter(|x| x.is_finite() && *x >= 0.0)
+}
+
+/// 顶层 `pricing`：
+/// - `unit` 校验（Opus 复核 P1）：契约里 token 类顶层单位固定为
+///   `"usd_per_1m_tokens"`；显式给出但不是这个值 → 不可信，整个 `pricing`
+///   视为不可用；缺省视为默认兼容，仍按 `"usd_per_1m_tokens"` 处理。
+/// - 核心字段（Opus 复核 P6）：只有 `cny_rate` 与 `effective_multiplier` 是
+///   必需的，且必须有限且 > 0；任一缺失/无效则整个 `pricing` 视为不可用。
+/// - `rate_multiplier`/`peak_multiplier` 不再是必需字段，缺失或无效时各自
+///   回退到 `1.0`；`peak_active` 显式给出就用显式值，缺省按未经默认值填充
+///   的 `peak_multiplier` 是否 `> 1.0` 推导，`peak_multiplier` 也缺省（或
+///   无效）则默认 `false`。
+fn to_pricing_view(pricing: Option<RemotePricing>) -> Option<PricingView> {
+    let p = pricing?;
+
+    if let Some(u) = p.unit.as_deref() {
+        if u != PRICING_UNIT_USD_PER_1M_TOKENS {
+            return None;
+        }
+    }
+
+    let cny_rate = finite_positive(p.cny_rate)?;
+    let effective_multiplier = finite_positive(p.effective_multiplier)?;
+
+    let peak_multiplier_raw = finite_only(p.peak_multiplier);
+    let rate_multiplier = finite_only(p.rate_multiplier).unwrap_or(1.0);
+    let peak_multiplier = peak_multiplier_raw.unwrap_or(1.0);
+    let peak_active = p
+        .peak_active
+        .unwrap_or_else(|| peak_multiplier_raw.is_some_and(|m| m > 1.0));
+
+    Some(PricingView {
+        cny_rate,
+        rate_multiplier,
+        peak_multiplier,
+        peak_active,
+        effective_multiplier,
+        unit: PRICING_UNIT_USD_PER_1M_TOKENS.to_string(),
+    })
+}
+
+/// v3 契约：按次计费单位缺省按 `"request"` 处理；服务端给出未识别的值
+/// （既不是 `"request"` 也不是 `"second"`）视为不可信，返回 `None`——
+/// 前端据此不展示按次这一行，避免展示错误单位（追加需求，随 Q1–Q6 一并
+/// 完成）。
+/// `unit` 的类型是 `Option<Option<String>>`（Codex 复验 C4），区分三种
+/// 情形：
+/// - 外层 `None`：字段在 JSON 里完全不存在（服务端 `omitempty` 语义下
+///   没有这个 key）→ 缺省按 `"request"` 处理。
+/// - 外层 `Some`、内层 `None`：字段存在但显式给了 `null` → 和"未识别的
+///   字符串"一样不可信（服务端不应该发这个，出现即属异常数据），不展示
+///   按次这一行，不能默认成 `"request"`。
+/// - 外层 `Some`、内层 `Some("")`：显式空字符串（Codex 验收 C2）——同样
+///   不可信，处理方式与显式 `null` 一致。
+/// - 外层 `Some`、内层 `Some("request"/"second")`：原样保留；其余字符串
+///   视为未识别。
+fn normalize_per_request_unit(unit: Option<Option<String>>) -> Option<String> {
+    match unit {
+        None => Some("request".to_string()),
+        Some(None) => None,
+        Some(Some(ref s)) if s.is_empty() => None,
+        Some(Some(ref s)) if s == "request" => Some("request".to_string()),
+        Some(Some(ref s)) if s == "second" => Some("second".to_string()),
+        Some(Some(_)) => None,
+    }
+}
+
+fn to_price_view(price: Option<RemoteModelPrice>) -> Option<ModelPriceView> {
+    let p = price?;
+    Some(ModelPriceView {
+        // 缺省或空字符串一律按 "token" 处理（Opus 复核 Q4）：这是唯一的
+        // 归一化点，前端不需要再对空字符串做特殊判断，直接按
+        // `billingMode !== "token"` 分支即可。
+        billing_mode: p
+            .billing_mode
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "token".to_string()),
+        input: finite_nonnegative(p.input),
+        output: finite_nonnegative(p.output),
+        cache_read: finite_nonnegative(p.cache_read),
+        cache_write: finite_nonnegative(p.cache_write),
+        cache_write_1h: finite_nonnegative(p.cache_write_1h),
+        per_request: finite_nonnegative(p.per_request),
+        base_input: finite_nonnegative(p.base_input),
+        base_output: finite_nonnegative(p.base_output),
+        base_cache_read: finite_nonnegative(p.base_cache_read),
+        base_cache_write: finite_nonnegative(p.base_cache_write),
+        base_cache_write_1h: finite_nonnegative(p.base_cache_write_1h),
+        base_per_request: finite_nonnegative(p.base_per_request),
+        multiplier: finite_positive(p.multiplier),
+        per_request_unit: normalize_per_request_unit(p.per_request_unit),
+    })
 }
 
 /// 脱敏：保留前 6 位与后 4 位，中间用 `…`；过短时只保留前 2 位。
@@ -196,6 +360,7 @@ fn to_view(key: &RemoteApiKey) -> KeyView {
 }
 
 fn to_models_view(remote: RemoteKeyModels) -> KeyModelsView {
+    let pricing = to_pricing_view(remote.pricing);
     let models = remote
         .models
         .into_iter()
@@ -207,6 +372,7 @@ fn to_models_view(remote: RemoteKeyModels) -> KeyModelsView {
                 .filter(|t| m.tools.iter().any(|x| x == *t))
                 .map(|t| t.to_string())
                 .collect(),
+            price: to_price_view(m.price),
         })
         .collect();
     KeyModelsView {
@@ -217,6 +383,7 @@ fn to_models_view(remote: RemoteKeyModels) -> KeyModelsView {
         } else {
             remote.blocked_reason.filter(|r| !r.is_empty())
         },
+        pricing,
     }
 }
 
@@ -671,6 +838,489 @@ mod tests {
             state.capabilities_for(identity, 3, "claude-sonnet-4-5"),
             None
         );
+    }
+
+    /// B1 定价扩展：`pricing` 与每个模型的 `price` 原样透传给前端视图，
+    /// `base_*` 与折后价分开保留，供前端在倍率 ≠ 1 时显示划线原价。
+    #[tokio::test]
+    async fn key_models_passes_through_pricing_and_model_price() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        mount_page(&server, 1, 1, vec![key_json(1, SECRET_A, "active", None)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/desktop/keys/1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {
+                    "models": [{
+                        "id": "claude-sonnet-4-5",
+                        "provider": "anthropic",
+                        "tools": ["claude_code"],
+                        "price": {
+                            "billing_mode": "token",
+                            "input": 3.0,
+                            "output": 15.0,
+                            "cache_read": 0.3,
+                            "base_input": 6.0,
+                            "base_output": 30.0,
+                            "base_cache_read": 0.6
+                        }
+                    }],
+                    "callable": true,
+                    "pricing": {
+                        "cny_rate": 7.2,
+                        "rate_multiplier": 0.5,
+                        "peak_multiplier": 1.0,
+                        "peak_active": false,
+                        "effective_multiplier": 0.5,
+                        "unit": "usd_per_1m_tokens"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        list_keys(&manager, &state).await.unwrap();
+
+        let result = key_models(&manager, &state, 1).await.unwrap();
+        let pricing = result.pricing.expect("pricing present");
+        assert_eq!(pricing.cny_rate, 7.2);
+        assert_eq!(pricing.effective_multiplier, 0.5);
+        assert!(!pricing.peak_active);
+        let price = result.models[0].price.as_ref().expect("price present");
+        assert_eq!(price.billing_mode, "token");
+        assert_eq!(price.input, Some(3.0));
+        assert_eq!(price.base_input, Some(6.0));
+        assert_eq!(price.cache_write, None);
+        assert_eq!(price.multiplier, None, "fixture omits model-level multiplier");
+    }
+
+    /// v2 契约端到端：image 类模型自带独立倍率（0.5，不叠加高峰），与顶层
+    /// `pricing.effective_multiplier`（2.0，来自分组高峰）不同，两者都要
+    /// 原样透传给前端，不能互相覆盖——前端据此决定用哪一个判定划线/加价。
+    #[tokio::test]
+    async fn key_models_keeps_model_level_multiplier_distinct_from_top_level() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        mount_page(&server, 1, 1, vec![key_json(1, SECRET_A, "active", None)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/desktop/keys/1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {
+                    "models": [{
+                        "id": "image-gen-1",
+                        "tools": ["codex"],
+                        "price": {
+                            "billing_mode": "image",
+                            "per_request": 0.02,
+                            "base_per_request": 0.04,
+                            "multiplier": 0.5
+                        }
+                    }],
+                    "callable": true,
+                    "pricing": {
+                        "cny_rate": 7.2,
+                        "effective_multiplier": 2.0
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        list_keys(&manager, &state).await.unwrap();
+
+        let result = key_models(&manager, &state, 1).await.unwrap();
+        let pricing = result.pricing.expect("pricing present");
+        assert_eq!(pricing.effective_multiplier, 2.0);
+        let price = result.models[0].price.as_ref().expect("price present");
+        assert_eq!(price.billing_mode, "image");
+        assert_eq!(
+            price.multiplier,
+            Some(0.5),
+            "model's own multiplier must not be replaced by the top-level one"
+        );
+    }
+
+    /// v3 契约端到端：视频类模型按秒计费，`per_request_unit` 原样透传给
+    /// 前端视图（"second"）。
+    #[tokio::test]
+    async fn key_models_passes_through_per_request_unit_for_a_video_model() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        mount_page(&server, 1, 1, vec![key_json(1, SECRET_A, "active", None)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/desktop/keys/1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {
+                    "models": [{
+                        "id": "video-gen-1",
+                        "tools": ["codex"],
+                        "price": {
+                            "billing_mode": "video",
+                            "per_request": 0.5,
+                            "per_request_unit": "second"
+                        }
+                    }],
+                    "callable": true,
+                    "pricing": {"cny_rate": 7.2, "effective_multiplier": 1.0}
+                }
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        list_keys(&manager, &state).await.unwrap();
+
+        let result = key_models(&manager, &state, 1).await.unwrap();
+        let price = result.models[0].price.as_ref().expect("price present");
+        assert_eq!(price.per_request_unit, Some("second".to_string()));
+    }
+
+    /// 旧服务端（未实现 B1 定价扩展）响应里没有 `pricing`/`price`：解析
+    /// 不报错，视图里两者都为 `None`，前端据此不显示价格区（B1 契约"客户端
+    /// 展示规则"）。
+    #[tokio::test]
+    async fn key_models_omits_pricing_when_old_server_does_not_provide_it() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        mount_page(&server, 1, 1, vec![key_json(1, SECRET_A, "active", None)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/desktop/keys/1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {"models": [{"id": "gpt-5", "tools": ["codex"]}], "callable": true}
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        list_keys(&manager, &state).await.unwrap();
+
+        let result = key_models(&manager, &state, 1).await.unwrap();
+        assert!(result.pricing.is_none());
+        assert!(result.models[0].price.is_none());
+    }
+
+    /// 顶层 `pricing` 缺 `effective_multiplier`（唯二必需字段之一）时，整个
+    /// `pricing` 视为不可用，而不是把半份数据交给前端（Opus 复核 P6：只有
+    /// `cny_rate`/`effective_multiplier` 是必需字段，`rate_multiplier` 单独
+    /// 缺失不会触发这个整体降级，见下面 `to_pricing_view_*` 系列纯函数测试）。
+    #[tokio::test]
+    async fn key_models_drops_pricing_when_effective_multiplier_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        mount_page(&server, 1, 1, vec![key_json(1, SECRET_A, "active", None)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/desktop/keys/1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {
+                    "models": [{"id": "gpt-5", "tools": ["codex"]}],
+                    "callable": true,
+                    "pricing": {"cny_rate": 7.2}
+                }
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        list_keys(&manager, &state).await.unwrap();
+
+        let result = key_models(&manager, &state, 1).await.unwrap();
+        assert!(result.pricing.is_none());
+    }
+
+    // ── to_pricing_view / to_price_view 纯函数测试（Opus 复核 P1/P6） ──────
+
+    fn base_pricing() -> RemotePricing {
+        RemotePricing {
+            cny_rate: Some(7.2),
+            rate_multiplier: Some(0.5),
+            peak_multiplier: Some(1.0),
+            peak_active: Some(false),
+            effective_multiplier: Some(0.5),
+            unit: Some(PRICING_UNIT_USD_PER_1M_TOKENS.to_string()),
+        }
+    }
+
+    /// P1：unit 显式给出且不是契约里的 token 类单位 → 整个 pricing 不可信。
+    #[test]
+    fn to_pricing_view_rejects_unknown_unit() {
+        let pricing = RemotePricing {
+            unit: Some("usd_per_request".to_string()),
+            ..base_pricing()
+        };
+        assert!(to_pricing_view(Some(pricing)).is_none());
+    }
+
+    /// P1：unit 缺省视为默认兼容（旧服务端未实现该字段的场景）。
+    #[test]
+    fn to_pricing_view_defaults_missing_unit_to_token_unit() {
+        let pricing = RemotePricing {
+            unit: None,
+            ..base_pricing()
+        };
+        let view = to_pricing_view(Some(pricing)).expect("unit missing is compatible");
+        assert_eq!(view.unit, PRICING_UNIT_USD_PER_1M_TOKENS);
+    }
+
+    /// P1：unit 与契约值完全一致时正常通过。
+    #[test]
+    fn to_pricing_view_accepts_known_unit() {
+        assert!(to_pricing_view(Some(base_pricing())).is_some());
+    }
+
+    /// P6：`rate_multiplier`/`peak_multiplier` 均缺失时不再让整个 pricing
+    /// 不可用，各自回退到 1.0，`peak_active` 缺省按 `peak_multiplier` 推导
+    /// （缺省时视为 false）。
+    #[test]
+    fn to_pricing_view_defaults_non_core_multipliers_when_missing() {
+        let pricing = RemotePricing {
+            cny_rate: Some(7.2),
+            rate_multiplier: None,
+            peak_multiplier: None,
+            peak_active: None,
+            effective_multiplier: Some(1.0),
+            unit: None,
+        };
+        let view = to_pricing_view(Some(pricing)).expect("only cny_rate/effective_multiplier required");
+        assert_eq!(view.rate_multiplier, 1.0);
+        assert_eq!(view.peak_multiplier, 1.0);
+        assert!(!view.peak_active);
+    }
+
+    /// P6：`peak_active` 未显式给出时按 `peak_multiplier > 1.0` 推导为真。
+    #[test]
+    fn to_pricing_view_derives_peak_active_from_peak_multiplier() {
+        let pricing = RemotePricing {
+            peak_active: None,
+            peak_multiplier: Some(1.5),
+            ..base_pricing()
+        };
+        let view = to_pricing_view(Some(pricing)).unwrap();
+        assert!(view.peak_active);
+    }
+
+    /// P6：显式给出的 `peak_active` 优先于按 `peak_multiplier` 的推导。
+    #[test]
+    fn to_pricing_view_prefers_explicit_peak_active_over_derivation() {
+        let pricing = RemotePricing {
+            peak_active: Some(false),
+            peak_multiplier: Some(2.0),
+            ..base_pricing()
+        };
+        let view = to_pricing_view(Some(pricing)).unwrap();
+        assert!(!view.peak_active, "explicit false must not be overridden");
+    }
+
+    /// P6：`cny_rate`/`effective_multiplier` 必须有限且 > 0；0、负数、非有限
+    /// 都视为不可信，整个 pricing 不可用。
+    #[test]
+    fn to_pricing_view_requires_core_fields_finite_and_positive() {
+        for cny_rate in [Some(0.0), Some(-1.0), Some(f64::NAN), Some(f64::INFINITY), None] {
+            let pricing = RemotePricing {
+                cny_rate,
+                ..base_pricing()
+            };
+            assert!(
+                to_pricing_view(Some(pricing)).is_none(),
+                "cny_rate={cny_rate:?} should be rejected"
+            );
+        }
+        for effective_multiplier in [Some(0.0), Some(-0.5), Some(f64::NAN), None] {
+            let pricing = RemotePricing {
+                effective_multiplier,
+                ..base_pricing()
+            };
+            assert!(
+                to_pricing_view(Some(pricing)).is_none(),
+                "effective_multiplier={effective_multiplier:?} should be rejected"
+            );
+        }
+    }
+
+    /// P6：单个价格字段为负数或非有限时该字段单独置 None，不影响其余字段，
+    /// 也不影响整个 price 对象的可用性（billing_mode 等仍然正常返回）。
+    #[test]
+    fn to_price_view_drops_individual_invalid_numeric_fields() {
+        let price = RemoteModelPrice {
+            billing_mode: Some("token".to_string()),
+            input: Some(-1.0),
+            output: Some(f64::NAN),
+            cache_read: Some(f64::INFINITY),
+            base_input: Some(6.0),
+            ..Default::default()
+        };
+        let view = to_price_view(Some(price)).expect("price object itself still available");
+        assert_eq!(view.billing_mode, "token");
+        assert_eq!(view.input, None, "negative price must be dropped");
+        assert_eq!(view.output, None, "NaN price must be dropped");
+        assert_eq!(view.cache_read, None, "infinite price must be dropped");
+        assert_eq!(view.base_input, Some(6.0), "valid fields stay untouched");
+    }
+
+    /// P6：0 是合法价格（免费档位），不应被当成无效值丢弃。
+    #[test]
+    fn to_price_view_keeps_zero_as_a_valid_price() {
+        let price = RemoteModelPrice {
+            input: Some(0.0),
+            ..Default::default()
+        };
+        let view = to_price_view(Some(price)).unwrap();
+        assert_eq!(view.input, Some(0.0));
+    }
+
+    /// Opus 复核 Q4：`billing_mode` 缺省（`None`）或服务端给了空字符串都
+    /// 归一化为 `"token"`，前端不需要再对空字符串做特殊判断。
+    #[test]
+    fn to_price_view_normalizes_missing_or_empty_billing_mode_to_token() {
+        let missing = RemoteModelPrice {
+            billing_mode: None,
+            ..Default::default()
+        };
+        assert_eq!(to_price_view(Some(missing)).unwrap().billing_mode, "token");
+
+        let empty = RemoteModelPrice {
+            billing_mode: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(to_price_view(Some(empty)).unwrap().billing_mode, "token");
+    }
+
+    /// v2 契约：模型级 `multiplier` 有效（有限且 > 0）时原样保留，供前端
+    /// 优先于顶层 `pricing.effectiveMultiplier` 使用。
+    #[test]
+    fn to_price_view_keeps_a_valid_model_level_multiplier() {
+        let price = RemoteModelPrice {
+            multiplier: Some(0.5),
+            ..Default::default()
+        };
+        let view = to_price_view(Some(price)).unwrap();
+        assert_eq!(view.multiplier, Some(0.5));
+    }
+
+    /// v2 契约：模型级 `multiplier` 无效（0、负数、非有限）时置 `None`，前端
+    /// 据此回退到顶层倍率，而不是把不可信的值透传出去。
+    #[test]
+    fn to_price_view_drops_invalid_model_level_multiplier() {
+        for multiplier in [Some(0.0), Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            let price = RemoteModelPrice {
+                multiplier,
+                ..Default::default()
+            };
+            let view = to_price_view(Some(price)).unwrap();
+            assert_eq!(view.multiplier, None, "multiplier={multiplier:?} must be dropped");
+        }
+    }
+
+    /// v3 契约：`per_request_unit` 缺省按 `"request"` 处理；显式给出
+    /// `"request"`/`"second"` 原样保留；未识别的值归一化为 `None`（前端
+    /// 据此不展示按次行，避免展示错误单位）。
+    #[test]
+    fn to_price_view_normalizes_per_request_unit() {
+        // 字段完全不存在（外层 None）：缺省按 "request" 处理。
+        let missing = RemoteModelPrice {
+            per_request_unit: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            to_price_view(Some(missing)).unwrap().per_request_unit,
+            Some("request".to_string())
+        );
+
+        let request = RemoteModelPrice {
+            per_request_unit: Some(Some("request".to_string())),
+            ..Default::default()
+        };
+        assert_eq!(
+            to_price_view(Some(request)).unwrap().per_request_unit,
+            Some("request".to_string())
+        );
+
+        let second = RemoteModelPrice {
+            per_request_unit: Some(Some("second".to_string())),
+            ..Default::default()
+        };
+        assert_eq!(
+            to_price_view(Some(second)).unwrap().per_request_unit,
+            Some("second".to_string())
+        );
+
+        let unknown = RemoteModelPrice {
+            per_request_unit: Some(Some("hour".to_string())),
+            ..Default::default()
+        };
+        assert_eq!(to_price_view(Some(unknown)).unwrap().per_request_unit, None);
+
+        // Codex 验收 C2（撤销上一轮 R4）：显式给出的空字符串不等同于
+        // 缺省，服务端 `omitempty` 不会主动发出空串，出现即属异常数据，
+        // 按"未识别的值"处理（宁可不显示按次行，也不能把秒价当次价）。
+        let empty = RemoteModelPrice {
+            per_request_unit: Some(Some(String::new())),
+            ..Default::default()
+        };
+        assert_eq!(to_price_view(Some(empty)).unwrap().per_request_unit, None);
+
+        // Codex 复验 C4：字段存在但显式给了 null（外层 Some、内层
+        // None）——和未识别的字符串一样不可信，不能默认成 "request"。
+        let explicit_null = RemoteModelPrice {
+            per_request_unit: Some(None),
+            ..Default::default()
+        };
+        assert_eq!(
+            to_price_view(Some(explicit_null)).unwrap().per_request_unit,
+            None
+        );
+    }
+
+    // Codex 复验 C4：直接从原始 JSON 反序列化，验证"字段缺失"/"显式
+    // null"/"显式空字符串"三种情形在 wire 层面就已经被正确区分——不是只
+    // 在手工构造的 `RemoteModelPrice` 上验证 `to_price_view` 的行为，
+    // 而是覆盖 serde 反序列化这一步本身（这正是上一轮 bug 的根源：
+    // `Option<String>` 字段类型下，serde 会把"缺失"和"显式 null"都解析
+    // 成同一个 `None`，反序列化这一步就已经丢失了区分）。
+    #[test]
+    fn remote_model_price_distinguishes_missing_null_and_empty_per_request_unit() {
+        let missing: RemoteModelPrice =
+            serde_json::from_value(json!({"per_request": 0.5})).unwrap();
+        assert_eq!(
+            missing.per_request_unit, None,
+            "field entirely absent must deserialize to the outer None"
+        );
+
+        let explicit_null: RemoteModelPrice =
+            serde_json::from_value(json!({"per_request": 0.5, "per_request_unit": null}))
+                .unwrap();
+        assert_eq!(
+            explicit_null.per_request_unit,
+            Some(None),
+            "an explicit JSON null must deserialize to Some(None), distinct from the field being absent"
+        );
+
+        let empty: RemoteModelPrice =
+            serde_json::from_value(json!({"per_request": 0.5, "per_request_unit": ""})).unwrap();
+        assert_eq!(empty.per_request_unit, Some(Some(String::new())));
+
+        // 三种 wire 形态送进 to_price_view 之后必须都不可信（None），
+        // 只有"字段缺失"才归一化成 "request"。
+        assert_eq!(
+            to_price_view(Some(missing)).unwrap().per_request_unit,
+            Some("request".to_string())
+        );
+        assert_eq!(
+            to_price_view(Some(explicit_null)).unwrap().per_request_unit,
+            None
+        );
+        assert_eq!(to_price_view(Some(empty)).unwrap().per_request_unit, None);
     }
 
     /// 同一会话两次列表拉取乱序完成：较早发起、较晚完成的结果不覆盖较新

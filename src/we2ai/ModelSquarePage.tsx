@@ -14,15 +14,181 @@ import {
   type We2aiCcSwitchRunningStatus,
   type We2aiKeyModels,
   type We2aiKeyView,
+  type We2aiModelPrice,
+  type We2aiPricing,
   type We2aiToolStatusReport,
 } from "./api";
 import { ApplyDialog, type ApplyTarget } from "./ApplyDialog";
 import { WE2AI_TOOL_LABELS } from "./toolLabels";
 import {
+  buildWe2aiPriceRows,
+  formatWe2aiMultiplier,
+  formatWe2aiTimeHHmm,
+  isWe2aiModelSubjectToGroupPeak,
+  isWe2aiPriceSurcharged,
+  resolveWe2aiEffectiveMultiplier,
+  type We2aiPriceRow,
+} from "./pricing";
+import {
   formatWe2aiString,
   getWe2aiErrorMessage,
   type We2aiStrings,
 } from "./strings";
+
+/** 价格行字段 → 展示文案；`cacheWrite`/`cacheWrite1h` 不在契约展示范围内，
+ * `buildWe2aiPriceRows` 也不会产出它们，这里给个安全兜底而不是抛错。 */
+function priceRowLabel(t: We2aiStrings, row: We2aiPriceRow): string {
+  switch (row.field) {
+    case "input":
+      return t.priceInput;
+    case "output":
+      return t.priceOutput;
+    case "cacheRead":
+      return t.priceCacheRead;
+    case "perRequest":
+      // Opus 复核 R1：按秒计费用"按秒"标签，不能沿用"按次"——那样会变成
+      // "按次 … 每秒"这种自相矛盾的组合。
+      return row.unit === "perSecond" ? t.pricePerSecond : t.pricePerRequest;
+    default:
+      return "";
+  }
+}
+
+function priceRowUnit(t: We2aiStrings, unit: We2aiPriceRow["unit"]): string {
+  switch (unit) {
+    case "perRequest":
+      return t.priceUnitPerRequest;
+    case "perSecond":
+      return t.priceUnitPerSecond;
+    case "perMillionTokens":
+    default:
+      return t.priceUnitPerMillionTokens;
+  }
+}
+
+/** 模型卡片的价格区域：`pricing` 缺失时整体不渲染；模型没有 `price` 时
+ * 显示"暂无定价"（B1 契约"客户端展示规则"）。 */
+function ModelPriceSection({
+  t,
+  price,
+  pricing,
+  dimmed,
+  fetchedAt,
+}: {
+  t: We2aiStrings;
+  price: We2aiModelPrice | null;
+  pricing: We2aiPricing | null;
+  dimmed: boolean;
+  /** 这批模型/价格数据的拉取时间戳（毫秒），用于页脚展示新鲜度（Opus
+   * 复核 P3）；还没拉取成功过时为 `null`，不显示这一行。 */
+  fetchedAt: number | null;
+}) {
+  if (!pricing) return null;
+  const rows = buildWe2aiPriceRows(price, pricing);
+  const mutedClass = dimmed
+    ? "text-[color:color-mix(in_srgb,var(--we2ai-paper)_70%,transparent)]"
+    : "text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]";
+  // Opus 复核 P5 产品决定：加价（倍率 > 1，含高峰）不显示划线原价，改用
+  // 倍率标注；折扣（< 1）继续用逐行划线原价（见 pricing.ts）。v2 契约：
+  // 优先用这个模型自己的 `price.multiplier`（image/video 类不叠加分组
+  // 高峰），没有时才回退到顶层 `pricing.effectiveMultiplier`。
+  const resolvedMultiplier = price
+    ? resolveWe2aiEffectiveMultiplier(price, pricing)
+    : pricing.effectiveMultiplier;
+  const surcharged = isWe2aiPriceSurcharged(resolvedMultiplier);
+  // 追加需求（取代 Q2 里"按 billingMode === 'token' 判定"的做法）：
+  // image/video 类模型有自己独立的 multiplier、不叠加分组高峰，顶层
+  // `peakActive` 对它们不成立，不能跟着一起标"高峰价"；但 billing_mode
+  // 本身不是可靠的判定依据——普通 per_request 计费的模型也可能叠加分组
+  // 高峰。改为直接比较这个模型的 multiplier 是否（在容差内）等于顶层
+  // effectiveMultiplier，数值相等才说明它确实叠加了分组高峰。
+  const showPeakBadge =
+    pricing.peakActive && isWe2aiModelSubjectToGroupPeak(price, pricing);
+
+  return (
+    <div
+      className={`mt-3 border-t pt-2 text-xs ${
+        dimmed
+          ? "border-[var(--we2ai-paper)]/30"
+          : "border-[var(--we2ai-ink)]/20"
+      }`}
+      data-testid="we2ai-model-price"
+    >
+      {rows.length === 0 ? (
+        <p className={mutedClass}>{t.priceUnavailable}</p>
+      ) : (
+        <>
+          {(showPeakBadge || surcharged) && (
+            <div className="mb-1 flex flex-wrap gap-1">
+              {showPeakBadge && (
+                <span
+                  className="we2ai-chip inline-block"
+                  data-testid="we2ai-price-peak-active"
+                >
+                  {t.pricePeakActive}
+                </span>
+              )}
+              {surcharged && (
+                <span
+                  className="we2ai-chip inline-block"
+                  data-testid="we2ai-price-multiplier-badge"
+                >
+                  {formatWe2aiString(t.priceMultiplierBadge, {
+                    multiplier: formatWe2aiMultiplier(resolvedMultiplier),
+                  })}
+                </span>
+              )}
+            </div>
+          )}
+          <ul className="space-y-1">
+            {rows.map((row) => (
+              <li
+                key={row.field}
+                className="flex items-baseline justify-between gap-2"
+                data-testid={`we2ai-price-row-${row.field}`}
+              >
+                <span>{priceRowLabel(t, row)}</span>
+                <span className="text-right">
+                  {row.strikethroughLine && (
+                    <del
+                      className={`mr-1 ${mutedClass}`}
+                      data-testid={`we2ai-price-strikethrough-${row.field}`}
+                    >
+                      <span className="sr-only">
+                        {t.priceOriginalSrLabel}
+                      </span>
+                      {row.strikethroughLine}
+                    </del>
+                  )}
+                  <span data-testid={`we2ai-price-value-${row.field}`}>
+                    <span className="sr-only">
+                      {t.priceDiscountedSrLabel}
+                    </span>
+                    {row.line}
+                  </span>{" "}
+                  <span className={mutedClass}>
+                    {priceRowUnit(t, row.unit)}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className={`mt-1 ${mutedClass}`}>{t.priceFootnote}</p>
+        </>
+      )}
+      {fetchedAt != null && (
+        <p
+          className={`mt-1 ${mutedClass}`}
+          data-testid="we2ai-price-fetched-at"
+        >
+          {formatWe2aiString(t.priceFetchedAt, {
+            time: formatWe2aiTimeHHmm(fetchedAt),
+          })}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * 只有网络类错误确定与会话无关；其余错误（含 Rust 侧按未知 401 终止会话时
@@ -30,6 +196,10 @@ import {
  * 避免会话已终止却停留在已登录界面（Fable P3 终验低危项）。
  */
 const NETWORK_CODES = new Set(["TRANSIENT", "NETWORK_ERROR"]);
+
+/** 价格新鲜度维护参数（Opus 复核 P3，`docs/we2ai/B1定价契约.md`）。 */
+const STALE_MODELS_THRESHOLD_MS = 60_000;
+const PERIODIC_MODELS_REFRESH_MS = 5 * 60_000;
 
 export { WE2AI_TOOL_LABELS };
 
@@ -133,6 +303,11 @@ export function ModelSquarePage({
   const [models, setModels] = useState<We2aiKeyModels | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
+  // 这批模型/价格数据的拉取时间（毫秒），供价格区页脚展示新鲜度、也用来
+  // 判断是否已经"过期"需要静默刷新（Opus 复核 P3）。用 ref 镜像一份供
+  // 不订阅重渲染的事件监听器读取最新值，避免每次拉取都要重新订阅监听器。
+  const [modelsFetchedAt, setModelsFetchedAt] = useState<number | null>(null);
+  const modelsFetchedAtRef = useRef<number | null>(null);
   // 只采纳最后一次模型请求的结果：快速切换 Key 时，先发出的慢请求不能覆盖
   // 后选中 Key 的模型列表。
   const modelsRequestSeq = useRef(0);
@@ -191,38 +366,137 @@ export function ModelSquarePage({
     void loadKeys();
   }, [loadKeys]);
 
+  // 前台请求是否正在进行中（Opus 复核 Q1）：用 ref 而不是 `loadingModels`
+  // state，因为要在静默刷新发起前同步读取最新值——如果静默刷新在前台
+  // 请求完成前抢先把 `modelsRequestSeq` 往前推一格，前台请求 resolve 时
+  // 序号已经不是自己发起时的那个，`finally` 里就再也不会执行，
+  // `loadingModels` 会永远卡在 `true`（连带"重试"按钮一直禁用）。
+  const loadingModelsRef = useRef(false);
+
   const loadModels = useCallback(
-    async (keyId: number) => {
+    async (keyId: number, opts: { silent?: boolean } = {}) => {
+      const silent = opts.silent ?? false;
+      // 前台请求进行中时，静默刷新直接放弃这一次——不抢占序号，避免上面
+      // 说的"前台 finally 永远跑不到"问题；下一次 focus/定时器 tick 再
+      // 试，不需要排队重试。
+      if (silent && loadingModelsRef.current) {
+        return;
+      }
       const seq = ++modelsRequestSeq.current;
-      setLoadingModels(true);
-      setModelsError(null);
-      setModels(null);
+      // 静默刷新（价格新鲜度维护，Opus 复核 P3）不清空当前展示内容、也不
+      // 显示加载态——用户没有发起这次请求，不应该被打断；失败只在
+      // console 留痕（会话终止类错误例外，见下方 catch 分支，Q6），等
+      // 下一次显式操作（切换 Key/手动刷新）再走前台错误处理。
+      if (!silent) {
+        loadingModelsRef.current = true;
+        setLoadingModels(true);
+        setModelsError(null);
+        setModels(null);
+        // 新的前台请求（切换 Key、手动刷新）意味着旧数据即将被替换，不能
+        // 让页脚在这次请求完成前继续展示上一个 Key/上一批数据的拉取时间
+        // （Opus 复核 Q1）。
+        modelsFetchedAtRef.current = null;
+        setModelsFetchedAt(null);
+      }
       try {
         const result = await we2aiApi.keyModels(keyId);
         if (seq === modelsRequestSeq.current) {
           setModels(result);
+          // 静默刷新成功也要清掉之前可能展示的前台错误——数据已经是新的
+          // 了，不应该继续挂着一条"获取失败，请重试"（Opus 复核 Q1）。
+          setModelsError(null);
+          modelsFetchedAtRef.current = Date.now();
+          setModelsFetchedAt(modelsFetchedAtRef.current);
         }
       } catch (error) {
         if (seq === modelsRequestSeq.current) {
-          handleError(error, setModelsError);
+          if (silent) {
+            console.error("[we2ai] silent price refresh failed", error);
+            // Q6：静默刷新遇到会话终止类错误（不是单纯的网络抖动）时也要
+            // 让外壳复查一次会话状态，不能因为这次刷新是"背着用户"发起的
+            // 就把会话已失效这件事也一并悄悄吞掉。
+            const code = errorCode(error);
+            if (code && !NETWORK_CODES.has(code)) {
+              onSessionMaybeEnded();
+            }
+          } else {
+            handleError(error, setModelsError);
+          }
         }
       } finally {
+        // 不区分 silent：只要这次请求仍是"最新"的那个就负责把
+        // `loadingModels` 复位。静默请求正常不会把它设为 true，这里复位
+        // 是幂等的；真正要防的是"前台请求的序号被后来的静默请求抢走，
+        // 前台自己的 finally 因为序号不匹配而永远跑不到"（Opus 复核 Q1，
+        // 现在已经被上面的 `loadingModelsRef` 检查提前拦截，这里的
+        // "不分 silent" 是第二道防线）。
         if (seq === modelsRequestSeq.current) {
+          loadingModelsRef.current = false;
           setLoadingModels(false);
         }
       }
     },
-    [handleError],
+    [handleError, onSessionMaybeEnded],
   );
+  const loadModelsRef = useRef(loadModels);
+  loadModelsRef.current = loadModels;
 
   useEffect(() => {
     if (selectedKeyId !== null) {
       void loadModels(selectedKeyId);
     } else {
+      // Opus 复核 R3：这里让请求序号作废，与 loadModels() 里"序号不匹配时
+      // 不再执行 finally"是同一套机制——如果这时恰好有一个前台请求仍在
+      // 进行中，它的 finally 再也不会跑到，loadingModels 会跟 Q1 一样卡在
+      // true。这个分支自己负责把状态复位，不指望那个失效请求的 finally。
       modelsRequestSeq.current += 1;
+      loadingModelsRef.current = false;
+      setLoadingModels(false);
       setModels(null);
+      modelsFetchedAtRef.current = null;
+      setModelsFetchedAt(null);
     }
   }, [selectedKeyId, loadModels, modelsReloadTick]);
+
+  // 价格随高峰/峰谷边界变化会过期（Opus 复核 P3）：窗口重新可见或获得
+  // 焦点时，若距上次拉取已超过 60 秒就静默重拉一次；此外页面可见时每 5
+  // 分钟定时刷新一次。用 ref 读取最新的 selectedKeyId/loadModels，
+  // 避免每次渲染都要重新订阅这两个监听器/定时器。
+  const selectedKeyIdRef = useRef(selectedKeyId);
+  selectedKeyIdRef.current = selectedKeyId;
+
+  const refreshModelsIfStale = useCallback(() => {
+    const keyId = selectedKeyIdRef.current;
+    if (keyId === null) return;
+    const fetchedAt = modelsFetchedAtRef.current;
+    if (fetchedAt !== null && Date.now() - fetchedAt < STALE_MODELS_THRESHOLD_MS) {
+      return;
+    }
+    void loadModelsRef.current(keyId, { silent: true });
+  }, []);
+
+  useEffect(() => {
+    const onVisibilityOrFocus = () => {
+      if (document.hidden) return;
+      refreshModelsIfStale();
+    };
+    document.addEventListener("visibilitychange", onVisibilityOrFocus);
+    window.addEventListener("focus", onVisibilityOrFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityOrFocus);
+      window.removeEventListener("focus", onVisibilityOrFocus);
+    };
+  }, [refreshModelsIfStale]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      const keyId = selectedKeyIdRef.current;
+      if (keyId === null) return;
+      void loadModelsRef.current(keyId, { silent: true });
+    }, PERIODIC_MODELS_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const handleSelectKey = (value: string) => {
     const keyId = Number(value);
@@ -443,6 +717,13 @@ export function ModelSquarePage({
                     })}
                   </div>
                 )}
+                <ModelPriceSection
+                  t={t}
+                  price={model.price}
+                  pricing={models.pricing}
+                  dimmed={isInUseSomewhere}
+                  fetchedAt={modelsFetchedAt}
+                />
               </li>
             );
           })}

@@ -5,7 +5,7 @@
 //! `backend/internal/handler/dto/settings.go`、`backend/internal/pkg/response/response.go`，
 //! 基线提交 `60e00724b`），不是按方案文字重新臆测的占位符。
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -600,6 +600,11 @@ pub struct RemoteKeyModels {
     pub callable: bool,
     #[serde(default)]
     pub blocked_reason: Option<String>,
+    /// B1 定价扩展（`docs/we2ai/B1定价契约.md`）：Key 分组缺失或
+    /// 倍率无法解析时服务端整体省略；旧服务端（未实现定价扩展）同样省略，
+    /// 反序列化不报错。
+    #[serde(default)]
+    pub pricing: Option<RemotePricing>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -616,6 +621,97 @@ pub struct RemoteKeyModel {
     pub supports_images: Option<bool>,
     #[serde(default)]
     pub reasoning_efforts: Option<Vec<String>>,
+    /// 无法解析价格的模型服务端省略此字段，客户端显示"暂无定价"。
+    #[serde(default)]
+    pub price: Option<RemoteModelPrice>,
+}
+
+/// B1 定价扩展顶层 `pricing`：用户 × 分组倍率与当前高峰状态，供客户端把
+/// `price` 里已乘倍率的美元单价换算成人民币展示。字段全部 `Option`——个别
+/// 字段无法解析时该字段单独省略，而不是整个响应反序列化失败。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RemotePricing {
+    #[serde(default)]
+    pub cny_rate: Option<f64>,
+    #[serde(default)]
+    pub rate_multiplier: Option<f64>,
+    #[serde(default)]
+    pub peak_multiplier: Option<f64>,
+    #[serde(default)]
+    pub peak_active: Option<bool>,
+    #[serde(default)]
+    pub effective_multiplier: Option<f64>,
+    #[serde(default)]
+    pub unit: Option<String>,
+}
+
+/// B1 定价扩展每模型 `price`：与实际扣费同源的标准首档价，折后价已乘该模型
+/// 实际 `multiplier`（旧服务端缺省时回退顶层 `effective_multiplier`），`base_*`
+/// 是未乘倍率的原价，供客户端在倍率 ≠ 1 时显示划线价或倍率标注。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RemoteModelPrice {
+    #[serde(default)]
+    pub billing_mode: Option<String>,
+    #[serde(default)]
+    pub input: Option<f64>,
+    #[serde(default)]
+    pub output: Option<f64>,
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    pub cache_write: Option<f64>,
+    #[serde(default)]
+    pub cache_write_1h: Option<f64>,
+    #[serde(default)]
+    pub per_request: Option<f64>,
+    #[serde(default)]
+    pub base_input: Option<f64>,
+    #[serde(default)]
+    pub base_output: Option<f64>,
+    #[serde(default)]
+    pub base_cache_read: Option<f64>,
+    #[serde(default)]
+    pub base_cache_write: Option<f64>,
+    #[serde(default)]
+    pub base_cache_write_1h: Option<f64>,
+    #[serde(default)]
+    pub base_per_request: Option<f64>,
+    /// v2 契约新增：该模型实际扣费倍率（token 类 = `rate_multiplier ×
+    /// peak_multiplier`；image/video 类是独立的图片/视频倍率，不叠加高峰）。
+    /// 折后字段 = `base_* × multiplier`。v3 起服务端总是输出这个字段；
+    /// 客户端仍按 `Option` 处理以兼容尚未升级到 v3 的旧服务端，缺失时
+    /// 回退到顶层 `pricing.effective_multiplier`（`docs/we2ai/B1定价契约.md`）。
+    #[serde(default)]
+    pub multiplier: Option<f64>,
+    /// v3 契约新增：按次计费的单位，`"request"`（字段缺省即此）或
+    /// `"second"`（视频按秒计费）。类型是 `Option<Option<String>>` 而不是
+    /// 单层 `Option<String>`（Codex 复验 C4）：需要区分"字段完全不存在"
+    /// （外层 `None`，缺省按 `"request"` 处理）与"字段存在但值是
+    /// `null`"（`Some(None)`，视为不可信，和未识别字符串一样不展示按次
+    /// 行）——两者语义不同，但普通 `Option<String>` 反序列化时会把它们
+    /// 都折叠成同一个 `None`，见 `deserialize_present_option`。未识别的
+    /// 值（含显式 `null`/空字符串）最终由 `to_price_view` 归一化为
+    /// `None`，前端据此不展示按次这一行，避免展示错误单位。
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    pub per_request_unit: Option<Option<String>>,
+}
+
+/// 只在字段**确实存在**于 JSON 里时才会被调用（哪怕值是 `null`）——
+/// `#[serde(default)]` 负责"字段完全不存在"的情形（给出外层 `None`），
+/// 这个函数只负责区分"存在但为 `null`"（返回 `Some(None)`）与"存在且有
+/// 具体值"（返回 `Some(Some(t))`）。这是让 `Option<Option<T>>` 真正
+/// 区分"缺失"与"显式 null"的标准写法（serde 默认对嵌套 `Option` 会把
+/// 两者都折叠成外层 `None`，不会往内层传递）。
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    // 先按 `Option<T>` 反序列化这个字段确实存在的值（`null` → `None`，
+    // 真实值 → `Some(t)`），再整体包一层 `Some`，标记"这个字段确实出现
+    // 在了 JSON 里"——两层 `Some`/`None` 分别对应"是否出现"和"是否为
+    // null"两个独立维度，不能合并成一层。
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// 写 WorkBuddy 条目用的可选能力（方案 4.3 节字段映射）。
@@ -689,6 +785,126 @@ mod tests {
         let header = client_header_value("4.20.4");
         assert!(header.starts_with("desktop/4.20.4/"));
         assert!(header.ends_with(std::env::consts::OS));
+    }
+
+    // B1 定价扩展（`docs/we2ai/B1定价契约.md`）：字段齐全时正确解析，
+    // 且 `base_*` 与折后价分开保留。
+    #[test]
+    fn remote_key_models_parses_full_pricing_extension() {
+        let body = json!({
+            "models": [{
+                "id": "claude-sonnet-4-5",
+                "provider": "anthropic",
+                "tools": ["claude_code"],
+                "price": {
+                    "billing_mode": "token",
+                    "input": 3.0,
+                    "output": 15.0,
+                    "cache_read": 0.3,
+                    "base_input": 6.0,
+                    "base_output": 30.0,
+                    "base_cache_read": 0.6
+                }
+            }],
+            "callable": true,
+            "pricing": {
+                "cny_rate": 7.2,
+                "rate_multiplier": 0.5,
+                "peak_multiplier": 1.0,
+                "peak_active": false,
+                "effective_multiplier": 0.5,
+                "unit": "usd_per_1m_tokens"
+            }
+        });
+        let parsed: RemoteKeyModels = serde_json::from_value(body).unwrap();
+        let pricing = parsed.pricing.expect("pricing present");
+        assert_eq!(pricing.cny_rate, Some(7.2));
+        assert_eq!(pricing.effective_multiplier, Some(0.5));
+        assert_eq!(pricing.peak_active, Some(false));
+        let price = parsed.models[0].price.as_ref().expect("price present");
+        assert_eq!(price.billing_mode.as_deref(), Some("token"));
+        assert_eq!(price.input, Some(3.0));
+        assert_eq!(price.base_input, Some(6.0));
+        assert_eq!(price.cache_write, None);
+        assert_eq!(price.multiplier, None, "field omitted by this fixture");
+    }
+
+    // v2 契约：模型级 `price.multiplier` 与顶层 `pricing.effective_multiplier`
+    // 各自独立解析——image 类模型自己的倍率（0.5）与顶层倍率（2.0，来自分组
+    // 高峰）不同，两者都必须原样保留，不能互相覆盖。
+    #[test]
+    fn remote_key_models_parses_per_model_multiplier_independent_of_top_level() {
+        let body = json!({
+            "models": [{
+                "id": "image-gen-1",
+                "tools": ["codex"],
+                "price": {
+                    "billing_mode": "image",
+                    "per_request": 0.02,
+                    "base_per_request": 0.04,
+                    "multiplier": 0.5
+                }
+            }],
+            "callable": true,
+            "pricing": {
+                "cny_rate": 7.2,
+                "effective_multiplier": 2.0
+            }
+        });
+        let parsed: RemoteKeyModels = serde_json::from_value(body).unwrap();
+        assert_eq!(
+            parsed.pricing.as_ref().and_then(|p| p.effective_multiplier),
+            Some(2.0)
+        );
+        let price = parsed.models[0].price.as_ref().expect("price present");
+        assert_eq!(price.billing_mode.as_deref(), Some("image"));
+        assert_eq!(price.multiplier, Some(0.5), "model's own multiplier, not the top-level one");
+    }
+
+    // v3 契约：`per_request_unit` 正确解析（"request"/"second"两种取值），
+    // 缺省时反序列化不报错（旧服务端兼容）。字段类型是
+    // `Option<Option<String>>`（Codex 复验 C4）：外层区分"字段是否出现"，
+    // 内层才是实际字符串值，详见
+    // `remote_model_price_distinguishes_missing_null_and_empty_per_request_unit`。
+    #[test]
+    fn remote_model_price_parses_per_request_unit() {
+        let with_second = json!({"per_request": 0.5, "per_request_unit": "second"});
+        let parsed: RemoteModelPrice = serde_json::from_value(with_second).unwrap();
+        assert_eq!(parsed.per_request_unit, Some(Some("second".to_string())));
+
+        let missing = json!({"per_request": 0.5});
+        let parsed: RemoteModelPrice = serde_json::from_value(missing).unwrap();
+        assert_eq!(parsed.per_request_unit, None);
+    }
+
+    // 旧服务端（未实现定价扩展）响应里没有 `pricing`/`price`，反序列化不能
+    // 报错，两者都应为 `None`（B1 契约"客户端展示规则"：无 pricing 整体不
+    // 显示价格区）。
+    #[test]
+    fn remote_key_models_tolerates_missing_pricing_fields_for_old_servers() {
+        let body = json!({
+            "models": [{"id": "gpt-5", "tools": ["codex"]}],
+            "callable": true
+        });
+        let parsed: RemoteKeyModels = serde_json::from_value(body).unwrap();
+        assert!(parsed.pricing.is_none());
+        assert!(parsed.models[0].price.is_none());
+    }
+
+    // 顶层 `pricing` 对象存在但个别倍率字段缺失：单独字段变 `None`，不影响
+    // 其余字段解析、不报错（服务端"倍率无法解析"时的部分降级场景）。
+    #[test]
+    fn remote_pricing_tolerates_partial_fields() {
+        let body = json!({
+            "models": [],
+            "callable": true,
+            "pricing": {"cny_rate": 7.2}
+        });
+        let parsed: RemoteKeyModels = serde_json::from_value(body).unwrap();
+        let pricing = parsed.pricing.expect("pricing present");
+        assert_eq!(pricing.cny_rate, Some(7.2));
+        assert_eq!(pricing.rate_multiplier, None);
+        assert_eq!(pricing.peak_active, None);
     }
 
     // 四种错误响应形态解码（方案第 3.1 节）。

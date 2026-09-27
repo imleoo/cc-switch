@@ -446,8 +446,13 @@ export function We2aiShell() {
     try {
       await update.checkUpdate();
     } catch (error) {
+      // 原始错误（如 updater 插件的 "Could not fetch a valid release JSON
+      // from the remote"）只写 console：它是英文、面向开发者的底层措辞，
+      // 直接展示给用户不友好，也不会随界面语言切换。toast 描述改用固定的
+      // 本地化提示，用户可操作的信息只有"稍后重试"。
+      console.error("[we2ai] check for updates failed", error);
       toast.error(t.checkFailed, {
-        description: extractErrorMessage(error) || undefined,
+        description: t.checkFailedHint,
       });
     }
   };
@@ -931,9 +936,26 @@ export function We2aiShell() {
 
                 {!update.isChecking &&
                   !update.hasUpdate &&
-                  update.updateInfo === null && (
-                    <span className="we2ai-label opacity-60">{t.upToDate}</span>
-                  )}
+                  (update.error ? (
+                    // 失败分支直接看 `update.error`，不依赖 `updateInfo`
+                    // （Opus 复核 P9）：`updateInfo` 只在成功查到新版本时
+                    // 才写入，失败不会清空它——"先查到更新、再检查失败"
+                    // 这种顺序下 `updateInfo` 仍然是上一次的非 null 值，
+                    // 若继续要求 `updateInfo === null` 才判定失败，会让
+                    // 这种场景既不显示"已是最新版本"（因为 hasUpdate 已被
+                    // 重置为 false）也不显示"检查失败"，状态区整个消失。
+                    <span
+                      className="we2ai-label text-[var(--we2ai-orange)]"
+                      role="status"
+                      data-testid="we2ai-update-check-failed"
+                    >
+                      {t.checkFailed}
+                    </span>
+                  ) : (
+                    <span className="we2ai-label opacity-60">
+                      {t.upToDate}
+                    </span>
+                  ))}
               </CardContent>
             </Card>
           </TabsContent>

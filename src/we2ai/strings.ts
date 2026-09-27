@@ -23,6 +23,30 @@ export interface We2aiStrings {
   loadingModels: string;
   noModels: string;
   modelNoTools: string;
+  // 分组折扣价（B1 定价扩展，docs/we2ai/B1定价契约.md）
+  priceInput: string;
+  priceOutput: string;
+  priceCacheRead: string;
+  /** 按次计费行的标签（Opus 复核 P8），与 `priceUnitPerRequest`（单位文案）分开。 */
+  pricePerRequest: string;
+  /** 按秒计费行的标签（Opus 复核 R1，取代"标签仍写按次、单位写每秒"这种
+   * 自相矛盾的组合），与 `priceUnitPerSecond`（单位文案）分开。 */
+  pricePerSecond: string;
+  priceUnitPerMillionTokens: string;
+  priceUnitPerRequest: string;
+  /** 视频等按秒计费的单位文案（v3 契约 `per_request_unit === "second"`）。 */
+  priceUnitPerSecond: string;
+  pricePeakActive: string;
+  /** 加价场景（`effective_multiplier > 1`）的倍率标注，`{multiplier}` 占位符
+   * 传入去尾零后的倍率数字（Opus 复核 P5）。 */
+  priceMultiplierBadge: string;
+  priceFootnote: string;
+  priceUnavailable: string;
+  /** 屏幕阅读器专用前缀，不影响可见文案（Opus 复核 P7）。 */
+  priceOriginalSrLabel: string;
+  priceDiscountedSrLabel: string;
+  /** 价格获取时间页脚，`{time}` 占位符传入 `HH:mm`（Opus 复核 P3）。 */
+  priceFetchedAt: string;
   // 工具写入（方案第 4 节、第 8 节 P4）
   toolNotInstalled: string;
   toolBroken: string;
@@ -93,6 +117,12 @@ export interface We2aiStrings {
   updateAvailable: string;
   installAndRestart: string;
   checkFailed: string;
+  /**
+   * 检查更新失败时 toast 的描述文案：不直接展示英文原始错误（如
+   * updater 插件抛出的 "Could not fetch a valid release JSON from the
+   * remote"），原始错误只写 console；这里是面向用户的友好提示。
+   */
+  checkFailedHint: string;
   officialWebsite: string;
   saveFailed: string;
 
@@ -176,6 +206,22 @@ const zh: We2aiStrings = {
   loadingModels: "正在加载可用模型",
   noModels: "这个 Key 当前没有可用的模型",
   modelNoTools: "暂无支持的工具",
+  priceInput: "输入",
+  priceOutput: "输出",
+  priceCacheRead: "缓存读",
+  pricePerRequest: "按次",
+  pricePerSecond: "按秒",
+  priceUnitPerMillionTokens: "每百万 tokens",
+  priceUnitPerRequest: "每次",
+  priceUnitPerSecond: "每秒",
+  pricePeakActive: "高峰价",
+  priceMultiplierBadge: "×{multiplier} 倍率",
+  priceFootnote:
+    "折后价已含该模型适用的分组倍率与高峰规则；长上下文分档、推理等级等可能使实际扣费不同",
+  priceUnavailable: "暂无定价",
+  priceOriginalSrLabel: "原价",
+  priceDiscountedSrLabel: "折后价",
+  priceFetchedAt: "价格获取于 {time}",
   toolNotInstalled: "未安装",
   toolBroken: "已安装但无法运行",
   toolDownload: "下载",
@@ -249,6 +295,7 @@ const zh: We2aiStrings = {
   updateAvailable: "发现新版本",
   installAndRestart: "安装并重启",
   checkFailed: "检查更新失败",
+  checkFailedHint: "暂时无法获取更新信息，请稍后重试",
   officialWebsite: "官方网站",
   saveFailed: "保存设置失败",
 
@@ -333,6 +380,22 @@ const en: We2aiStrings = {
   loadingModels: "Loading available models",
   noModels: "This key has no available models right now",
   modelNoTools: "No supported tools yet",
+  priceInput: "Input",
+  priceOutput: "Output",
+  priceCacheRead: "Cache read",
+  pricePerRequest: "Per request",
+  pricePerSecond: "Per second",
+  priceUnitPerMillionTokens: "per 1M tokens",
+  priceUnitPerRequest: "per request",
+  priceUnitPerSecond: "per second",
+  pricePeakActive: "Peak pricing",
+  priceMultiplierBadge: "×{multiplier} multiplier",
+  priceFootnote:
+    "The discounted price already reflects this model's applicable group multiplier and peak pricing. Long-context tiers and reasoning-effort levels may still change the actual charge.",
+  priceUnavailable: "No pricing available",
+  priceOriginalSrLabel: "Original price",
+  priceDiscountedSrLabel: "Discounted price",
+  priceFetchedAt: "Prices fetched at {time}",
   toolNotInstalled: "Not installed",
   toolBroken: "Installed but not working",
   toolDownload: "Download",
@@ -415,6 +478,7 @@ const en: We2aiStrings = {
   updateAvailable: "Update available",
   installAndRestart: "Install and restart",
   checkFailed: "Failed to check for updates",
+  checkFailedHint: "Couldn't fetch update information right now. Please try again later.",
   officialWebsite: "Official website",
   saveFailed: "Failed to save settings",
 
