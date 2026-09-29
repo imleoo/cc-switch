@@ -40,13 +40,11 @@ export interface We2aiStrings {
   /** 加价场景（`effective_multiplier > 1`）的倍率标注，`{multiplier}` 占位符
    * 传入去尾零后的倍率数字（Opus 复核 P5）。 */
   priceMultiplierBadge: string;
-  priceFootnote: string;
   priceUnavailable: string;
   /** 屏幕阅读器专用前缀，不影响可见文案（Opus 复核 P7）。 */
   priceOriginalSrLabel: string;
   priceDiscountedSrLabel: string;
   /** 价格获取时间页脚，`{time}` 占位符传入 `HH:mm`（Opus 复核 P3）。 */
-  priceFetchedAt: string;
   // 工具写入（方案第 4 节、第 8 节 P4）
   toolNotInstalled: string;
   toolBroken: string;
@@ -216,12 +214,9 @@ const zh: We2aiStrings = {
   priceUnitPerSecond: "每秒",
   pricePeakActive: "高峰价",
   priceMultiplierBadge: "×{multiplier} 倍率",
-  priceFootnote:
-    "折后价已含该模型适用的分组倍率与高峰规则；长上下文分档、推理等级等可能使实际扣费不同",
   priceUnavailable: "暂无定价",
   priceOriginalSrLabel: "原价",
   priceDiscountedSrLabel: "折后价",
-  priceFetchedAt: "价格获取于 {time}",
   toolNotInstalled: "未安装",
   toolBroken: "已安装但无法运行",
   toolDownload: "下载",
@@ -390,12 +385,9 @@ const en: We2aiStrings = {
   priceUnitPerSecond: "per second",
   pricePeakActive: "Peak pricing",
   priceMultiplierBadge: "×{multiplier} multiplier",
-  priceFootnote:
-    "The discounted price already reflects this model's applicable group multiplier and peak pricing. Long-context tiers and reasoning-effort levels may still change the actual charge.",
   priceUnavailable: "No pricing available",
   priceOriginalSrLabel: "Original price",
   priceDiscountedSrLabel: "Discounted price",
-  priceFetchedAt: "Prices fetched at {time}",
   toolNotInstalled: "Not installed",
   toolBroken: "Installed but not working",
   toolDownload: "Download",

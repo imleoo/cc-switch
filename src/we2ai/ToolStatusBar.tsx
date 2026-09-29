@@ -122,21 +122,21 @@ export function ToolStatusBar({ t, report, onRestored }: ToolStatusBarProps) {
           >
             <span>{WE2AI_TOOL_LABELS[tool.tool]}</span>
             {tool.broken ? (
-              <span className="text-[var(--we2ai-orange)]">{t.toolBroken}</span>
+              <span className="we2ai-ticker-warn">{t.toolBroken}</span>
             ) : tool.installed ? (
               tool.version && (
-                <span className="normal-case tracking-normal text-[color:color-mix(in_srgb,var(--we2ai-paper)_60%,transparent)]">
+                <span className="normal-case tracking-normal we2ai-ticker-muted">
                   {tool.version}
                 </span>
               )
             ) : (
               <>
-                <span className="text-[color:color-mix(in_srgb,var(--we2ai-paper)_60%,transparent)]">
+                <span className="we2ai-ticker-muted">
                   {t.toolNotInstalled}
                 </span>
                 <button
                   type="button"
-                  className="underline-offset-2 hover:text-[var(--we2ai-orange)] hover:underline"
+                  className="we2ai-ticker-action"
                   onClick={() =>
                     void settingsApi.openExternal(tool.downloadUrl)
                   }
@@ -145,7 +145,7 @@ export function ToolStatusBar({ t, report, onRestored }: ToolStatusBarProps) {
                 </button>
               </>
             )}
-            <span className="normal-case tracking-normal text-[color:color-mix(in_srgb,var(--we2ai-paper)_60%,transparent)]">
+            <span className="normal-case tracking-normal we2ai-ticker-muted">
               ·{" "}
               {tool.managedModel
                 ? formatWe2aiString(t.toolCurrentModel, {
@@ -156,7 +156,7 @@ export function ToolStatusBar({ t, report, onRestored }: ToolStatusBarProps) {
             {tool.managedModel && (
               <button
                 type="button"
-                className="underline-offset-2 hover:text-[var(--we2ai-orange)] hover:underline"
+                className="we2ai-ticker-action"
                 onClick={() => openConfirm(tool.tool)}
               >
                 {t.restoreOfficialAction}

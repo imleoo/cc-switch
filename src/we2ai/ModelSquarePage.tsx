@@ -23,7 +23,6 @@ import { WE2AI_TOOL_LABELS } from "./toolLabels";
 import {
   buildWe2aiPriceRows,
   formatWe2aiMultiplier,
-  formatWe2aiTimeHHmm,
   isWe2aiModelSubjectToGroupPeak,
   isWe2aiPriceSurcharged,
   resolveWe2aiEffectiveMultiplier,
@@ -73,15 +72,11 @@ function ModelPriceSection({
   price,
   pricing,
   dimmed,
-  fetchedAt,
 }: {
   t: We2aiStrings;
   price: We2aiModelPrice | null;
   pricing: We2aiPricing | null;
   dimmed: boolean;
-  /** 这批模型/价格数据的拉取时间戳（毫秒），用于页脚展示新鲜度（Opus
-   * 复核 P3）；还没拉取成功过时为 `null`，不显示这一行。 */
-  fetchedAt: number | null;
 }) {
   if (!pricing) return null;
   const rows = buildWe2aiPriceRows(price, pricing);
@@ -173,18 +168,7 @@ function ModelPriceSection({
               </li>
             ))}
           </ul>
-          <p className={`mt-1 ${mutedClass}`}>{t.priceFootnote}</p>
         </>
-      )}
-      {fetchedAt != null && (
-        <p
-          className={`mt-1 ${mutedClass}`}
-          data-testid="we2ai-price-fetched-at"
-        >
-          {formatWe2aiString(t.priceFetchedAt, {
-            time: formatWe2aiTimeHHmm(fetchedAt),
-          })}
-        </p>
       )}
     </div>
   );
@@ -303,10 +287,9 @@ export function ModelSquarePage({
   const [models, setModels] = useState<We2aiKeyModels | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
-  // 这批模型/价格数据的拉取时间（毫秒），供价格区页脚展示新鲜度、也用来
-  // 判断是否已经"过期"需要静默刷新（Opus 复核 P3）。用 ref 镜像一份供
-  // 不订阅重渲染的事件监听器读取最新值，避免每次拉取都要重新订阅监听器。
-  const [modelsFetchedAt, setModelsFetchedAt] = useState<number | null>(null);
+  // 这批模型/价格数据的拉取时间（毫秒），用来判断是否已经"过期"需要
+  // 静默刷新（Opus 复核 P3）。用 ref 供不订阅重渲染的事件监听器读取最新值，
+  // 避免每次拉取都要重新订阅监听器。
   const modelsFetchedAtRef = useRef<number | null>(null);
   // 只采纳最后一次模型请求的结果：快速切换 Key 时，先发出的慢请求不能覆盖
   // 后选中 Key 的模型列表。
@@ -393,10 +376,9 @@ export function ModelSquarePage({
         setModelsError(null);
         setModels(null);
         // 新的前台请求（切换 Key、手动刷新）意味着旧数据即将被替换，不能
-        // 让页脚在这次请求完成前继续展示上一个 Key/上一批数据的拉取时间
+        // 让过期判断在这次请求完成前沿用上一个 Key/上一批数据的拉取时间
         // （Opus 复核 Q1）。
         modelsFetchedAtRef.current = null;
-        setModelsFetchedAt(null);
       }
       try {
         const result = await we2aiApi.keyModels(keyId);
@@ -406,7 +388,6 @@ export function ModelSquarePage({
           // 了，不应该继续挂着一条"获取失败，请重试"（Opus 复核 Q1）。
           setModelsError(null);
           modelsFetchedAtRef.current = Date.now();
-          setModelsFetchedAt(modelsFetchedAtRef.current);
         }
       } catch (error) {
         if (seq === modelsRequestSeq.current) {
@@ -454,7 +435,6 @@ export function ModelSquarePage({
       setLoadingModels(false);
       setModels(null);
       modelsFetchedAtRef.current = null;
-      setModelsFetchedAt(null);
     }
   }, [selectedKeyId, loadModels, modelsReloadTick]);
 
@@ -639,7 +619,7 @@ export function ModelSquarePage({
       )}
 
       {models && models.models.length > 0 && (
-        <ul className="we2ai-model-grid grid sm:grid-cols-2">
+        <ul className="we2ai-model-grid">
           {models.models.map((model) => {
             const isInUseSomewhere = model.tools.some(
               (tool) =>
@@ -655,17 +635,11 @@ export function ModelSquarePage({
                 data-testid="we2ai-model-card"
               >
                 <div className="mb-3 flex items-baseline justify-between gap-2">
-                  <span className="break-all font-mono text-sm font-bold">
+                  <span className="break-words font-mono text-sm font-bold">
                     {model.id}
                   </span>
                   {model.provider && (
-                    <span
-                      className={`we2ai-chip shrink-0 ${
-                        isInUseSomewhere
-                          ? "border-[var(--we2ai-paper)] text-[var(--we2ai-paper)]"
-                          : ""
-                      }`}
-                    >
+                    <span className="we2ai-model-provider shrink-0">
                       {model.provider}
                     </span>
                   )}
@@ -702,13 +676,9 @@ export function ModelSquarePage({
                           onClick={() => {
                             setApplyTarget({ tool, model: model.id });
                           }}
-                          className={
-                            inUse
-                              ? "rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-ink)]"
-                              : isInUseSomewhere
-                                ? "rounded-lg border-[var(--we2ai-paper)] bg-transparent text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-paper)] hover:text-[var(--we2ai-ink)]"
-                                : secondaryButtonClass
-                          }
+                          className={`we2ai-model-action ${
+                            inUse ? "we2ai-model-action--selected" : ""
+                          }`}
                         >
                           {WE2AI_TOOL_LABELS[tool]}
                           {inUse ? " ✓" : ""}
@@ -722,7 +692,6 @@ export function ModelSquarePage({
                   price={model.price}
                   pricing={models.pricing}
                   dimmed={isInUseSomewhere}
-                  fetchedAt={modelsFetchedAt}
                 />
               </li>
             );

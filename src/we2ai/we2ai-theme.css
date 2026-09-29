@@ -78,9 +78,49 @@
 
 /* 票据条（顶栏工具状态）：ink 底 paper mono 字 */
 .we2ai-ticker {
-  background: var(--we2ai-ink);
-  color: var(--we2ai-paper);
+  /* 醒目的蓝底，深色主题换更亮的蓝；文字在两种主题下都是浅色 */
+  background: var(--we2ai-blue);
+  color: #f4f1e8;
   font-family: var(--we2ai-font-mono);
+}
+
+.dark .we2ai-ticker {
+  background: #3a4dff;
+}
+
+.we2ai-ticker-muted {
+  color: rgb(244 241 232 / 0.8);
+}
+
+.we2ai-ticker-warn {
+  color: #ffe14d;
+  font-weight: 900;
+}
+
+/* 顶栏里的可点击项（恢复官方 / 下载）：实体按钮，颜色随主题：
+ * 浅色 = 米白底黑边黑字，深色 = 黑底浅边浅字 */
+.we2ai-ticker-action {
+  padding: 1px 8px;
+  border: 2px solid var(--we2ai-ink);
+  border-radius: 0;
+  background: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  box-shadow: 2px 2px 0 var(--we2ai-ink);
+  font: inherit;
+  font-weight: 900;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.we2ai-ticker-action:hover {
+  background: var(--we2ai-orange);
+  color: var(--we2ai-paper);
+}
+
+.we2ai-ticker-action:focus-visible {
+  outline: 2px solid #f4f1e8;
+  outline-offset: 2px;
 }
 
 .we2ai-ticker-item {
@@ -93,6 +133,8 @@
 /* 模型广场：格子网格 */
 .we2ai-model-grid {
   display: grid;
+  /* 按可用宽度自动分列：每列不窄于 220px，余量平分 */
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   border-top: 2px solid var(--we2ai-ink);
   border-left: 2px solid var(--we2ai-ink);
 }
@@ -105,10 +147,6 @@
   transition: background-color 0.12s ease;
 }
 
-.we2ai-model-cell:hover {
-  background: var(--we2ai-paper-2);
-}
-
 .we2ai-model-cell--orange {
   background: var(--we2ai-orange);
   color: var(--we2ai-paper);
@@ -116,4 +154,84 @@
 
 .we2ai-model-cell--orange:hover {
   background: var(--we2ai-orange);
+}
+
+/* 滚动只发生在内容区：文档自身不滚，避免露出 body 的白底 */
+html:has(.we2ai-theme),
+body:has(.we2ai-theme) {
+  overflow: hidden;
+}
+
+/* 内容区滚动条：全局样式把所有滚动条隐藏了，这里单独打开 */
+.we2ai-scroll {
+  scrollbar-width: auto;
+}
+
+.we2ai-scroll::-webkit-scrollbar {
+  display: block;
+  width: 12px;
+}
+
+.we2ai-scroll::-webkit-scrollbar-track {
+  background: var(--we2ai-paper-2);
+  border-left: 2px solid var(--we2ai-ink);
+}
+
+.we2ai-scroll::-webkit-scrollbar-thumb {
+  background: var(--we2ai-ink);
+  border: 2px solid var(--we2ai-paper-2);
+}
+
+/* 模型格：供应商是纯文字（不可点击），工具是直角硬阴影实体按钮（可点击） */
+.we2ai-theme .we2ai-model-provider {
+  font-family: var(--we2ai-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--we2ai-ink);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.we2ai-theme .we2ai-model-cell--orange {
+  --we2ai-ink: #0a0a08;
+  --we2ai-paper: #f4f1e8;
+  --we2ai-paper-2: #e7e2d2;
+}
+
+.we2ai-theme .we2ai-model-action {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 2px solid var(--we2ai-ink);
+  border-radius: 0;
+  background: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  box-shadow: 2px 2px 0 var(--we2ai-ink);
+  font-family: var(--we2ai-font-mono);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.we2ai-theme .we2ai-model-action:enabled:hover {
+  background: var(--we2ai-paper-2);
+  color: var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-model-action:focus-visible {
+  outline: 2px solid var(--we2ai-ink);
+  outline-offset: 3px;
+}
+
+.we2ai-theme .we2ai-model-action--selected,
+.we2ai-theme .we2ai-model-action--selected:enabled:hover {
+  background: var(--we2ai-ink);
+  color: var(--we2ai-paper);
+}
+
+.we2ai-theme .we2ai-model-action:disabled {
+  opacity: 1;
+  box-shadow: none;
+  border-style: dashed;
+  cursor: not-allowed;
 }

@@ -9,7 +9,6 @@ import {
   formatWe2aiPriceAmounts,
   formatWe2aiPriceLine,
   formatWe2aiPriceNumber,
-  formatWe2aiTimeHHmm,
   isWe2aiModelSubjectToGroupPeak,
   isWe2aiPriceDiscounted,
   isWe2aiPriceSurcharged,
@@ -464,17 +463,5 @@ describe("resolveWe2aiEffectiveMultiplier (v2 契约：模型级 multiplier)", (
     );
     expect(row?.line).toBe("¥0.02 / $0.02");
     expect(row?.strikethroughLine).toBe("¥0.04 / $0.04");
-  });
-});
-
-describe("formatWe2aiTimeHHmm", () => {
-  it("formats a timestamp as local HH:mm, zero-padded", () => {
-    const d = new Date(2026, 0, 1, 9, 5, 0);
-    expect(formatWe2aiTimeHHmm(d.getTime())).toBe("09:05");
-  });
-
-  it("zero-pads both hours and minutes at the day boundary", () => {
-    const d = new Date(2026, 0, 1, 0, 0, 0);
-    expect(formatWe2aiTimeHHmm(d.getTime())).toBe("00:00");
   });
 });

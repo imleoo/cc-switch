@@ -346,14 +346,3 @@ export function isWe2aiModelSubjectToGroupPeak(
   return Math.abs(price.multiplier - pricing.effectiveMultiplier) <= MULTIPLIER_EPSILON;
 }
 
-/**
- * 价格获取时间的 `HH:mm` 展示（本地时区，Opus 复核 P3）：模型广场价格会
- * 随高峰/峰谷边界变化，页脚标注这批价格的拉取时间，帮助用户判断是否
- * 需要手动刷新。纯函数、不依赖 `Date.now()`，方便单测传入固定时间戳。
- */
-export function formatWe2aiTimeHHmm(timestampMs: number): string {
-  const d = new Date(timestampMs);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}

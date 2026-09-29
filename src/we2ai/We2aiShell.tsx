@@ -579,7 +579,7 @@ export function We2aiShell() {
   // 有新的 hook 调用——不违反 hooks 调用顺序规则。
   if (!sessionChecked) {
     return (
-      <div className="we2ai-theme flex h-screen w-screen items-center justify-center">
+      <div className="we2ai-theme fixed inset-0 flex items-center justify-center">
         {isMac() && (
           <div
             className="fixed inset-x-0 top-0 h-8"
@@ -602,7 +602,7 @@ export function We2aiShell() {
       // 登出或会话终止时本机凭据没清掉：重启可能恢复旧会话，登录页上方给出
       // 提示与重试入口，不能静默（Codex 验收第 5 轮高危项 2）。
       return (
-        <div className="we2ai-theme flex h-screen w-screen flex-col">
+        <div className="we2ai-theme fixed inset-0 flex flex-col">
           <div
             role="alert"
             className="flex items-center justify-between gap-3 border-b-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-orange)] px-4 py-2 text-sm font-medium text-[var(--we2ai-paper)]"
@@ -628,7 +628,7 @@ export function We2aiShell() {
   }
 
   return (
-    <div className="we2ai-theme flex h-screen w-screen flex-col">
+    <div className="we2ai-theme fixed inset-0 flex flex-col">
       <header
         className={`flex h-14 shrink-0 items-center justify-between border-b-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] pr-4 ${macDragPadding}`}
         data-tauri-drag-region
@@ -775,8 +775,8 @@ export function We2aiShell() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-6">
-        <Tabs defaultValue="marketplace" className="mx-auto max-w-3xl">
+      <div className="we2ai-scroll flex-1 overflow-y-auto p-6">
+        <Tabs defaultValue="marketplace" className="w-full">
           <TabsList className="rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
             <TabsTrigger
               value="marketplace"
@@ -818,7 +818,7 @@ export function We2aiShell() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="settings" className="space-y-4">
+          <TabsContent value="settings" className="max-w-3xl space-y-4">
             <Card className="we2ai-panel">
               <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
                 <CardTitle className="we2ai-heading text-xl">

@@ -339,7 +339,10 @@ describe("ModelSquarePage", () => {
       expect(
         within(card).queryByTestId("we2ai-price-row-cacheRead"),
       ).not.toBeInTheDocument();
-      expect(within(card).getByText(t.priceFootnote)).toBeInTheDocument();
+      expect(within(card).queryByText(/折后价已含/)).not.toBeInTheDocument();
+      expect(
+        within(card).queryByTestId("we2ai-price-fetched-at"),
+      ).not.toBeInTheDocument();
       expect(
         within(card).queryByTestId("we2ai-price-peak-active"),
       ).not.toBeInTheDocument();
@@ -813,49 +816,6 @@ describe("ModelSquarePage", () => {
       ).toHaveTextContent(t.priceDiscountedSrLabel);
     });
 
-    // Opus 复核 P3：价格区页脚展示这批数据的拉取时间。
-    it("shows the fetch time in the footer once models have loaded", async () => {
-      const card = await renderWithModels({
-        models: [
-          {
-            id: "claude-sonnet-4-5",
-            provider: "anthropic",
-            tools: ["claude_code"],
-            price: {
-              billingMode: "token",
-              input: 3,
-              output: null,
-              cacheRead: null,
-              cacheWrite: null,
-              cacheWrite1h: null,
-              perRequest: null,
-              baseInput: null,
-              baseOutput: null,
-              baseCacheRead: null,
-              baseCacheWrite: null,
-              baseCacheWrite1h: null,
-              basePerRequest: null,
-              multiplier: null,
-              perRequestUnit: null,
-            },
-          },
-        ],
-        callable: true,
-        blockedReason: null,
-        pricing: {
-          cnyRate: 7.2,
-          rateMultiplier: 1,
-          peakMultiplier: 1,
-          peakActive: false,
-          effectiveMultiplier: 1,
-          unit: "usd_per_1m_tokens",
-        },
-      });
-
-      expect(
-        within(card).getByTestId("we2ai-price-fetched-at"),
-      ).toBeInTheDocument();
-    });
   });
 
   // Opus 复核 P3：价格会随高峰/峰谷边界变化，验证过期时静默重拉，不打断
