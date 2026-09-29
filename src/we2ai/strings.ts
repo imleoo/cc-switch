@@ -188,6 +188,21 @@ export interface We2aiStrings {
   localCleanupPendingBanner: string;
   /** Codex 代码评审第 5 轮中危项 5：等待系统钥匙串授权超过 10 秒的提示。 */
   waitingForKeyringAuthorization: string;
+
+  // 公告（功能 19）
+  announcementBell: string;
+  /** `{count}` 为未读数。 */
+  announcementBellUnread: string;
+  announcementListTitle: string;
+  announcementListDescription: string;
+  announcementListEmpty: string;
+  announcementUnreadTag: string;
+  announcementReadTag: string;
+  announcementGotIt: string;
+  announcementClose: string;
+  announcementDialogDescription: string;
+  /** `{count}` 为排在后面的未读弹窗公告条数。 */
+  announcementQueueRemaining: string;
 }
 
 const zh: We2aiStrings = {
@@ -357,6 +372,17 @@ const zh: We2aiStrings = {
   lastRegionSaveFailed: "无法保存区域选择，下次启动可能恢复为之前的区域",
   localCleanupPendingBanner: "本机保存的登录凭据未能完全清除，请重试",
   waitingForKeyringAuthorization: "正在等待系统钥匙串授权",
+  announcementBell: "公告",
+  announcementBellUnread: "公告，{count} 条未读",
+  announcementListTitle: "公告",
+  announcementListDescription: "点击一条公告查看详情，未读的以粗体显示。",
+  announcementListEmpty: "暂无公告",
+  announcementUnreadTag: "未读",
+  announcementReadTag: "已读",
+  announcementGotIt: "知道了",
+  announcementClose: "关闭",
+  announcementDialogDescription: "来自 WE2AI 的公告",
+  announcementQueueRemaining: "还有 {count} 条未读公告",
 };
 
 const en: We2aiStrings = {
@@ -548,6 +574,18 @@ const en: We2aiStrings = {
   localCleanupPendingBanner:
     "Couldn't fully clear the sign-in credentials saved on this machine. Please retry.",
   waitingForKeyringAuthorization: "Waiting for system keychain authorization",
+  announcementBell: "Announcements",
+  announcementBellUnread: "Announcements, {count} unread",
+  announcementListTitle: "Announcements",
+  announcementListDescription:
+    "Select an announcement to read it. Unread ones are shown in bold.",
+  announcementListEmpty: "No announcements",
+  announcementUnreadTag: "Unread",
+  announcementReadTag: "Read",
+  announcementGotIt: "Got it",
+  announcementClose: "Close",
+  announcementDialogDescription: "Announcement from WE2AI",
+  announcementQueueRemaining: "{count} more unread announcement(s)",
 };
 
 const TABLE: Record<We2aiLanguage, We2aiStrings> = { zh, en };

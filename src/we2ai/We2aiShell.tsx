@@ -22,6 +22,7 @@ import {
   type We2aiSettings,
   type We2aiToolStatusReport,
 } from "./api";
+import { AnnouncementCenter } from "./AnnouncementCenter";
 import { LoginPage, notifyLogoutOutcome } from "./LoginPage";
 import { ModelSquarePage } from "./ModelSquarePage";
 import { ToolStatusBar } from "./ToolStatusBar";
@@ -646,6 +647,12 @@ export function We2aiShell() {
               {formatWe2aiString(t.loggedInAs, { email: session.emailMasked })}
             </span>
           )}
+          {/* 以会话身份作 key：换账号或换区域后整体重建，不沿用上个会话的公告。 */}
+          <AnnouncementCenter
+            key={`${session.region ?? ""}:${session.emailMasked ?? ""}`}
+            t={t}
+            onSessionMaybeEnded={() => void refreshSessionStatus()}
+          />
           <Button
             variant="ghost"
             size="sm"

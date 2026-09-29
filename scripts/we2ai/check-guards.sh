@@ -398,7 +398,8 @@ core:window:allow-close
 core:window:allow-set-decorations
 process:allow-exit
 process:allow-restart
-dialog:default"
+dialog:default
+notification:allow-is-permission-granted"
 actual_perms="$(node -e 'const c=require(process.argv[1]);console.log((c.permissions||[]).join("\n"))' "$PWD/$caps_file")"
 if [[ "$actual_perms" != "$expected_perms" ]]; then
   err "$caps_file: permissions 与登记清单不一致（自定义开发功能列表.md 第 7 节）。实际：
@@ -1239,6 +1240,67 @@ fi
 we2ai_shell_tsx=src/we2ai/We2aiShell.tsx
 if ! grep -q 'update\.error' "$we2ai_shell_tsx"; then
   err "$we2ai_shell_tsx: 找不到 update.error 判断，检查更新失败状态展示（Opus 复核 P9）可能已回归"
+fi
+
+# 4.13 功能 19（公告同步与系统通知）：机械字面量检查，确认注册点、依赖与净化配置
+# 没有被上游同步静默还原。语义行为由 `cargo test --lib we2ai::announcements` 与
+# `tests/we2ai/announcementMarkdown.test.tsx`、`tests/integration/AnnouncementCenter.test.tsx` 覆盖。
+lib_rs=src-tauri/src/lib.rs
+for needle in \
+  'we2ai::announcements::we2ai_list_announcements' \
+  'we2ai::announcements::we2ai_mark_announcement_read' \
+  'we2ai::announcements::start_background_poller' \
+  'tauri_plugin_notification::init()'; do
+  if ! grep -qF "$needle" "$lib_rs"; then
+    err "$lib_rs: 找不到 ${needle}（功能 19：公告命令/后台轮询/通知插件注册）"
+  fi
+done
+if ! grep -qE '^tauri-plugin-notification = "=2\.4\.0"' src-tauri/Cargo.toml; then
+  err "src-tauri/Cargo.toml: 缺少固定版本 tauri-plugin-notification = \"=2.4.0\"（功能 19；新版会牵动要求 rustc >= 1.89 的依赖）"
+fi
+notify_rust_version="$(awk '/^name = "notify-rust"$/{getline; print; exit}' src-tauri/Cargo.lock)"
+if [[ "$notify_rust_version" != 'version = "4.11.7"' ]]; then
+  err "src-tauri/Cargo.lock: notify-rust 应锁定 4.11.7（4.18+ 要求 rustc >= 1.89），实际：${notify_rust_version:-未找到}"
+fi
+for dep in marked dompurify; do
+  if ! grep -qE "^    \"${dep}\":" package.json; then
+    err "package.json: 缺少依赖 ${dep}（功能 19：公告 Markdown 渲染与净化）"
+  fi
+done
+if ! grep -q 'AnnouncementCenter' "$we2ai_shell_tsx"; then
+  err "$we2ai_shell_tsx: 找不到 AnnouncementCenter，顶栏公告铃铛（功能 19）可能已被移除"
+fi
+announcement_md=src/we2ai/announcementMarkdown.ts
+# 净化配置必须逐字保持：标签白名单引用、仅 href 属性、URI 正则实际取值仅 http(s)。
+for needle in \
+  'ALLOWED_TAGS: [...ANNOUNCEMENT_ALLOWED_TAGS]' \
+  'ALLOWED_ATTR: ["href"]' \
+  'ALLOWED_URI_REGEXP: HTTP_URL' \
+  'const HTTP_URL = /^https?:\/\//i;'; do
+  if ! grep -qF "$needle" "$announcement_md"; then
+    err "$announcement_md: 找不到 ${needle}，公告净化白名单（功能 19）可能已被放宽或移除"
+  fi
+done
+# 标签白名单的实际内容必须恰好是约定的 16 个文本排版标签。
+announcement_tags="$(awk '/ANNOUNCEMENT_ALLOWED_TAGS: readonly string\[\] = \[/{p=1;next} p&&/^\];/{exit} p{gsub(/[ ",]/,"");print}' "$announcement_md" | sort | tr '\n' ' ')"
+announcement_tags_expected="a blockquote br code em h1 h2 h3 h4 hr li ol p pre strong ul "
+if [[ "$announcement_tags" != "$announcement_tags_expected" ]]; then
+  err "$announcement_md: 标签白名单被改动（功能 19），期望 [${announcement_tags_expected}]，实际 [${announcement_tags}]"
+fi
+# 链接点击拦截同样是安全边界：所有点击/中键/链接右键都不能让 WebView 导航，
+# 只有 http(s) 才交给系统浏览器。
+announcement_dialog=src/we2ai/AnnouncementDialog.tsx
+for needle in \
+  'event.preventDefault();' \
+  'isOpenableAnnouncementUrl(href)' \
+  'onAuxClick=' \
+  'onContextMenu='; do
+  if ! grep -qF "$needle" "$announcement_dialog"; then
+    err "$announcement_dialog: 找不到 ${needle}，公告链接点击拦截（功能 19）可能已被移除"
+  fi
+done
+if ! grep -q 'NOTIFIED_MAX: usize = 200' src-tauri/src/we2ai/announcements.rs; then
+  err "src-tauri/src/we2ai/announcements.rs: 已通知 id 上限 NOTIFIED_MAX 不是 200（功能 19）"
 fi
 
 if [[ "$fail" == 0 ]]; then

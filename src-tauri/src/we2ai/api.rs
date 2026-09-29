@@ -512,6 +512,39 @@ impl ApiClient {
         .await
     }
 
+    /// 当前用户可见的公告（`GET /api/v1/announcements`）。服务端已按生效时间窗
+    /// 与定向条件过滤；`unread_only` 为 true 时只返回未读。
+    pub async fn list_announcements(
+        &self,
+        access_token: &str,
+        unread_only: bool,
+    ) -> Result<Vec<RemoteAnnouncement>, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::GET, "/api/v1/announcements")
+                .query(&[("unread_only", unread_only)])
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
+    /// 把一条公告标记为已读（`POST /api/v1/announcements/:id/read`，服务端为
+    /// upsert，重复调用无副作用）。
+    pub async fn mark_announcement_read(
+        &self,
+        access_token: &str,
+        id: i64,
+    ) -> Result<(), ApiCallError> {
+        self.send::<Value>(
+            self.request(
+                reqwest::Method::POST,
+                &format!("/api/v1/announcements/{id}/read"),
+            )
+            .bearer_auth(access_token),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// 供已登录后受保护接口使用的通用 GET，外部按需扩展（P2 阶段仅 `get_profile`
     /// 使用受保护接口，此处保留供 session.rs 的失败分类测试复用同一套 send 逻辑）。
     #[cfg(test)]
@@ -541,6 +574,31 @@ impl ApiClient {
         )
         .await
     }
+}
+
+/// `GET /api/v1/announcements` 的单项（SubPanel `dto.UserAnnouncement`）。
+/// 时间字段保持 RFC3339 字符串，由使用方按需解析。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteAnnouncement {
+    pub id: i64,
+    #[serde(default)]
+    pub title: String,
+    /// Markdown 正文。
+    #[serde(default)]
+    pub content: String,
+    /// `"popup"` | `"silent"`；未识别的值按 `silent` 处理。
+    #[serde(default)]
+    pub notify_mode: String,
+    #[serde(default)]
+    pub starts_at: Option<String>,
+    #[serde(default)]
+    pub ends_at: Option<String>,
+    #[serde(default)]
+    pub read_at: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 /// SubPanel 分页响应 `data`（`response.Paginated`）。

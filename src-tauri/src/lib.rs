@@ -488,6 +488,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // we2ai: 公告系统通知（后台轮询发现新的 popup 公告时由 Rust 侧直接发送）
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -1269,6 +1271,8 @@ pub fn run() {
                 app.manage(We2aiSessionState(session_manager));
                 app.manage(We2aiCaptchaState(Arc::new(CaptchaRegistry::new())));
                 app.manage(we2ai::keys::We2aiKeyState::default());
+                // 公告后台轮询：只在会话 Active 时发请求，会话结束/换账号即重置。
+                we2ai::announcements::start_background_poller(app.handle());
                 log::info!("✓ WE2AI session manager initialized");
             }
 
@@ -1549,6 +1553,8 @@ pub fn run() {
                 we2ai::keys::we2ai_list_keys,
                 we2ai::keys::we2ai_select_key,
                 we2ai::keys::we2ai_key_models,
+                we2ai::announcements::we2ai_list_announcements,
+                we2ai::announcements::we2ai_mark_announcement_read,
                 we2ai::commands_apply::we2ai_tool_status,
                 we2ai::commands_apply::we2ai_cc_switch_running_quick,
                 we2ai::commands_apply::we2ai_apply_plan,

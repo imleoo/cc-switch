@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 /**
  * WE2AI 前端可读写的设置子集，字段对应 `src-tauri/src/we2ai/commands.rs`
@@ -288,6 +289,26 @@ export interface We2aiApplyOutcome {
 }
 
 /**
+ * 用户公告（`src-tauri/src/we2ai/announcements.rs` 的 `AnnouncementView`）。
+ * `content` 是 Markdown，必须经 `announcementMarkdown.ts` 净化后再渲染；
+ * 已读以服务端 `readAt` 为准。
+ */
+export interface We2aiAnnouncement {
+  id: number;
+  title: string;
+  content: string;
+  /** `"popup"` 登录后弹窗；`"silent"` 只在铃铛里显示。 */
+  notifyMode: "popup" | "silent";
+  startsAt: string | null;
+  endsAt: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+/** Rust 后台轮询发现未读公告集合变化时发出的事件名。 */
+export const WE2AI_ANNOUNCEMENTS_CHANGED_EVENT = "we2ai-announcements-changed";
+
+/**
  * WE2AI 自有命令的前端封装。P0 阶段只有设置读写——上游 `get_settings` /
  * `save_settings` 在 WE2AI 模式下被 IPC 白名单拒绝，不能复用 `settingsApi`。
  * P2 新增登录会话命令：前端只传业务字段，验证码票据完全由 Rust 侧
@@ -441,5 +462,23 @@ export const we2aiApi = {
       overwrite: request.overwrite ?? false,
       expectedExtraChanges: request.expectedExtraChanges ?? [],
     });
+  },
+
+  /** 当前账号可见的全部公告（含已读），创建时间从旧到新。 */
+  async listAnnouncements(): Promise<We2aiAnnouncement[]> {
+    return (
+      (await invoke<We2aiAnnouncement[] | null>("we2ai_list_announcements", {
+        unreadOnly: false,
+      })) ?? []
+    );
+  },
+
+  async markAnnouncementRead(id: number): Promise<void> {
+    await invoke("we2ai_mark_announcement_read", { id });
+  },
+
+  /** 订阅 Rust 后台轮询的"公告有变化"事件，返回取消订阅函数。 */
+  async onAnnouncementsChanged(handler: () => void): Promise<() => void> {
+    return await listen(WE2AI_ANNOUNCEMENTS_CHANGED_EVENT, () => handler());
   },
 };

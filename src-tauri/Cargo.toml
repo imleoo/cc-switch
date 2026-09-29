@@ -46,6 +46,8 @@ tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 tauri-plugin-deep-link = "2"
+# we2ai: 公告系统通知（固定 =2.4.0：MSRV 1.77，配合 Cargo.lock 中 notify-rust 4.11.7 可在 rustc 1.88 构建）
+tauri-plugin-notification = "=2.4.0"
 tauri-plugin-window-state = "2"
 dirs = "5.0"
 toml = "0.8"
