@@ -49,12 +49,20 @@ export function useAnnouncements(onSessionMaybeEnded: () => void = () => {}) {
     }
   }, []);
 
+  // 已在请求中的标记：连续刷新时同一条不并发重复提交。
+  const markingIds = useRef(new Set<number>());
+
   const markRead = useCallback(
     (id: number) => {
-      void we2aiApi.markAnnouncementRead(id).catch((error) => {
-        console.debug("[we2ai] mark announcement read failed", error);
-        reportError(error);
-      });
+      if (markingIds.current.has(id)) return;
+      markingIds.current.add(id);
+      void we2aiApi
+        .markAnnouncementRead(id)
+        .catch((error) => {
+          console.debug("[we2ai] mark announcement read failed", error);
+          reportError(error);
+        })
+        .finally(() => markingIds.current.delete(id));
     },
     [reportError],
   );

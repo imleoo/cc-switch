@@ -388,6 +388,33 @@ describe("AnnouncementCenter", () => {
     await waitFor(() => expect(markRead).toHaveBeenCalledTimes(2));
   });
 
+  it("does not submit the same mark-read twice while one is still in flight", async () => {
+    const { markRead, listAnnouncements } = mockApi([ann(1)]);
+    let settle!: () => void;
+    markRead.mockImplementation(
+      () => new Promise<void>((resolve) => (settle = resolve)),
+    );
+    render(<AnnouncementCenter t={t} />);
+
+    await screen.findByRole("dialog");
+    await userEvent.click(
+      screen.getByRole("button", { name: t.announcementGotIt }),
+    );
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(1));
+
+    // 慢请求期间连续两次刷新，服务端仍返回未读：不能再并发提交。
+    await waitFor(() => expect(changedHandler).not.toBeNull());
+    await act(async () => changedHandler?.());
+    await act(async () => changedHandler?.());
+    await waitFor(() => expect(listAnnouncements).toHaveBeenCalledTimes(3));
+    expect(markRead).toHaveBeenCalledTimes(1);
+
+    // 请求结束后，下一次仍显示未读的拉取才会重试。
+    await act(async () => settle());
+    await act(async () => changedHandler?.());
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(2));
+  });
+
   it("asks the shell to re-check the session on session-type errors, not on network errors", async () => {
     const onSessionMaybeEnded = vi.fn();
     let error: We2aiApiError = { code: "TRANSIENT", message: "x" };
