@@ -1299,6 +1299,12 @@ for needle in \
     err "$announcement_dialog: 找不到 ${needle}，公告链接点击拦截（功能 19）可能已被移除"
   fi
 done
+# 刷新事件名是 Rust/TS 两侧各写一份的字面量，任一侧改动都会让前端静默收不到事件。
+rust_event="$(sed -n 's/.*EVENT_CHANGED: &str = "\([^"]*\)".*/\1/p' src-tauri/src/we2ai/announcements.rs)"
+ts_event="$(sed -n 's/.*WE2AI_ANNOUNCEMENTS_CHANGED_EVENT = "\([^"]*\)".*/\1/p' src/we2ai/api.ts)"
+if [[ -z "$rust_event" || "$rust_event" != "$ts_event" ]]; then
+  err "公告刷新事件名两侧不一致（功能 19）：announcements.rs='${rust_event}'，api.ts='${ts_event}'"
+fi
 if ! grep -q 'NOTIFIED_MAX: usize = 200' src-tauri/src/we2ai/announcements.rs; then
   err "src-tauri/src/we2ai/announcements.rs: 已通知 id 上限 NOTIFIED_MAX 不是 200（功能 19）"
 fi

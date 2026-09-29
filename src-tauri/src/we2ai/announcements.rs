@@ -299,8 +299,9 @@ pub struct PollState {
     /// 本进程内已处理过、不应再发系统通知的公告：窗口在前台时已走弹窗的，
     /// 以及已调用过通知（或宿主报告未发出）的。不持久化。
     handled: HashSet<i64>,
-    /// 上一次轮询的未读集合，用于判断是否要通知前端刷新。
-    last_unread: Option<BTreeSet<i64>>,
+    /// 上一次轮询的未读集合（id + `updated_at`），用于判断是否要通知前端刷新；
+    /// 带上 `updated_at` 是为了让同一条未读公告被修改时前台也能更新。
+    last_unread: Option<BTreeSet<(i64, String)>>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -326,7 +327,10 @@ pub async fn poll_once(
         return Err(SessionError::SessionChanged);
     }
     let unread: Vec<&RemoteAnnouncement> = items.iter().filter(|a| is_unread(a)).collect();
-    let unread_ids: BTreeSet<i64> = unread.iter().map(|a| a.id).collect();
+    let unread_versions: BTreeSet<(i64, String)> = unread
+        .iter()
+        .map(|a| (a.id, a.updated_at.clone()))
+        .collect();
 
     let mut outcome = PollOutcome::default();
 
@@ -355,8 +359,8 @@ pub async fn poll_once(
         }
     }
 
-    if state.last_unread.as_ref() != Some(&unread_ids) {
-        state.last_unread = Some(unread_ids);
+    if state.last_unread.as_ref() != Some(&unread_versions) {
+        state.last_unread = Some(unread_versions);
         host.announcements_changed();
         outcome.changed = true;
     }
@@ -402,6 +406,11 @@ pub async fn supervisor_step(
     if let Err(e) = poll_once(manager, host, &mut state.poll).await {
         // 静默：不打扰用户，下一个间隔自然重试。
         log::debug!("公告后台轮询失败: {e}");
+        // 会话已被终止（401）：让前端重拉，拿到非网络类错误码后复查会话状态，
+        // 否则窗口一直在前台时界面会继续显示已登录。
+        if matches!(e, SessionError::Terminated(_)) {
+            host.announcements_changed();
+        }
     }
     true
 }
@@ -943,6 +952,81 @@ mod tests {
         );
         assert_eq!(host.changed.load(Ordering::SeqCst), changed_before + 1);
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    /// 同一条未读公告被修改（id 与已读状态不变、`updated_at` 变化）也要通知前端刷新。
+    #[tokio::test]
+    async fn editing_an_unread_announcement_notifies_the_frontend() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        mount_list(
+            &server,
+            true,
+            vec![ann(1, "silent", "2026-01-01T00:00:00Z", None)],
+        )
+        .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let host = FakeHost::new(false);
+        let mut state = PollState::default();
+
+        assert!(poll_once(&manager, &host, &mut state).await.unwrap().changed);
+        assert!(!poll_once(&manager, &host, &mut state).await.unwrap().changed);
+
+        let mut edited = ann(1, "silent", "2026-01-01T00:00:00Z", None);
+        edited["updated_at"] = json!("2026-01-05T00:00:00Z");
+        server.reset().await;
+        mount_list(&server, true, vec![edited]).await;
+
+        assert!(poll_once(&manager, &host, &mut state).await.unwrap().changed);
+        assert_eq!(host.changed.load(Ordering::SeqCst), 2);
+    }
+
+    /// 后台轮询遇到会话被终止（401）：通知前端重拉，让它复查会话状态；网络失败不通知。
+    #[tokio::test]
+    async fn supervisor_tells_the_frontend_when_the_session_is_terminated() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/announcements"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(json!({"code": "TOKEN_REVOKED", "message": "revoked"})),
+            )
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let host = FakeHost::new(true);
+        let t0 = Instant::now();
+        let mut state = SupervisorState::new(t0);
+
+        assert!(supervisor_step(&manager, &host, &mut state, t0, Duration::from_secs(300)).await);
+
+        assert!(manager.current_identity().is_none(), "会话应已终止");
+        assert_eq!(host.changed.load(Ordering::SeqCst), 1);
+
+        // 网络失败（会话仍在）不触发刷新事件。
+        let offline_host = FakeHost::new(true);
+        let offline_manager = self::manager(&dir);
+        offline_manager.test_seed_active(
+            Region::International,
+            42,
+            "access-1",
+            "http://127.0.0.1:1".to_string(),
+        );
+        let mut offline_state = SupervisorState::new(t0);
+        assert!(
+            supervisor_step(
+                &offline_manager,
+                &offline_host,
+                &mut offline_state,
+                t0,
+                Duration::from_secs(300)
+            )
+            .await
+        );
+        assert_eq!(offline_host.changed.load(Ordering::SeqCst), 0);
     }
 
     #[test]
