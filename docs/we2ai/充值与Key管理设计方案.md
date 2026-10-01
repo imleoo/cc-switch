@@ -32,7 +32,7 @@ flowchart LR
 
 - 顶栏余额 chip：显示 `balance`（美元），点击跳「充值」Tab；余额 < $1 时 chip 变橙色。
 - 模型广场 Key 不可调用且原因为余额不足时，提示条增加「去充值」按钮。
-- 无 Key 时，模型广场空状态 `noKeys` 的「请先在 WE2AI 网站创建」改为「去创建 Key」按钮，跳 Key 管理。
+- 无 Key 时，模型广场空状态 `noKeys` 的「请先在 WE2AI 网站创建」改为「去创建 Key」按钮，切到 Key 管理 Tab 并直接打开新建弹窗（P2 已实现）。
 
 ## 2. Key 管理页
 
@@ -55,7 +55,7 @@ flowchart LR
 
 | 字段 | 接口字段 | 规则 |
 |---|---|---|
-| 名称* | `name` | 1–50 字符 |
+| 名称* | `name` | 非空；SubPanel `name` 列 `MaxLen(100)` 按 UTF-8 **字节**计，且在 `html.EscapeString`（`& < > " '` 转义为 5/4/4/5/5 字节）之后校验，所以客户端按「转义后字节数 ≤ 100」放行（约 33 个汉字，含 `&` 时更少）；Rust 与前端两侧同口径 |
 | 分组 | `group_id` | 下拉，选项来自 `GET /groups/available` + `/groups/rates` 显示倍率 |
 | 额度上限 | `quota` | 美元，空/0=不限；编辑时附「重置已用额度」勾选 → `reset_quota` |
 | 有效期 | 新建 `expires_in_days`；编辑 `expires_at` | 选项：永久/7/30/90/自定义日期 |
@@ -78,12 +78,14 @@ flowchart LR
 | 动作 | 实现 | 明文是否进前端 |
 |---|---|---|
 | 列表展示 | 新视图 `KeyManageView`（掩码 + 额度等），**不改** `KeyView` | 否 |
-| 复制 Key | 新命令 `we2ai_reveal_key(keyId)` → 前端拿到后立即 `copyText()`，不进 state | 是，瞬时 |
-| 示例里「填入真实 Key」 | 同上命令，仅存在于示例抽屉组件局部 state，关闭即清 | 是，限抽屉生命周期 |
+| 复制 Key | 新命令 `we2ai_copy_key(id)`：Rust 从管理页明文缓存取出，用 `arboard` 直接写系统剪贴板；前端只传 id | **否** |
+| 创建成功卡片 | `we2ai_create_key` 响应带一次性 `plaintext`，只用于卡片展示，关闭即清；卡片里的复制同样走 `we2ai_copy_key(newId)`（创建时新 Key 明文已并入 Rust 缓存） | 是，仅卡片生命周期 |
+| P3 示例「填入真实 Key」 | **届时再定**：明文不过 IPC 的约束下需要新命令或在 Rust 侧渲染样例，不恢复 reveal 类命令 | — |
 | 示例默认 | 使用占位 `$WE2AI_API_KEY` / `os.environ["WE2AI_API_KEY"]` | 否 |
 
-- `we2ai_reveal_key` 只接受缓存里已有的 keyId（同 `KEY_NOT_FOUND` 规则），不提供批量导出。
-- 守卫新增：`KeyManageView` 字段清单锁定、不含 `key` 字段；`we2ai_reveal_key` 返回类型单独登记。
+- `we2ai_copy_key` 只接受缓存里已有的 keyId（不在缓存 → `KEY_NOT_FOUND`），写剪贴板失败 → `CLIPBOARD_FAILED`，不提供批量导出。
+- 原方案的 `we2ai_reveal_key`（返回明文给前端再 `copyText()`）已取消：`copyText()` 依赖的 `copy_text_to_clipboard` 不在 IPC 白名单，回退到 `navigator.clipboard` 又受用户手势限制，且让明文过 IPC，得不偿失。
+- 守卫新增：`KeyManageView` 字段清单锁定、不含 `key` 字段；`lib.rs` 不得注册 reveal 类命令；Key 管理页面不得使用 `copyText` / `navigator.clipboard`。
 
 ## 3. 调用示例抽屉
 
@@ -231,10 +233,10 @@ stateDiagram-v2
 | `we2ai_get_balance` | `GET /user/profile` | `{ balance, frozen_balance, total_recharged }` |
 | `we2ai_manage_list_keys` | `GET /keys`（全部状态，分页同现有） | `KeyManageView[]` |
 | `we2ai_list_key_groups` | `GET /groups/available` + `/groups/rates` | `[{id,name,platform,rate}]` |
-| `we2ai_create_key` | `POST /keys` + `Idempotency-Key` | `KeyManageView` + 一次性明文 |
+| `we2ai_create_key` | `POST /keys` + `Idempotency-Key` | `KeyManageView` + 一次性明文（仅用于创建成功卡片展示） |
 | `we2ai_update_key` | `PUT /keys/:id` | `KeyManageView` |
 | `we2ai_delete_key` | `DELETE /keys/:id` | `()` |
-| `we2ai_reveal_key` | —（读缓存） | `string` |
+| `we2ai_copy_key` | —（读管理页缓存，Rust 写系统剪贴板） | `()`（明文不经 IPC；P3 示例「填入真实 Key」届时再定） |
 
 - 打开充值页复用已在白名单的上游命令 `open_external`，不新增命令。
 - 全部走现有 `call_protected_api`（自动续期、401 终止会话同 `keys.rs`）。
@@ -267,7 +269,7 @@ stateDiagram-v2
 | 期 | 范围 | 验收标准 |
 |---|---|---|
 | P1 | **国际版充值**：顶栏余额 + 充值 Tab（跳转 `https://api.we2ai.com/purchase`）+ 到账检测 + 余额不足「去充值」 | 国际版账号点击后浏览器打开正确页面，未登录时登录后回到 `/purchase`；国际版实付 1 笔（最小金额）后 10s 内 toast 到账并刷新顶栏；5 分钟超时、「停止」「我已完成支付」行为正确 |
-| P2 | Key 管理列表 + 新建/编辑/删除/启停 + 复制（国际版验收） | 四种操作后 Web 端与客户端列表一致；模型广场下拉同步刷新；日志、IPC 抓包中除 `reveal`/`create` 响应外无明文 |
+| P2 | Key 管理列表 + 新建/编辑/删除/启停 + 复制（国际版验收） | 四种操作后 Web 端与客户端列表一致；模型广场下拉同步刷新；日志、IPC 抓包中除 `create` 响应的一次性 `plaintext` 外无明文 |
 | P3 | 调用示例抽屉（5 语言 × 3 协议，国际版验收） | 15 个快照单测通过；curl/Python/Java 三种在国际版实测返回 200 |
 | P4 | 国内版验收（代码同 P1–P3，不单独开发） | `api.wtgo.com.cn` / `jiwu.wtgo.com.cn` 充值页打开正确、支付宝或微信 1 笔到账检测通过；Key 管理与示例在国内版回归通过 |
 | 每期 | `check-guards.sh` 新增条目、`自定义开发功能列表.md` 新增功能 20/21 | `./scripts/we2ai/check-guards.sh` 通过；`pnpm typecheck`、`vitest`、`cargo test` 通过 |

@@ -181,6 +181,9 @@ function ModelPriceSection({
  */
 const NETWORK_CODES = new Set(["TRANSIENT", "NETWORK_ERROR"]);
 
+/** `KEY_LIST_SUPERSEDED` 连续自动重拉的上限。 */
+const MAX_SUPERSEDED_RETRIES = 3;
+
 /** 价格新鲜度维护参数（Opus 复核 P3，`docs/we2ai/B1定价契约.md`）。 */
 const STALE_MODELS_THRESHOLD_MS = 60_000;
 const PERIODIC_MODELS_REFRESH_MS = 5 * 60_000;
@@ -264,6 +267,8 @@ interface ModelSquarePageProps {
   onBeforeApplyDialogOpen?: () => Promise<boolean>;
   /** Key 因余额不足被拦截时，提示条上的「去充值」按钮：外壳切到充值 Tab。 */
   onOpenBilling?: () => void;
+  /** 无 Key 空状态的「去创建 Key」：外壳切到 Key 管理 Tab 并打开新建弹窗。 */
+  onCreateKey?: () => void;
   /**
    * 外部刷新信号：数值变化（如充值到账）时重拉当前 Key 的模型与准入状态，让
    * 「余额不足」提示条立即更新。首次渲染的初始值不触发。
@@ -279,6 +284,7 @@ export function ModelSquarePage({
   onApplied,
   onBeforeApplyDialogOpen,
   onOpenBilling,
+  onCreateKey,
   reloadSignal = 0,
 }: ModelSquarePageProps) {
   // Codex 验收 W2/V2：快速检测取得确定结果时优先于旧的完整报告，而不是
@@ -305,8 +311,9 @@ export function ModelSquarePage({
   const modelsRequestSeq = useRef(0);
   // Key 列表同理：连续点刷新时只采纳最后一次（Codex P3 验收第 1 轮中危项）。
   const keysRequestSeq = useRef(0);
-  // 最新一次请求在 Rust 侧反被判为过期（两次 invoke 乱序执行）时自动重拉一次。
-  const supersededRetried = useRef(false);
+  // 最新一次请求在 Rust 侧反被判为过期（两次 invoke 乱序执行，或 Key 写操作使
+  // 缓存失效）时自动重拉，连续最多 MAX_SUPERSEDED_RETRIES 次，不停在旧列表上。
+  const supersededRetries = useRef(0);
   // "刷新"成功后即使选中的 Key 没变也重拉模型与准入状态。
   const [modelsReloadTick, setModelsReloadTick] = useState(0);
   const lastReloadSignal = useRef(reloadSignal);
@@ -334,20 +341,22 @@ export function ModelSquarePage({
     try {
       const result = await we2aiApi.listKeys();
       if (seq === keysRequestSeq.current) {
-        supersededRetried.current = false;
+        supersededRetries.current = 0;
         setKeys(result.keys);
         setSelectedKeyId(result.selectedKeyId);
         setModelsReloadTick((n) => n + 1);
       }
     } catch (error) {
       if (seq !== keysRequestSeq.current) return;
-      if (errorCode(error) === "KEY_LIST_SUPERSEDED") {
-        // 被更新的一次拉取取代：那一次负责渲染。若那一次恰好是较早发出的
-        // 请求（已被前端序号丢弃），这里重拉一次，避免界面停在加载中。
-        if (!supersededRetried.current) {
-          supersededRetried.current = true;
-          void loadKeysRef.current();
-        }
+      if (
+        errorCode(error) === "KEY_LIST_SUPERSEDED" &&
+        supersededRetries.current < MAX_SUPERSEDED_RETRIES
+      ) {
+        // 被更新的一次拉取（或 Key 写操作后的缓存失效）取代：若取代它的那次恰好
+        // 是较早发出的请求（已被前端序号丢弃），这里重拉，避免界面停在旧列表或
+        // 加载中；连续超过上限才按错误处理（带重试按钮）。
+        supersededRetries.current += 1;
+        void loadKeysRef.current();
         return;
       }
       handleError(error, setKeysError);
@@ -363,6 +372,26 @@ export function ModelSquarePage({
   useEffect(() => {
     void loadKeys();
   }, [loadKeys]);
+
+  // Key 管理页的写操作（创建/编辑/删除/启停）成功后，Rust 已失效这里用的 Key
+  // 缓存并发出事件：重新拉取，下拉选项与选中项随之更新。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void we2aiApi
+      .onKeysChanged(() => void loadKeysRef.current())
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch((error) => {
+        console.debug("[we2ai] keys listener failed", error);
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // 前台请求是否正在进行中（Opus 复核 Q1）：用 ref 而不是 `loadingModels`
   // state，因为要在静默刷新发起前同步读取最新值——如果静默刷新在前台
@@ -532,15 +561,26 @@ export function ModelSquarePage({
     return (
       <div className="space-y-3 py-6 text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
         <p>{t.noKeys}</p>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={loadingKeys}
-          onClick={() => void loadKeys()}
-          className={secondaryButtonClass}
-        >
-          {t.refresh}
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          {onCreateKey && (
+            <button
+              type="button"
+              className="we2ai-billing-primary we2ai-billing-primary--small"
+              onClick={onCreateKey}
+            >
+              {t.keyCreateFromEmpty}
+            </button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={loadingKeys}
+            onClick={() => void loadKeys()}
+            className={secondaryButtonClass}
+          >
+            {t.refresh}
+          </Button>
+        </div>
       </div>
     );
   }

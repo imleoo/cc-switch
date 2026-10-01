@@ -27,6 +27,7 @@ import {
 } from "./api";
 import { AnnouncementCenter } from "./AnnouncementCenter";
 import { BillingPage, formatWe2aiUsd } from "./BillingPage";
+import { KeyManagePage } from "./KeyManagePage";
 import { LoginPage, notifyLogoutOutcome } from "./LoginPage";
 import { ModelSquarePage } from "./ModelSquarePage";
 import { ToolStatusBar } from "./ToolStatusBar";
@@ -64,7 +65,7 @@ import {
 } from "@/components/ui/dialog";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
-type ShellTab = "marketplace" | "billing" | "settings";
+type ShellTab = "marketplace" | "keys" | "billing" | "settings";
 
 /** 网络类错误码：不代表会话状态变化（与模型广场、公告一致）。 */
 const NETWORK_ERROR_CODES = new Set(["TRANSIENT", "NETWORK_ERROR"]);
@@ -600,6 +601,19 @@ export function We2aiShell() {
     },
     [refreshBalance],
   );
+  // 模型广场无 Key 空状态的「去创建 Key」：切到 Key 管理 Tab 并请求直接打开新建
+  // 弹窗。用「请求中」布尔值而不是计数——Key 管理 Tab 切走即卸载，挂载时无法区分
+  // 计数是否已被消费；页面处理后调用 `handleCreateKeyRequestHandled` 复位，
+  // 重复点击只会得到同一个弹窗，不会反复打开。
+  const [createKeyRequested, setCreateKeyRequested] = useState(false);
+  const handleLaunchCreateKey = useCallback(() => {
+    setCreateKeyRequested(true);
+    setActiveTab("keys");
+  }, []);
+  const handleCreateKeyRequestHandled = useCallback(
+    () => setCreateKeyRequested(false),
+    [],
+  );
   const handleLaunchRecharge = useCallback(() => {
     handleTabChange("billing");
     setBillingLaunchTick((n) => n + 1);
@@ -609,6 +623,7 @@ export function We2aiShell() {
     balanceInflight.current = null;
     setBalance(null);
     setActiveTab("marketplace");
+    setCreateKeyRequested(false);
     if (loggedInIdentity) void refreshBalance();
   }, [loggedInIdentity, refreshBalance]);
   useEffect(() => {
@@ -911,6 +926,12 @@ export function We2aiShell() {
               {t.navMarketplace}
             </TabsTrigger>
             <TabsTrigger
+              value="keys"
+              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navKeys}
+            </TabsTrigger>
+            <TabsTrigger
               value="billing"
               className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
             >
@@ -946,7 +967,33 @@ export function We2aiShell() {
                   onApplied={() => void refreshToolStatus()}
                   onBeforeApplyDialogOpen={checkCcSwitchRunningBeforeApply}
                   onOpenBilling={handleLaunchRecharge}
+                  onCreateKey={handleLaunchCreateKey}
                   reloadSignal={balanceArrivedTick}
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="keys">
+            <Card className="we2ai-panel">
+              <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
+                <CardTitle className="we2ai-heading text-xl">
+                  {t.keyMgrTitle}
+                </CardTitle>
+                <CardDescription className="text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
+                  {t.keyMgrDescription}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="pt-6">
+                {/* 以会话身份作 key：换账号或换区域后整页重建，不沿用上个会话的
+                    Key 列表、创建结果明文与弹窗状态；切走 Tab 即卸载，明文 state
+                    随之丢弃。 */}
+                <KeyManagePage
+                  key={loggedInIdentity ?? ""}
+                  t={t}
+                  onSessionMaybeEnded={() => void refreshSessionStatus()}
+                  openCreateRequested={createKeyRequested}
+                  onCreateRequestHandled={handleCreateKeyRequestHandled}
                 />
               </CardContent>
             </Card>

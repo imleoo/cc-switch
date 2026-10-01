@@ -16,6 +16,9 @@
   --we2ai-ink: #0a0a08;
   --we2ai-orange: #ff4d00;
   --we2ai-blue: #2438e8;
+  /* Key 状态 chip 的"正常"与"已过期"配色 */
+  --we2ai-ok: #11823b;
+  --we2ai-danger: #c4161c;
   /* 外链文字色：浅色主题用品牌蓝，深色主题换更亮的蓝 */
   --we2ai-link: var(--we2ai-blue);
   --we2ai-font-sans:
@@ -34,6 +37,8 @@
   --we2ai-paper-2: #1c1c17;
   --we2ai-ink: #f4f1e8;
   --we2ai-link: #8f9bff;
+  --we2ai-ok: #3ecf7a;
+  --we2ai-danger: #ff6b6b;
 }
 
 /* 标题：粗体、负字距 */
@@ -554,4 +559,133 @@ body:has(.we2ai-theme) {
   color: var(--we2ai-paper);
   box-shadow: 4px 4px 0 var(--we2ai-orange);
   font-weight: 900;
+}
+
+/* Key 管理：表格 */
+.we2ai-theme .we2ai-keytable-wrap {
+  overflow-x: auto;
+  border: 2.5px solid var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-keytable {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.we2ai-theme .we2ai-keytable th {
+  padding: 8px 12px;
+  border-bottom: 2.5px solid var(--we2ai-ink);
+  background: var(--we2ai-paper-2);
+  font-family: var(--we2ai-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.we2ai-theme .we2ai-keytable td {
+  padding: 10px 12px;
+  border-bottom: 1.5px solid var(--we2ai-ink);
+  vertical-align: middle;
+}
+
+.we2ai-theme .we2ai-keytable tr:last-child td {
+  border-bottom: 0;
+}
+
+.we2ai-theme .we2ai-keytable-name {
+  margin-bottom: 4px;
+  font-weight: 900;
+  word-break: break-all;
+}
+
+.we2ai-theme .we2ai-keytable-expiry[data-soon="true"] {
+  color: var(--we2ai-orange);
+  font-weight: 900;
+}
+
+.we2ai-theme .we2ai-keytable-expiry[data-past="true"] {
+  color: var(--we2ai-danger);
+  font-weight: 900;
+}
+
+/* Key 管理：状态 chip（正常 / 已禁用 / 额度用完 / 已过期） */
+.we2ai-theme .we2ai-status-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1.5px solid var(--we2ai-ink);
+  border-radius: 999px;
+  font-family: var(--we2ai-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.we2ai-theme .we2ai-status-chip[data-status="active"] {
+  border-color: var(--we2ai-ok);
+  color: var(--we2ai-ok);
+}
+
+.we2ai-theme .we2ai-status-chip[data-status="inactive"] {
+  border-style: dashed;
+  background: var(--we2ai-paper-2);
+  color: var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-status-chip[data-status="quota_exhausted"] {
+  border-color: var(--we2ai-orange);
+  background: var(--we2ai-orange);
+  color: #f4f1e8;
+}
+
+.we2ai-theme .we2ai-status-chip[data-status="expired"] {
+  border-color: var(--we2ai-danger);
+  color: var(--we2ai-danger);
+}
+
+/* Key 管理：额度进度条 */
+.we2ai-theme .we2ai-quota-text {
+  margin-bottom: 4px;
+  font-family: var(--we2ai-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.we2ai-theme .we2ai-quota-bar {
+  width: 120px;
+  height: 8px;
+  border: 1.5px solid var(--we2ai-ink);
+  background: var(--we2ai-paper);
+}
+
+.we2ai-theme .we2ai-quota-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-quota-bar[data-level="high"] > span {
+  background: var(--we2ai-orange);
+}
+
+.we2ai-theme .we2ai-quota-bar[data-level="full"] > span {
+  background: var(--we2ai-danger);
+}
+
+/* Key 已创建卡片：完整明文 */
+.we2ai-theme .we2ai-keycode {
+  display: block;
+  padding: 12px 14px;
+  border: 2px solid var(--we2ai-ink);
+  background: var(--we2ai-paper-2);
+  font-family: var(--we2ai-font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  word-break: break-all;
 }

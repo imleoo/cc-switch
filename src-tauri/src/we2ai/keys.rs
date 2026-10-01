@@ -18,16 +18,17 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use super::api::{
-    ModelCapabilities, RemoteApiKey, RemoteKeyModels, RemoteModelPrice, RemotePricing,
+    ApiCallError, ApiClient, ModelCapabilities, Paginated, RemoteApiKey, RemoteKeyModels,
+    RemoteModelPrice, RemotePricing,
 };
 use super::commands_auth::We2aiApiError;
 use super::session::{SessionError, SessionIdentity, SessionManager, We2aiSessionState};
 
 /// `/api/v1/keys` 每页条数（SubPanel `ParsePagination` 上限 1000）。
-const KEYS_PAGE_SIZE: u32 = 100;
+pub(super) const KEYS_PAGE_SIZE: u32 = 100;
 /// 分页安全上限：100 × 50 = 5000 个 Key，远超正常账号规模；服务端若返回
 /// 异常的 `pages` 也不会无限循环。
-const KEYS_MAX_PAGES: u32 = 50;
+pub(super) const KEYS_MAX_PAGES: u32 = 50;
 
 /// 客户端能写入的三个工具（方案第 0 节决策 4）。B1 返回其他值时忽略。
 pub const KNOWN_TOOLS: [&str; 3] = ["claude_code", "codex", "workbuddy"];
@@ -39,6 +40,15 @@ const VISIBLE_STATUSES: [&str; 2] = ["active", "quota_exhausted"];
 struct KeyCache {
     identity: SessionIdentity,
     keys: Vec<RemoteApiKey>,
+}
+
+/// Key 管理页（`key_manage.rs`）的明文缓存：含全部状态的 Key（含已禁用、
+/// 已过期），只用于「复制」，不参与模型广场选择与写工具，因此与 [`KeyCache`]
+/// 分开存放，不改变模型广场只列 `active`/`quota_exhausted` 的缓存语义。
+/// 不派生 `Debug`，避免明文经日志泄露。
+struct ManageCache {
+    identity: SessionIdentity,
+    secrets: HashMap<i64, String>,
 }
 
 /// 最近一次 B1 结果里各模型的可选能力，与会话身份和 Key 绑定。
@@ -55,6 +65,10 @@ pub struct We2aiKeyState {
     /// 验收第 2 轮中危项）。
     fetch_seq: std::sync::atomic::AtomicU64,
     stored_seq: Mutex<u64>,
+    /// Key 管理页明文缓存及其拉取序号（语义同上面两个字段，互不影响）。
+    manage: Mutex<Option<ManageCache>>,
+    manage_fetch_seq: std::sync::atomic::AtomicU64,
+    manage_stored_seq: Mutex<u64>,
 }
 
 impl We2aiKeyState {
@@ -80,6 +94,93 @@ impl We2aiKeyState {
     pub fn clear(&self) {
         *self.cache.lock().unwrap() = None;
         *self.capabilities.lock().unwrap() = None;
+        *self.manage.lock().unwrap() = None;
+    }
+
+    /// Key 写操作（创建/编辑/删除）成功后调用：清空模型广场 Key 缓存、B1 能力
+    /// 缓存与管理页明文缓存，并让**此刻已在途**的列表拉取失效（它们读到的是
+    /// 写操作之前的数据，写回缓存会让界面与服务端不一致）。之后前端重新拉取
+    /// 才会重建缓存；缓存为空期间取明文一律按「不在列表中」处理。
+    pub fn invalidate(&self) {
+        {
+            let mut cache = self.cache.lock().unwrap();
+            let mut stored = self.stored_seq.lock().unwrap();
+            *cache = None;
+            *stored = self.fetch_seq.load(std::sync::atomic::Ordering::SeqCst);
+        }
+        *self.capabilities.lock().unwrap() = None;
+        let mut manage = self.manage.lock().unwrap();
+        let mut stored = self.manage_stored_seq.lock().unwrap();
+        *manage = None;
+        *stored = self
+            .manage_fetch_seq
+            .load(std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(super) fn begin_manage_fetch(&self) -> u64 {
+        self.manage_fetch_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    /// 写入管理页明文缓存；`seq` 不比上次写入的新时丢弃，返回是否写入。
+    pub(super) fn store_manage(
+        &self,
+        seq: u64,
+        identity: SessionIdentity,
+        secrets: HashMap<i64, String>,
+    ) -> bool {
+        let mut cache = self.manage.lock().unwrap();
+        let mut stored = self.manage_stored_seq.lock().unwrap();
+        if seq <= *stored {
+            return false;
+        }
+        *stored = seq;
+        *cache = Some(ManageCache { identity, secrets });
+        true
+    }
+
+    /// 创建成功后把新 Key 的明文并入管理页缓存（按创建时的会话身份）：缓存身份一致
+    /// 就追加，缓存为空或属于别的身份就以这一个 Key 重建。随后的列表拉取会整体
+    /// 覆盖它，新 Key 已在其中。
+    pub(super) fn insert_manage_secret(
+        &self,
+        identity: SessionIdentity,
+        key_id: i64,
+        secret: String,
+    ) {
+        let mut guard = self.manage.lock().unwrap();
+        match &mut *guard {
+            Some(cache) if cache.identity == identity => {
+                cache.secrets.insert(key_id, secret);
+            }
+            _ => {
+                *guard = Some(ManageCache {
+                    identity,
+                    secrets: HashMap::from([(key_id, secret)]),
+                });
+            }
+        }
+    }
+
+    /// 管理页「复制」取明文：只有缓存身份与当前会话身份一致才返回，不一致时
+    /// 顺带清空缓存（同 [`Self::secret_for`]）。
+    pub(super) fn manage_secret_for(
+        &self,
+        current: Option<SessionIdentity>,
+        key_id: i64,
+    ) -> Option<String> {
+        let mut guard = self.manage.lock().unwrap();
+        match (&*guard, current) {
+            (Some(cache), Some(current)) if cache.identity == current => {
+                cache.secrets.get(&key_id).cloned()
+            }
+            (Some(_), _) => {
+                *guard = None;
+                None
+            }
+            (None, _) => None,
+        }
     }
 
     pub fn material_cleanup_pending(&self) -> bool {
@@ -157,6 +258,12 @@ pub struct KeyView {
 pub struct KeyListView {
     pub keys: Vec<KeyView>,
     pub selected_key_id: Option<i64>,
+    /// 仅来自 `key_selection.json` 的记忆（用户显式选择过的 Key），没有记忆为
+    /// `None`；与 `selected_key_id` 不同，它不会在无记忆时回退到第一个 Key，也不
+    /// 校验该 Key 是否还在列表里。Key 管理页据此判断「当前工具在用」，避免无记忆
+    /// 时把第一个 Key 误报成在用。`KeyListView` 不在守卫 4.5 的字段锁定范围内
+    /// （只锁 `KeyView`/`We2aiKeyView`）。
+    pub remembered_key_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -439,6 +546,23 @@ impl KeySelectionFile {
     }
 }
 
+/// 删除 Key 后清掉指向它的选择记忆（只清命中的那一项）。记忆只是界面便利，
+/// 写失败不影响删除结果：`choose_selected` 对已不在列表里的记忆本来就会回退。
+pub(super) fn clear_selection_if(data_root: &Path, identity: &SessionIdentity, key_id: i64) {
+    let mut data = KeySelectionFile::read(data_root);
+    let slot = KeySelectionFile::slot(identity);
+    if data.selections.get(&slot) != Some(&key_id) {
+        return;
+    }
+    data.selections.remove(&slot);
+    let json = serde_json::to_string_pretty(&data).unwrap_or_default();
+    if let Err(e) =
+        crate::config::atomic_write_private(&KeySelectionFile::path(data_root), json.as_bytes())
+    {
+        log::warn!("清除已删除 Key 的选择记忆失败: {e}");
+    }
+}
+
 /// 分页拉取全部 Key。每页都经过 `call_protected_api`（续期、身份复查）；
 /// 各页身份必须一致，中途换了会话按 `SessionChanged` 失败。
 async fn fetch_all_keys(
@@ -458,14 +582,31 @@ async fn fetch_all_keys_with_limit(
     manager: &SessionManager,
     max_pages: u32,
 ) -> Result<(SessionIdentity, Vec<RemoteApiKey>), SessionError> {
+    fetch_all_pages(manager, max_pages, |api, token, page| async move {
+        api.list_keys(&token, page, KEYS_PAGE_SIZE).await
+    })
+    .await
+}
+
+/// 分页拉取的公共实现，模型广场（`list_keys`）与 Key 管理页
+/// （`key_manage.rs`）共用：每页走 `call_protected_api`，各页身份一致，到页数
+/// 上限仍未到最后一页返回 [`KEY_LIST_TOO_LARGE`]。
+pub(super) async fn fetch_all_pages<T, F, Fut>(
+    manager: &SessionManager,
+    max_pages: u32,
+    fetch: F,
+) -> Result<(SessionIdentity, Vec<T>), SessionError>
+where
+    F: Fn(ApiClient, String, u32) -> Fut,
+    Fut: std::future::Future<Output = Result<Paginated<T>, ApiCallError>>,
+{
     let mut identity: Option<SessionIdentity> = None;
     let mut all = Vec::new();
     let mut page = 1u32;
     loop {
+        let fetch_ref = &fetch;
         let (data, page_identity) = manager
-            .call_protected_api(true, move |api, token| async move {
-                api.list_keys(&token, page, KEYS_PAGE_SIZE).await
-            })
+            .call_protected_api(true, move |api, token| fetch_ref(api, token, page))
             .await?;
         match identity {
             None => identity = Some(page_identity),
@@ -507,10 +648,11 @@ pub async fn list_keys(
     Ok(KeyListView {
         keys: views,
         selected_key_id,
+        remembered_key_id: remembered,
     })
 }
 
-fn unknown_key_error() -> We2aiApiError {
+pub(super) fn unknown_key_error() -> We2aiApiError {
     We2aiApiError {
         code: "KEY_NOT_FOUND".to_string(),
         message: "该 Key 不在当前账号的 Key 列表中，请刷新列表".to_string(),
@@ -705,24 +847,25 @@ mod tests {
             .await;
         manager.test_seed_active(Region::International, 42, "access-1", server.uri());
         let state = We2aiKeyState::default();
-        list_keys(&manager, &state).await.unwrap();
+        // 没有任何记忆：回退到第一个，但 remembered_key_id 为空（不能把默认项当「在用」）。
+        let first = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(first.selected_key_id, Some(1));
+        assert_eq!(first.remembered_key_id, None);
 
         select_key(&manager, &state, 3).unwrap();
-        assert_eq!(
-            list_keys(&manager, &state).await.unwrap().selected_key_id,
-            Some(3)
-        );
+        let after = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(after.selected_key_id, Some(3));
+        assert_eq!(after.remembered_key_id, Some(3));
 
         // 不在列表里的 Key 不能被选中，也不发任何请求。
         let err = select_key(&manager, &state, 99).unwrap_err();
         assert_eq!(err.code, "KEY_NOT_FOUND");
 
-        // 另一个账号（同区域）没有记忆，取第一个。
+        // 另一个账号（同区域）没有记忆，取第一个，且看不到上一个账号的记忆。
         manager.test_seed_active(Region::International, 7, "access-1", server.uri());
-        assert_eq!(
-            list_keys(&manager, &state).await.unwrap().selected_key_id,
-            Some(1)
-        );
+        let other = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(other.selected_key_id, Some(1));
+        assert_eq!(other.remembered_key_id, None);
 
         // 记住的 Key 被删除后回退到第一个。
         let mut data = KeySelectionFile::read(dir.path());
@@ -732,9 +875,12 @@ mod tests {
             serde_json::to_string(&data).unwrap(),
         )
         .unwrap();
+        let stale = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(stale.selected_key_id, Some(1));
         assert_eq!(
-            list_keys(&manager, &state).await.unwrap().selected_key_id,
-            Some(1)
+            stale.remembered_key_id,
+            Some(12345),
+            "记忆原样返回，不校验是否还在列表里"
         );
     }
 

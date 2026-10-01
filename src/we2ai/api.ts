@@ -120,6 +120,12 @@ export interface We2aiKeyList {
   keys: We2aiKeyView[];
   /** 记住的上次选择；没有记忆时为第一个 Key；列表为空时为 `null`。 */
   selectedKeyId: number | null;
+  /**
+   * 仅来自 `key_selection.json` 的记忆（用户显式选择过的 Key），没有记忆为
+   * `null`：不会像 `selectedKeyId` 那样回退到第一个 Key，也不校验是否还在列表里。
+   * Key 管理页据此判断「当前工具在用」。缺省按 `null` 处理。
+   */
+  rememberedKeyId?: number | null;
 }
 
 /**
@@ -341,6 +347,105 @@ export interface We2aiGatewayInfo {
 export const WE2AI_ANNOUNCEMENTS_CHANGED_EVENT = "we2ai-announcements-changed";
 
 /**
+ * Key 写操作（创建/编辑/删除/启停）成功后 Rust 发出的刷新事件名。Rust 侧常量
+ * `key_manage.rs::EVENT_KEYS_CHANGED` 与这里各写一份字面量，`check-guards.sh`
+ * 4.15 校验两侧一致。
+ */
+export const WE2AI_KEYS_CHANGED_EVENT = "we2ai-keys-changed";
+
+/** Key 管理页里 Key 的状态（Rust 侧已归一化；未知值按 `inactive` 处理）。 */
+export type We2aiManagedKeyStatus =
+  | "active"
+  | "inactive"
+  | "quota_exhausted"
+  | "expired";
+
+export interface We2aiManagedKeyGroup {
+  id: number;
+  name: string;
+  /** 实际倍率（专属倍率优先）。 */
+  rate: number;
+}
+
+/**
+ * Key 管理页的行数据（`src-tauri/src/we2ai/key_manage.rs` 的 `KeyManageView`）。
+ * **不含明文**：只有掩码；明文不经 IPC 返回，唯一例外是创建结果（只用于「Key 已创建」卡片）；复制走 `copyKey`。
+ */
+export interface We2aiManagedKey {
+  id: number;
+  name: string;
+  status: We2aiManagedKeyStatus;
+  maskedKey: string;
+  group: We2aiManagedKeyGroup | null;
+  /** 额度上限（美元），0 = 不限。 */
+  quota: number;
+  quotaUsed: number;
+  /** RFC3339；`null` = 永不过期。 */
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+}
+
+/** 新建/编辑弹窗里分组下拉的一项。 */
+export interface We2aiKeyGroupOption {
+  id: number;
+  name: string;
+  platform: string;
+  rate: number;
+}
+
+export interface We2aiCreateKeyInput {
+  /** 每次打开新建弹窗生成一个 UUID，同一次提交的重试复用（见 `newIdempotencyKey`）。 */
+  idempotencyKey: string;
+  name: string;
+  groupId?: number;
+  /** 美元，缺省或 0 = 不限。 */
+  quota?: number;
+  /** 缺省 = 永久。 */
+  expiresInDays?: number;
+}
+
+/** 编辑：缺省的字段不修改。 */
+export interface We2aiUpdateKeyInput {
+  name?: string;
+  groupId?: number;
+  quota?: number;
+  /** RFC3339 设置；空字符串清除（永不过期）；缺省不修改。 */
+  expiresAt?: string;
+  status?: "active" | "inactive";
+  resetQuota?: boolean;
+}
+
+/** 创建结果：行数据 + 仅此一次交给前端的明文（只用于「Key 已创建」卡片）。 */
+export interface We2aiCreatedKey {
+  key: We2aiManagedKey;
+  plaintext: string;
+}
+
+/** 生成幂等键（标准 UUID v4）；`crypto.randomUUID` 不可用时手工拼。 */
+export function newIdempotencyKey(): string {
+  const c = (globalThis as { crypto?: Crypto }).crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === "function") {
+    c.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+  return [
+    hex.slice(0, 4).join(""),
+    hex.slice(4, 6).join(""),
+    hex.slice(6, 8).join(""),
+    hex.slice(8, 10).join(""),
+    hex.slice(10, 16).join(""),
+  ].join("-");
+}
+
+/**
  * WE2AI 自有命令的前端封装。P0 阶段只有设置读写——上游 `get_settings` /
  * `save_settings` 在 WE2AI 模式下被 IPC 白名单拒绝，不能复用 `settingsApi`。
  * P2 新增登录会话命令：前端只传业务字段，验证码票据完全由 Rust 侧
@@ -525,6 +630,60 @@ export const we2aiApi = {
       throw new Error("we2ai: empty gateway info response");
     }
     return result;
+  },
+
+  /** Key 管理页列表（全部状态，不含明文；Rust 侧分页到最后一页）。 */
+  async manageListKeys(): Promise<We2aiManagedKey[]> {
+    return (
+      (await invoke<We2aiManagedKey[] | null>("we2ai_manage_list_keys")) ?? []
+    );
+  },
+
+  /** 新建/编辑弹窗的分组下拉（含倍率）。 */
+  async listKeyGroups(): Promise<We2aiKeyGroupOption[]> {
+    return (
+      (await invoke<We2aiKeyGroupOption[] | null>("we2ai_list_key_groups")) ??
+      []
+    );
+  },
+
+  async createKey(input: We2aiCreateKeyInput): Promise<We2aiCreatedKey> {
+    const result = await invoke<We2aiCreatedKey | null>("we2ai_create_key", {
+      input,
+    });
+    if (!result || !result.key) {
+      throw new Error("we2ai: empty create key response");
+    }
+    return result;
+  },
+
+  async updateKey(
+    id: number,
+    input: We2aiUpdateKeyInput,
+  ): Promise<We2aiManagedKey> {
+    const result = await invoke<We2aiManagedKey | null>("we2ai_update_key", {
+      id,
+      input,
+    });
+    if (!result) throw new Error("we2ai: empty update key response");
+    return result;
+  },
+
+  async deleteKey(id: number): Promise<void> {
+    await invoke("we2ai_delete_key", { id });
+  },
+
+  /**
+   * 复制 Key：Rust 从管理页缓存取明文直接写系统剪贴板，明文不经 IPC。
+   * 不在缓存里时抛 `KEY_NOT_FOUND`，写剪贴板失败抛 `CLIPBOARD_FAILED`。
+   */
+  async copyKey(id: number): Promise<void> {
+    await invoke("we2ai_copy_key", { id });
+  },
+
+  /** 订阅 Key 写操作成功后的刷新事件，返回取消订阅函数。 */
+  async onKeysChanged(handler: () => void): Promise<() => void> {
+    return await listen(WE2AI_KEYS_CHANGED_EVENT, () => handler());
   },
 
   /** 订阅 Rust 后台轮询的"公告有变化"事件，返回取消订阅函数。 */

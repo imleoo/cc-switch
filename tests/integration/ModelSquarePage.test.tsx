@@ -206,6 +206,41 @@ describe("ModelSquarePage", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("keeps retrying up to three consecutive superseded results instead of stopping on a stale list", async () => {
+    const superseded = { code: "KEY_LIST_SUPERSEDED", message: "old" };
+    const listKeys = vi
+      .spyOn(we2aiApi, "listKeys")
+      .mockRejectedValueOnce(superseded)
+      .mockRejectedValueOnce(superseded)
+      .mockRejectedValueOnce(superseded)
+      .mockResolvedValueOnce({ keys: [claudeKey], selectedKeyId: 1 });
+    vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(claudeModels);
+    const onSessionMaybeEnded = renderPage();
+
+    await screen.findByText("claude-sonnet-4-5");
+
+    expect(listKeys).toHaveBeenCalledTimes(4);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(onSessionMaybeEnded).not.toHaveBeenCalled();
+  });
+
+  it("gives up after more than three consecutive superseded results and shows a retryable error", async () => {
+    const superseded = { code: "KEY_LIST_SUPERSEDED", message: "old" };
+    const listKeys = vi
+      .spyOn(we2aiApi, "listKeys")
+      .mockRejectedValue(superseded);
+    renderPage();
+
+    await screen.findByRole("alert");
+
+    // 首次 + 3 次自动重拉。
+    expect(listKeys).toHaveBeenCalledTimes(4);
+    listKeys.mockResolvedValue({ keys: [claudeKey], selectedKeyId: 1 });
+    vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(claudeModels);
+    await userEvent.click(screen.getByRole("button", { name: t.offlineRetry }));
+    await screen.findByText("claude-sonnet-4-5");
+  });
+
   it("asks the shell to re-check the session on unrecognized errors", async () => {
     vi.spyOn(we2aiApi, "listKeys").mockRejectedValue({
       code: "UNKNOWN_401",
@@ -1053,6 +1088,150 @@ describe("ModelSquarePage", () => {
       await screen.findByText("claude-sonnet-4-5");
       expect(screen.queryByText(t.loadingModels)).not.toBeInTheDocument();
       expect(keyModels).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("无 Key 空状态的「去创建 Key」", () => {
+    it("shows the create button when there are no keys and reports the click", async () => {
+      vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
+        keys: [],
+        selectedKeyId: null,
+      });
+      const onCreateKey = vi.fn();
+      render(
+        <ModelSquarePage
+          t={t}
+          onSessionMaybeEnded={vi.fn()}
+          onCreateKey={onCreateKey}
+        />,
+      );
+
+      await screen.findByText(t.noKeys);
+      await userEvent.click(
+        screen.getByRole("button", { name: t.keyCreateFromEmpty }),
+      );
+
+      expect(onCreateKey).toHaveBeenCalledTimes(1);
+    });
+
+    it("hides the button without a handler and when keys exist", async () => {
+      vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
+        keys: [],
+        selectedKeyId: null,
+      });
+      const { unmount } = render(
+        <ModelSquarePage t={t} onSessionMaybeEnded={vi.fn()} />,
+      );
+      await screen.findByText(t.noKeys);
+      expect(
+        screen.queryByRole("button", { name: t.keyCreateFromEmpty }),
+      ).not.toBeInTheDocument();
+      unmount();
+
+      vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
+        keys: [claudeKey],
+        selectedKeyId: 1,
+      });
+      vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(claudeModels);
+      render(
+        <ModelSquarePage
+          t={t}
+          onSessionMaybeEnded={vi.fn()}
+          onCreateKey={vi.fn()}
+        />,
+      );
+      await screen.findByText("claude-sonnet-4-5");
+      expect(
+        screen.queryByRole("button", { name: t.keyCreateFromEmpty }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("keys-changed event (Key 管理页写操作)", () => {
+    it("re-lists keys when Rust reports a change so the dropdown follows the key management page", async () => {
+      let handler: (() => void) | null = null;
+      vi.spyOn(we2aiApi, "onKeysChanged").mockImplementation(async (fn) => {
+        handler = fn;
+        return () => {
+          handler = null;
+        };
+      });
+      const listKeys = vi
+        .spyOn(we2aiApi, "listKeys")
+        .mockResolvedValueOnce({ keys: [claudeKey], selectedKeyId: 1 })
+        .mockResolvedValue({
+          keys: [claudeKey, openaiKey],
+          selectedKeyId: 1,
+        });
+      vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(claudeModels);
+
+      renderPage();
+      await screen.findByText("claude-sonnet-4-5");
+      expect(screen.getByTestId("we2ai-single-key")).toBeInTheDocument();
+      expect(listKeys).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(handler).not.toBeNull());
+
+      await act(async () => {
+        handler?.();
+      });
+
+      // 现在有两个 Key：单 Key 的文字换成了下拉。
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("we2ai-single-key"),
+        ).not.toBeInTheDocument(),
+      );
+      expect(listKeys).toHaveBeenCalledTimes(2);
+      expect(
+        screen.getByRole("combobox", { name: t.keyLabel }),
+      ).toBeInTheDocument();
+    });
+
+    it("drops a deleted key from the page after the event", async () => {
+      let handler: (() => void) | null = null;
+      vi.spyOn(we2aiApi, "onKeysChanged").mockImplementation(async (fn) => {
+        handler = fn;
+        return () => undefined;
+      });
+      vi.spyOn(we2aiApi, "listKeys")
+        .mockResolvedValueOnce({
+          keys: [claudeKey, openaiKey],
+          selectedKeyId: 1,
+        })
+        .mockResolvedValue({ keys: [openaiKey], selectedKeyId: 3 });
+      vi.spyOn(we2aiApi, "keyModels").mockImplementation(async (id) =>
+        id === 1 ? claudeModels : openaiModels,
+      );
+
+      renderPage();
+      await screen.findByText("claude-sonnet-4-5");
+      await waitFor(() => expect(handler).not.toBeNull());
+
+      await act(async () => {
+        handler?.();
+      });
+
+      expect(await screen.findByText("gpt-5")).toBeInTheDocument();
+      expect(screen.queryByText("claude-sonnet-4-5")).not.toBeInTheDocument();
+      expect(screen.getByTestId("we2ai-single-key")).toHaveTextContent("个人");
+    });
+
+    it("unsubscribes from the event when unmounted", async () => {
+      const unlisten = vi.fn();
+      vi.spyOn(we2aiApi, "onKeysChanged").mockResolvedValue(unlisten);
+      vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
+        keys: [claudeKey],
+        selectedKeyId: 1,
+      });
+      vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(claudeModels);
+
+      const { unmount } = render(
+        <ModelSquarePage t={t} onSessionMaybeEnded={vi.fn()} />,
+      );
+      await screen.findByText("claude-sonnet-4-5");
+      unmount();
+
+      await waitFor(() => expect(unlisten).toHaveBeenCalled());
     });
   });
 });

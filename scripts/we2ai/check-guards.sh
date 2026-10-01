@@ -1342,6 +1342,80 @@ if grep -nE '^[[:space:]]*"(@stripe/[^"]*|qrcode[^"]*)":' package.json; then
   err "package.json: 出现支付 SDK 或二维码依赖（@stripe/*、qrcode*），功能 20 要求客户端不接触支付"
 fi
 
+# 4.15 功能 21（Key 管理）：机械字面量检查。语义行为由 `cargo test --lib we2ai::key_manage`、
+# `tests/we2ai/{KeyManagePage,KeyEditDialog}.test.tsx`、`tests/integration/We2aiShellKeys.test.tsx` 覆盖。
+# ① 6 个命令在 lib.rs 注册；② 返回前端的 KeyManageView（Rust）与 We2aiManagedKey（TS）
+# 字段允许清单锁定，且不含 key/明文字段——明文只经创建结果这一条路径出 Rust（复制由 we2ai_copy_key 在 Rust 侧写剪贴板，明文不经 IPC）；
+# ③ keys-changed 事件名 Rust/TS 两侧一致。
+for needle in \
+  'we2ai::key_manage::we2ai_manage_list_keys' \
+  'we2ai::key_manage::we2ai_list_key_groups' \
+  'we2ai::key_manage::we2ai_create_key' \
+  'we2ai::key_manage::we2ai_update_key' \
+  'we2ai::key_manage::we2ai_delete_key' \
+  'we2ai::key_manage::we2ai_copy_key'; do
+  if ! grep -qF "$needle" "$lib_rs"; then
+    err "$lib_rs: 找不到 ${needle}（功能 21：Key 管理命令注册）"
+  fi
+done
+key_manage_rs=src-tauri/src/we2ai/key_manage.rs
+expected_manage_rs_fields="expires_at group id last_used_at masked_key name quota quota_used status"
+expected_manage_ts_fields="expiresAt group id lastUsedAt maskedKey name quota quotaUsed status"
+if [[ ! -f "$key_manage_rs" ]]; then
+  err "$key_manage_rs 不存在（功能 21）"
+else
+  manage_body="$(awk '/^pub struct KeyManageView \{/{f=1;next} f&&/^\}/{exit} f' "$key_manage_rs")"
+  if [[ -z "$manage_body" ]]; then
+    err "$key_manage_rs: 找不到 pub struct KeyManageView，无法校验明文 Key 不出 IPC（功能 21）"
+  else
+    # 匹配任意 `ident:` 字段行（含无 pub / pub(crate) / pub(super) 的字段），不只 `pub ident:`，
+    # 避免用私有字段或受限可见性绕过清单。
+    manage_rs_fields="$(printf '%s\n' "$manage_body" | sed -nE 's/^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?([a-z_0-9]+)[[:space:]]*:.*/\3/p' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+    if [[ "$manage_rs_fields" != "$expected_manage_rs_fields" ]]; then
+      err "$key_manage_rs: KeyManageView 字段与允许清单不一致（实际：${manage_rs_fields}；允许：${expected_manage_rs_fields}；不得出现 key/secret/plaintext 等明文字段）"
+    fi
+    if printf '%s\n' "$manage_body" | grep -q 'serde('; then
+      err "$key_manage_rs: KeyManageView 字段上不允许 serde 属性（重命名会绕过字段清单）"
+    fi
+  fi
+fi
+ts_manage="$(awk '/^export interface We2aiManagedKey \{/{f=1;next} f&&/^\}/{exit} f' src/we2ai/api.ts)"
+if [[ -z "$ts_manage" ]]; then
+  err "src/we2ai/api.ts: 找不到 We2aiManagedKey 接口（功能 21）"
+else
+  ts_manage_fields="$(printf '%s\n' "$ts_manage" | sed -nE 's/^[[:space:]]*([A-Za-z_0-9]+)[?]?[[:space:]]*:.*/\1/p' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+  if [[ "$ts_manage_fields" != "$expected_manage_ts_fields" ]]; then
+    err "src/we2ai/api.ts: We2aiManagedKey 字段与允许清单不一致（实际：${ts_manage_fields}；允许：${expected_manage_ts_fields}）"
+  fi
+fi
+# Key 变更刷新事件名是 Rust/TS 两侧各写一份的字面量，任一侧改动都会让前端静默收不到事件。
+rust_keys_event="$(sed -n 's/.*EVENT_KEYS_CHANGED: &str = "\([^"]*\)".*/\1/p' "$key_manage_rs" 2>/dev/null)"
+ts_keys_event="$(sed -n 's/.*WE2AI_KEYS_CHANGED_EVENT = "\([^"]*\)".*/\1/p' src/we2ai/api.ts)"
+if [[ -z "$rust_keys_event" || "$rust_keys_event" != "$ts_keys_event" ]]; then
+  err "Key 变更事件名两侧不一致（功能 21）：key_manage.rs='${rust_keys_event}'，api.ts='${ts_keys_event}'"
+fi
+# we2ai_copy_key 必须返回 ()：返回值类型一变（如 String）就等于把明文交给了前端。
+copy_sig="$(awk '/pub async fn we2ai_copy_key\(/{f=1} f{print} f&&/\{[[:space:]]*$/{exit}' "$key_manage_rs" 2>/dev/null)"
+if ! printf '%s\n' "$copy_sig" | grep -qE '\)[[:space:]]*->[[:space:]]*Result<\(\),[[:space:]]*We2aiApiError>'; then
+  err "$key_manage_rs: we2ai_copy_key 的返回类型不是 Result<(), We2aiApiError>（功能 21：明文不得经 IPC 返回前端）"
+fi
+# 复制必须由 Rust 写剪贴板：不得恢复 reveal 命令，页面不得用 copyText / navigator.clipboard / revealKey。
+if grep -qF 'we2ai_reveal_key' "$lib_rs" "$key_manage_rs"; then
+  err "出现 we2ai_reveal_key（功能 21：明文不得经 IPC 返回前端，复制走 we2ai_copy_key；P3 若需要要重新评审）"
+fi
+if ! grep -qF 'invoke("we2ai_copy_key"' src/we2ai/api.ts; then
+  err "src/we2ai/api.ts: 找不到 invoke(\"we2ai_copy_key\")（功能 21）"
+fi
+for f in src/we2ai/KeyManagePage.tsx src/we2ai/KeyEditDialog.tsx; do
+  if grep -nE 'copyText|navigator\.clipboard|revealKey|lib/clipboard' "$f" | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+    err "$f: 出现 copyText/navigator.clipboard/revealKey（功能 21：复制必须走 we2aiApi.copyKey，由 Rust 写剪贴板）"
+  fi
+done
+# 删除确认必须是应用内弹窗，不能退回系统 confirm。
+if grep -nE '(window\.)?confirm\(' src/we2ai/KeyManagePage.tsx | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+  err "src/we2ai/KeyManagePage.tsx: 出现 confirm(...)（功能 21：删除确认须为应用内弹窗）"
+fi
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi

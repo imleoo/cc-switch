@@ -16,6 +16,7 @@ pub mod commands_apply;
 pub mod commands_auth;
 pub mod detect;
 pub mod fsguard;
+pub mod key_manage;
 pub mod keys;
 pub mod mode;
 pub mod region;

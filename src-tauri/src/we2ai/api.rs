@@ -517,6 +517,89 @@ impl ApiClient {
         .await
     }
 
+    /// Key 管理页列表一页（全部状态，不带 `status` 过滤；字段含额度/过期/
+    /// 最近使用/分组倍率）。分页参数与 [`ApiClient::list_keys`] 相同。
+    pub async fn list_managed_keys(
+        &self,
+        access_token: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Paginated<RemoteManagedKey>, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::GET, "/api/v1/keys")
+                .query(&[("page", page), ("page_size", page_size)])
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
+    /// 创建 Key（`POST /api/v1/keys`）。服务端要求 `Idempotency-Key` 头
+    /// （`RequireKey: true`），同一个值 + 同一请求体重放返回首次结果。
+    pub async fn create_key(
+        &self,
+        access_token: &str,
+        idempotency_key: &str,
+        body: &Value,
+    ) -> Result<RemoteManagedKey, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::POST, "/api/v1/keys")
+                .header("Idempotency-Key", idempotency_key)
+                .bearer_auth(access_token)
+                .json(body),
+        )
+        .await
+    }
+
+    /// 更新 Key（`PUT /api/v1/keys/:id`）。
+    pub async fn update_key(
+        &self,
+        access_token: &str,
+        key_id: i64,
+        body: &Value,
+    ) -> Result<RemoteManagedKey, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::PUT, &format!("/api/v1/keys/{key_id}"))
+                .bearer_auth(access_token)
+                .json(body),
+        )
+        .await
+    }
+
+    /// 删除 Key（`DELETE /api/v1/keys/:id`）。
+    pub async fn delete_key(&self, access_token: &str, key_id: i64) -> Result<(), ApiCallError> {
+        self.send::<Value>(
+            self.request(reqwest::Method::DELETE, &format!("/api/v1/keys/{key_id}"))
+                .bearer_auth(access_token),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// 当前用户可绑定的分组（`GET /api/v1/groups/available`）。
+    pub async fn list_available_groups(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<RemoteGroupOption>, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::GET, "/api/v1/groups/available")
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
+    /// 当前用户的专属分组倍率（`GET /api/v1/groups/rates`）：`group_id → 倍率`，
+    /// JSON 对象的键是字符串；没有专属倍率时服务端可能返回 `null`。
+    pub async fn list_group_rates(
+        &self,
+        access_token: &str,
+    ) -> Result<Option<std::collections::HashMap<String, f64>>, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::GET, "/api/v1/groups/rates")
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
     /// B1：某个 Key 可用的模型、每个模型支持的工具与 Key 级准入结果。
     pub async fn get_key_models(
         &self,
@@ -661,6 +744,69 @@ impl std::fmt::Debug for RemoteApiKey {
             .field("group", &self.group)
             .finish()
     }
+}
+
+/// Key 管理页列表项（`dto.APIKey` 的子集，字段名对照
+/// `SubPanel/backend/internal/handler/dto/types.go` 的 `APIKey`）。`key` 是明文，
+/// `Debug` 输出里隐去。
+#[derive(Clone, Deserialize)]
+pub struct RemoteManagedKey {
+    pub id: i64,
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub group: Option<RemoteManagedGroup>,
+    /// 额度上限（美元，0 = 不限）。
+    #[serde(default)]
+    pub quota: Option<f64>,
+    #[serde(default)]
+    pub quota_used: Option<f64>,
+    /// RFC3339；`null` = 永不过期。
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+}
+
+impl std::fmt::Debug for RemoteManagedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteManagedKey")
+            .field("id", &self.id)
+            .field("key", &"<redacted>")
+            .field("name", &self.name)
+            .field("status", &self.status)
+            .field("group", &self.group)
+            .field("quota", &self.quota)
+            .field("quota_used", &self.quota_used)
+            .field("expires_at", &self.expires_at)
+            .field("last_used_at", &self.last_used_at)
+            .finish()
+    }
+}
+
+/// Key 内嵌的分组（`dto.Group` 的子集）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteManagedGroup {
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub rate_multiplier: Option<f64>,
+}
+
+/// `GET /groups/available` 的单项（`dto.Group` 的子集）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteGroupOption {
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub rate_multiplier: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

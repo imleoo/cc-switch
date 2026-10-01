@@ -240,6 +240,107 @@ export interface We2aiStrings {
   billingGatewayFailed: string;
   /** 模型广场「余额不足」提示条上的按钮。 */
   keyBlockedTopUp: string;
+
+  // Key 管理（功能 21）
+  navKeys: string;
+  keyMgrTitle: string;
+  keyMgrDescription: string;
+  keyMgrSearchPlaceholder: string;
+  keyMgrFilterLabel: string;
+  keyMgrFilterAll: string;
+  keyMgrStatusActive: string;
+  keyMgrStatusInactive: string;
+  keyMgrStatusQuotaExhausted: string;
+  keyMgrStatusExpired: string;
+  keyMgrCreate: string;
+  keyMgrColName: string;
+  keyMgrColKey: string;
+  keyMgrColStatus: string;
+  keyMgrColQuota: string;
+  keyMgrColExpires: string;
+  keyMgrColLastUsed: string;
+  keyMgrColActions: string;
+  keyMgrNoGroup: string;
+  keyMgrCopy: string;
+  keyMgrCopied: string;
+  keyMgrCopyFailed: string;
+  keyMgrCopyStale: string;
+  keyMgrEdit: string;
+  keyMgrEnable: string;
+  keyMgrDisable: string;
+  keyMgrDelete: string;
+  /** `{name}` 为 Key 名称。 */
+  keyMgrEnabledToast: string;
+  keyMgrDisabledToast: string;
+  keyMgrCreatedToast: string;
+  keyMgrDeletedToast: string;
+  keyMgrSavedToast: string;
+  keyMgrQuotaUnlimited: string;
+  keyMgrNeverExpires: string;
+  keyMgrExpired: string;
+  keyMgrExpiresWithinHour: string;
+  /** `{n}` 为数量。 */
+  keyMgrExpiresInHours: string;
+  keyMgrExpiresInDays: string;
+  keyMgrNeverUsed: string;
+  keyMgrJustNow: string;
+  keyMgrMinutesAgo: string;
+  keyMgrHoursAgo: string;
+  keyMgrDaysAgo: string;
+  keyMgrEmpty: string;
+  keyMgrEmptyHint: string;
+  keyMgrNoMatch: string;
+  keyMgrLoading: string;
+  keyMgrCreateTitle: string;
+  keyMgrEditTitle: string;
+  keyMgrFieldName: string;
+  keyMgrNamePlaceholder: string;
+  keyMgrNameInvalid: string;
+  keyMgrFieldGroup: string;
+  keyMgrGroupNone: string;
+  keyMgrGroupsLoading: string;
+  keyMgrGroupsFailed: string;
+  keyMgrFieldQuota: string;
+  keyMgrQuotaPlaceholder: string;
+  keyMgrQuotaInvalid: string;
+  keyMgrFieldExpiry: string;
+  keyMgrExpiryForever: string;
+  keyMgrExpiry7: string;
+  keyMgrExpiry30: string;
+  keyMgrExpiry90: string;
+  keyMgrExpiryCustom: string;
+  keyMgrExpiryDateRequired: string;
+  keyMgrExpiryPast: string;
+  keyMgrFieldStatus: string;
+  keyMgrStatusHintInactive: string;
+  keyMgrStatusHintLimited: string;
+  /** `{used}` 为已格式化的已用额度。 */
+  keyMgrResetQuota: string;
+  keyMgrSave: string;
+  keyMgrCreateSubmit: string;
+  keyMgrSubmitting: string;
+  keyMgrCancel: string;
+  keyMgrCreatedTitle: string;
+  keyMgrCreatedNameLabel: string;
+  keyMgrCreatedWarning: string;
+  keyMgrCreatedClose: string;
+  keyMgrDeleteTitle: string;
+  /** `{name}` 为需要输入的 Key 名称。 */
+  keyMgrDeleteDescription: string;
+  keyMgrDeleteInputLabel: string;
+  keyMgrDeleteInUse: string;
+  keyMgrDeleteConfirm: string;
+  keyMgrErrCountExceeded: string;
+  keyMgrErrGroupNotAllowed: string;
+  keyMgrErrNotFound: string;
+  keyMgrErrConflict: string;
+  keyMgrErrInvalid: string;
+  keyMgrErrInProgress: string;
+  keyMgrErrResultUnknown: string;
+  keyMgrErrSessionChanged: string;
+  keyMgrExpiryDayNote: string;
+  /** 模型广场无 Key 空状态里的按钮：跳 Key 管理并打开新建弹窗。 */
+  keyCreateFromEmpty: string;
 }
 
 const zh: We2aiStrings = {
@@ -452,6 +553,106 @@ const zh: We2aiStrings = {
   billingBaselineFailed: "无法获取当前余额，请重试",
   billingGatewayFailed: "暂时无法获取充值地址，请稍后重试",
   keyBlockedTopUp: "去充值",
+
+  navKeys: "Key 管理",
+  keyMgrTitle: "Key 管理",
+  keyMgrDescription:
+    "创建、编辑、启停和删除 API Key。Key 明文只在创建成功和点「复制」时短暂出现。",
+  keyMgrSearchPlaceholder: "搜索 Key 名称",
+  keyMgrFilterLabel: "状态",
+  keyMgrFilterAll: "全部状态",
+  keyMgrStatusActive: "正常",
+  keyMgrStatusInactive: "已禁用",
+  keyMgrStatusQuotaExhausted: "额度用完",
+  keyMgrStatusExpired: "已过期",
+  keyMgrCreate: "+ 新建 Key",
+  keyMgrColName: "名称 / 分组",
+  keyMgrColKey: "Key",
+  keyMgrColStatus: "状态",
+  keyMgrColQuota: "额度",
+  keyMgrColExpires: "过期",
+  keyMgrColLastUsed: "最近使用",
+  keyMgrColActions: "操作",
+  keyMgrNoGroup: "无分组",
+  keyMgrCopy: "复制",
+  keyMgrCopied: "已复制",
+  keyMgrCopyFailed: "复制失败，请重试",
+  keyMgrCopyStale: "Key 列表已过期，已为你刷新，请再点一次复制",
+  keyMgrEdit: "编辑",
+  keyMgrEnable: "启用",
+  keyMgrDisable: "禁用",
+  keyMgrDelete: "删除",
+  keyMgrEnabledToast: "已启用「{name}」",
+  keyMgrDisabledToast: "已禁用「{name}」",
+  keyMgrCreatedToast: "已创建「{name}」",
+  keyMgrDeletedToast: "已删除「{name}」",
+  keyMgrSavedToast: "已保存",
+  keyMgrQuotaUnlimited: "不限",
+  keyMgrNeverExpires: "永久",
+  keyMgrExpired: "已过期",
+  keyMgrExpiresWithinHour: "1 小时内过期",
+  keyMgrExpiresInHours: "{n} 小时后过期",
+  keyMgrExpiresInDays: "{n} 天后过期",
+  keyMgrNeverUsed: "从未使用",
+  keyMgrJustNow: "刚刚",
+  keyMgrMinutesAgo: "{n} 分钟前",
+  keyMgrHoursAgo: "{n} 小时前",
+  keyMgrDaysAgo: "{n} 天前",
+  keyMgrEmpty: "还没有 Key",
+  keyMgrEmptyHint: "点击「新建 Key」创建第一个。",
+  keyMgrNoMatch: "没有符合条件的 Key",
+  keyMgrLoading: "正在加载 Key…",
+  keyMgrCreateTitle: "新建 Key",
+  keyMgrEditTitle: "编辑 Key",
+  keyMgrFieldName: "名称",
+  keyMgrNamePlaceholder: "例如：工作电脑",
+  keyMgrNameInvalid:
+    "名称不能为空，且不超过 100 字节（约 33 个汉字；& < > \" ' 按 4 到 5 字节计）",
+  keyMgrFieldGroup: "分组",
+  keyMgrGroupNone: "不指定分组",
+  keyMgrGroupsLoading: "正在加载分组…",
+  keyMgrGroupsFailed: "分组加载失败",
+  keyMgrFieldQuota: "额度上限（美元）",
+  keyMgrQuotaPlaceholder: "留空表示不限",
+  keyMgrQuotaInvalid: "额度需为不小于 0 的数字",
+  keyMgrFieldExpiry: "有效期",
+  keyMgrExpiryForever: "永久",
+  keyMgrExpiry7: "7 天",
+  keyMgrExpiry30: "30 天",
+  keyMgrExpiry90: "90 天",
+  keyMgrExpiryCustom: "自定义日期",
+  keyMgrExpiryDateRequired: "请选择到期日期",
+  keyMgrExpiryPast: "到期日期需晚于现在",
+  keyMgrFieldStatus: "启用",
+  keyMgrStatusHintInactive: "禁用后这个 Key 不能调用",
+  keyMgrStatusHintLimited:
+    "额度用完或已过期的 Key，提高额度或延长有效期后会自动恢复",
+  keyMgrResetQuota: "重置已用额度（当前已用 {used}）",
+  keyMgrSave: "保存",
+  keyMgrCreateSubmit: "创建",
+  keyMgrSubmitting: "提交中…",
+  keyMgrCancel: "取消",
+  keyMgrCreatedTitle: "Key 已创建",
+  keyMgrCreatedNameLabel: "名称",
+  keyMgrCreatedWarning:
+    "关闭后这里不再显示完整 Key，请先复制保存（之后也可以在列表里点「复制」）。",
+  keyMgrCreatedClose: "我已保存，关闭",
+  keyMgrDeleteTitle: "删除 Key",
+  keyMgrDeleteDescription:
+    "删除后无法恢复，使用这个 Key 的调用会立即失败。请输入 Key 名称「{name}」确认。",
+  keyMgrDeleteInputLabel: "Key 名称",
+  keyMgrDeleteInUse: "Claude Code / Codex 当前使用此 Key，删除后将无法调用",
+  keyMgrDeleteConfirm: "确认删除",
+  keyMgrErrCountExceeded: "Key 数量已达上限，请先删除不用的 Key",
+  keyMgrErrGroupNotAllowed: "没有权限使用所选分组，请换一个分组",
+  keyMgrErrNotFound: "这个 Key 已不存在，请刷新列表",
+  keyMgrErrConflict: "请求已被处理过，请关闭弹窗后刷新列表确认",
+  keyMgrErrInvalid: "输入内容无效，请检查后重试",
+  keyCreateFromEmpty: "去创建 Key",
+  keyMgrErrInProgress: "正在处理，请稍候重试",
+  keyMgrErrResultUnknown: "请求结果未知，请刷新列表确认后再操作",
+  keyMgrErrSessionChanged: "会话已切换，原操作可能已生效，请刷新后确认结果",
+  keyMgrExpiryDayNote: "按天计算，实际到期时间可能晚于所选日期不足 1 天",
 };
 
 const en: We2aiStrings = {
@@ -695,6 +896,113 @@ const en: We2aiStrings = {
   billingGatewayFailed:
     "Couldn't get the top-up address, please try again later",
   keyBlockedTopUp: "Top up",
+
+  navKeys: "Keys",
+  keyMgrTitle: "Key management",
+  keyMgrDescription:
+    "Create, edit, enable/disable and delete API keys. The full key only appears briefly when it is created or when you press Copy.",
+  keyMgrSearchPlaceholder: "Search key name",
+  keyMgrFilterLabel: "Status",
+  keyMgrFilterAll: "All statuses",
+  keyMgrStatusActive: "Active",
+  keyMgrStatusInactive: "Disabled",
+  keyMgrStatusQuotaExhausted: "Quota used up",
+  keyMgrStatusExpired: "Expired",
+  keyMgrCreate: "+ New key",
+  keyMgrColName: "Name / Group",
+  keyMgrColKey: "Key",
+  keyMgrColStatus: "Status",
+  keyMgrColQuota: "Quota",
+  keyMgrColExpires: "Expires",
+  keyMgrColLastUsed: "Last used",
+  keyMgrColActions: "Actions",
+  keyMgrNoGroup: "No group",
+  keyMgrCopy: "Copy",
+  keyMgrCopied: "Copied",
+  keyMgrCopyFailed: "Copy failed, please try again",
+  keyMgrCopyStale:
+    "The key list was out of date and has been refreshed. Press Copy again.",
+  keyMgrEdit: "Edit",
+  keyMgrEnable: "Enable",
+  keyMgrDisable: "Disable",
+  keyMgrDelete: "Delete",
+  keyMgrEnabledToast: 'Enabled "{name}"',
+  keyMgrDisabledToast: 'Disabled "{name}"',
+  keyMgrCreatedToast: 'Created "{name}"',
+  keyMgrDeletedToast: 'Deleted "{name}"',
+  keyMgrSavedToast: "Saved",
+  keyMgrQuotaUnlimited: "Unlimited",
+  keyMgrNeverExpires: "Never",
+  keyMgrExpired: "Expired",
+  keyMgrExpiresWithinHour: "Expires within 1 hour",
+  keyMgrExpiresInHours: "Expires in {n} h",
+  keyMgrExpiresInDays: "Expires in {n} d",
+  keyMgrNeverUsed: "Never used",
+  keyMgrJustNow: "Just now",
+  keyMgrMinutesAgo: "{n} min ago",
+  keyMgrHoursAgo: "{n} h ago",
+  keyMgrDaysAgo: "{n} d ago",
+  keyMgrEmpty: "No keys yet",
+  keyMgrEmptyHint: 'Press "New key" to create your first one.',
+  keyMgrNoMatch: "No keys match",
+  keyMgrLoading: "Loading keys…",
+  keyMgrCreateTitle: "New key",
+  keyMgrEditTitle: "Edit key",
+  keyMgrFieldName: "Name",
+  keyMgrNamePlaceholder: "e.g. Work laptop",
+  keyMgrNameInvalid:
+    "Name must not be empty and at most 100 bytes (about 33 CJK characters; & < > \" ' count as 4 to 5 bytes)",
+  keyMgrFieldGroup: "Group",
+  keyMgrGroupNone: "No group",
+  keyMgrGroupsLoading: "Loading groups…",
+  keyMgrGroupsFailed: "Couldn't load groups",
+  keyMgrFieldQuota: "Quota limit (USD)",
+  keyMgrQuotaPlaceholder: "Leave empty for unlimited",
+  keyMgrQuotaInvalid: "Quota must be a number, 0 or more",
+  keyMgrFieldExpiry: "Expiry",
+  keyMgrExpiryForever: "Never",
+  keyMgrExpiry7: "7 days",
+  keyMgrExpiry30: "30 days",
+  keyMgrExpiry90: "90 days",
+  keyMgrExpiryCustom: "Custom date",
+  keyMgrExpiryDateRequired: "Pick an expiry date",
+  keyMgrExpiryPast: "The expiry date must be in the future",
+  keyMgrFieldStatus: "Enabled",
+  keyMgrStatusHintInactive: "A disabled key cannot be used",
+  keyMgrStatusHintLimited:
+    "Keys that ran out of quota or expired recover automatically once you raise the quota or extend the expiry",
+  keyMgrResetQuota: "Reset used quota (currently {used})",
+  keyMgrSave: "Save",
+  keyMgrCreateSubmit: "Create",
+  keyMgrSubmitting: "Submitting…",
+  keyMgrCancel: "Cancel",
+  keyMgrCreatedTitle: "Key created",
+  keyMgrCreatedNameLabel: "Name",
+  keyMgrCreatedWarning:
+    "The full key will not be shown here again after you close this. Copy it first (you can also use Copy in the list later).",
+  keyMgrCreatedClose: "I've saved it, close",
+  keyMgrDeleteTitle: "Delete key",
+  keyMgrDeleteDescription:
+    'This cannot be undone and calls using this key will fail immediately. Type the key name "{name}" to confirm.',
+  keyMgrDeleteInputLabel: "Key name",
+  keyMgrDeleteInUse:
+    "Claude Code / Codex is currently using this key. Deleting it will break those tools.",
+  keyMgrDeleteConfirm: "Delete",
+  keyMgrErrCountExceeded: "Key limit reached, please delete unused keys first",
+  keyMgrErrGroupNotAllowed:
+    "You can't use the selected group, please pick another",
+  keyMgrErrNotFound: "This key no longer exists, please refresh the list",
+  keyMgrErrConflict:
+    "This request was already handled, close the dialog and refresh the list to check",
+  keyMgrErrInvalid: "Invalid input, please check and try again",
+  keyCreateFromEmpty: "Create a key",
+  keyMgrErrInProgress: "Still processing, please retry shortly",
+  keyMgrErrResultUnknown:
+    "The result of the request is unknown. Refresh the list to check before trying again",
+  keyMgrErrSessionChanged:
+    "The session changed; the previous action may already have taken effect. Refresh to check the result",
+  keyMgrExpiryDayNote:
+    "Counted in whole days: the key may expire up to less than a day after the chosen date",
 };
 
 const TABLE: Record<We2aiLanguage, We2aiStrings> = { zh, en };
@@ -763,5 +1071,42 @@ export function getWe2aiErrorMessage(t: We2aiStrings, code: string): string {
       return t.errorKeyListTooLarge;
     default:
       return t.errorGeneric;
+  }
+}
+
+/**
+ * Key 管理写操作的错误文案：Rust 侧输入校验码与 SubPanel 业务码在这里中文化 /
+ * 英文化，其余回退到通用的 `getWe2aiErrorMessage`。
+ */
+export function getWe2aiKeyErrorMessage(t: We2aiStrings, code: string): string {
+  switch (code) {
+    case "KEY_NAME_INVALID":
+      return t.keyMgrNameInvalid;
+    case "KEY_QUOTA_INVALID":
+      return t.keyMgrQuotaInvalid;
+    case "KEY_EXPIRY_INVALID":
+    case "KEY_GROUP_INVALID":
+    case "KEY_STATUS_INVALID":
+    case "IDEMPOTENCY_KEY_INVALID":
+    case "API_KEY_LIMIT_INVALID":
+    case "API_KEY_EXPIRY_INVALID":
+      return t.keyMgrErrInvalid;
+    case "API_KEY_COUNT_EXCEEDED":
+      return t.keyMgrErrCountExceeded;
+    case "GROUP_NOT_ALLOWED":
+      return t.keyMgrErrGroupNotAllowed;
+    case "API_KEY_NOT_FOUND":
+      return t.keyMgrErrNotFound;
+    case "IDEMPOTENCY_KEY_CONFLICT":
+      return t.keyMgrErrConflict;
+    case "IDEMPOTENCY_IN_PROGRESS":
+    case "IDEMPOTENCY_RETRY_BACKOFF":
+      return t.keyMgrErrInProgress;
+    case "CLIPBOARD_FAILED":
+      return t.keyMgrCopyFailed;
+    case "SESSION_CHANGED":
+      return t.keyMgrErrSessionChanged;
+    default:
+      return getWe2aiErrorMessage(t, code);
   }
 }

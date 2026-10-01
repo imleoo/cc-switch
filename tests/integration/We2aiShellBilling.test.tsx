@@ -183,7 +183,7 @@ describe("We2aiShell balance chip and billing tab", () => {
     const chip = await screen.findByTestId("balance-chip");
     await waitFor(() => expect(chip).toHaveTextContent("$12.48"));
     const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
-    expect(tabs).toEqual(["模型广场", "充值", "设置"]);
+    expect(tabs).toEqual(["模型广场", "Key 管理", "充值", "设置"]);
     expect(screen.getByRole("tab", { name: "模型广场" })).toHaveAttribute(
       "aria-selected",
       "true",
