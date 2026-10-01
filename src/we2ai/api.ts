@@ -681,6 +681,26 @@ export const we2aiApi = {
     await invoke("we2ai_copy_key", { id });
   },
 
+  /**
+   * 复制非敏感文本（调用示例的环境变量版代码、Base URL）：由 Rust 写系统剪贴板。
+   * WE2AI 模式下上游 `copy_text_to_clipboard` 不在 IPC 白名单，前端 `navigator.clipboard`
+   * 又依赖用户手势，所以不用 `copyText`。**不得用于明文。** 文本为空/超过 64KB 抛
+   * `SAMPLE_TEXT_INVALID`，写剪贴板失败抛 `CLIPBOARD_FAILED`。
+   */
+  async copyPlainText(text: string): Promise<void> {
+    await invoke("we2ai_copy_text", { text });
+  },
+
+  /**
+   * 调用示例「填入真实 Key」的复制：`text` 里用 `KEY_PLACEHOLDER`（`codeSamples.ts`，
+   * 与 Rust 常量同值）占位 Key，Rust 从管理页缓存取明文替换**所有**占位串后直接写系统
+   * 剪贴板，明文不经 IPC。不在缓存里抛 `KEY_NOT_FOUND`，文本里没有占位串/为空/超长抛
+   * `SAMPLE_TEXT_INVALID`，写剪贴板失败抛 `CLIPBOARD_FAILED`。
+   */
+  async copyTextWithKey(id: number, text: string): Promise<void> {
+    await invoke("we2ai_copy_text_with_key", { id, text });
+  },
+
   /** 订阅 Key 写操作成功后的刷新事件，返回取消订阅函数。 */
   async onKeysChanged(handler: () => void): Promise<() => void> {
     return await listen(WE2AI_KEYS_CHANGED_EVENT, () => handler());

@@ -689,3 +689,195 @@ body:has(.we2ai-theme) {
   font-weight: 700;
   word-break: break-all;
 }
+
+/* 调用示例抽屉（功能 22）：右侧滑出，遮罩不带 we2ai-theme（否则会被主题底色铺满） */
+.we2ai-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgb(10 10 8 / 0.3);
+}
+
+.we2ai-theme.we2ai-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: min(660px, 100vw);
+  border-left: 2.5px solid var(--we2ai-ink);
+  box-shadow: -6px 0 0 rgb(10 10 8 / 0.12);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .we2ai-theme.we2ai-drawer {
+    animation: we2ai-drawer-in 160ms ease-out;
+  }
+}
+
+@keyframes we2ai-drawer-in {
+  from {
+    transform: translateX(32px);
+    opacity: 0;
+  }
+}
+
+.we2ai-theme .we2ai-drawer-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 22px;
+  border-bottom: 2.5px solid var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-drawer-body {
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px 24px;
+  overflow-y: auto;
+}
+
+.we2ai-theme .we2ai-drawer-close {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--we2ai-ink);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.we2ai-theme .we2ai-drawer-close:focus-visible {
+  outline: 2px solid var(--we2ai-ink);
+  outline-offset: 2px;
+}
+
+/* 协议分段按钮 */
+.we2ai-theme .we2ai-segmented {
+  display: flex;
+  margin-top: 6px;
+  border: 2px solid var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-segmented button {
+  flex: 1;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-right: 1.5px solid var(--we2ai-ink);
+  background: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.we2ai-theme .we2ai-segmented button:last-child {
+  border-right: 0;
+}
+
+.we2ai-theme .we2ai-segmented button[aria-pressed="true"] {
+  background: var(--we2ai-ink);
+  color: var(--we2ai-paper);
+}
+
+.we2ai-theme .we2ai-segmented button:focus-visible {
+  outline: 2px solid var(--we2ai-orange);
+  outline-offset: -4px;
+}
+
+/* 模型下拉 / 手填模型 */
+.we2ai-theme .we2ai-native-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 2px solid var(--we2ai-ink);
+  border-radius: 8px;
+  background: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  font-family: var(--we2ai-font-mono);
+  font-size: 13px;
+}
+
+.we2ai-theme .we2ai-native-select:focus-visible {
+  outline: 2px solid var(--we2ai-orange);
+  outline-offset: 1px;
+}
+
+/* 语言 tab */
+.we2ai-theme .we2ai-lang-tabs {
+  display: flex;
+  gap: 22px;
+  margin-top: 16px;
+  border-bottom: 2px solid var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-lang-tabs button {
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 4px solid transparent;
+  background: transparent;
+  color: var(--we2ai-ink);
+  font-family: var(--we2ai-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.we2ai-theme .we2ai-lang-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--we2ai-orange);
+}
+
+.we2ai-theme .we2ai-lang-tabs button:focus-visible {
+  outline: 2px solid var(--we2ai-ink);
+  outline-offset: 2px;
+}
+
+/* 环境变量提示 + 代码块（深底，主题变量互换保证深浅色下都有对比） */
+.we2ai-theme .we2ai-envhint {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1.5px solid var(--we2ai-ink);
+  background: var(--we2ai-paper-2);
+  font-size: 12px;
+}
+
+.we2ai-theme .we2ai-envhint code {
+  font-family: var(--we2ai-font-mono);
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.we2ai-theme .we2ai-codeblock {
+  margin: 14px 0 0;
+  padding: 16px 18px;
+  border: 2px solid var(--we2ai-ink);
+  background: var(--we2ai-ink);
+  color: var(--we2ai-paper);
+  font-family: var(--we2ai-font-mono);
+  font-size: 12px;
+  line-height: 1.8;
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 4;
+}
+
+.we2ai-theme .we2ai-baseurl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.we2ai-theme .we2ai-baseurl-row code {
+  font-family: var(--we2ai-font-mono);
+  font-weight: 700;
+  word-break: break-all;
+}

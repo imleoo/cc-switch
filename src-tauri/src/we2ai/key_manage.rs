@@ -7,7 +7,9 @@
 //!   广场缓存分开，不改变后者只列 `active`/`quota_exhausted` 的语义）。前端只有一处
 //!   能拿到明文：创建成功那一次（[`CreatedKeyView::plaintext`]，只用于「Key 已创建」
 //!   卡片展示）。「复制」由 Rust 侧完成：`we2ai_copy_key` 从缓存取明文直接写系统
-//!   剪贴板，明文不经 IPC。
+//!   剪贴板，明文不经 IPC。调用示例的「填入真实 Key」同理：`we2ai_copy_text_with_key`
+//!   收到带占位串 [`SAMPLE_KEY_PLACEHOLDER`] 的示例文本，在 Rust 里把占位串替换为缓存里的
+//!   明文再写剪贴板；示例里不含 Key 的部分（Base URL、环境变量版代码）走 `we2ai_copy_text`。
 //! - 任一写操作成功后：失效模型广场 Key 缓存（[`We2aiKeyState::invalidate`]）并发
 //!   `we2ai-keys-changed` 事件，让 Key 管理页与模型广场重新拉取。
 //! - 字段名对照 SubPanel `handler/api_key_handler.go`（`CreateAPIKeyRequest`、
@@ -45,6 +47,14 @@ const EXPIRES_DAYS_MAX: i64 = 36_500;
 const API_KEY_NOT_FOUND: &str = "API_KEY_NOT_FOUND";
 /// 写系统剪贴板失败的错误码。
 const CLIPBOARD_FAILED: &str = "CLIPBOARD_FAILED";
+/// 调用示例文本不合法（占位串为空/不在文本里、文本超长）的错误码。
+const SAMPLE_TEXT_INVALID: &str = "SAMPLE_TEXT_INVALID";
+/// 调用示例里代表「真实 Key」的占位串。前端 `src/we2ai/codeSamples.ts` 的
+/// `KEY_PLACEHOLDER` 各写一份字面量，由 `scripts/we2ai/check-guards.sh` 4.16 校验两侧一致。
+/// 只含 `[A-Za-z0-9_]`，在各语言字符串转义里保持不变。
+pub const SAMPLE_KEY_PLACEHOLDER: &str = "__WE2AI_API_KEY__";
+/// 调用示例文本长度上限（字节）。18 个模板都在 2KB 以内，64KB 只是防滥用。
+const SAMPLE_TEXT_MAX_BYTES: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // 视图
@@ -526,6 +536,64 @@ where
     })
 }
 
+fn validate_sample_text(text: &str) -> Result<(), We2aiApiError> {
+    if text.is_empty() {
+        return Err(invalid(SAMPLE_TEXT_INVALID, "示例文本为空"));
+    }
+    if text.len() > SAMPLE_TEXT_MAX_BYTES {
+        return Err(invalid(SAMPLE_TEXT_INVALID, "示例文本过长"));
+    }
+    Ok(())
+}
+
+fn clipboard_error(message: String) -> We2aiApiError {
+    We2aiApiError {
+        code: CLIPBOARD_FAILED.to_string(),
+        message,
+    }
+}
+
+/// 复制非敏感文本（示例代码的环境变量版、Base URL）：只做长度校验后交给 `write`。
+/// 不碰缓存，所以不需要会话身份；`write` 可注入，测试里不真写剪贴板。
+pub async fn copy_text<W, Fut>(text: &str, write: W) -> Result<(), We2aiApiError>
+where
+    W: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    validate_sample_text(text)?;
+    write(text.to_string()).await.map_err(clipboard_error)
+}
+
+/// 调用示例「填入真实 Key」的复制：校验 `text` 后从管理页缓存取明文，把 `text` 里
+/// **所有** [`SAMPLE_KEY_PLACEHOLDER`] 替换为明文再交给 `write` 写系统剪贴板。
+/// 明文只在 Rust 内存里参与替换，不经 IPC、不进日志与错误文案。
+///
+/// 校验先于取明文：`text` 为空或超过 [`SAMPLE_TEXT_MAX_BYTES`]、`text` 里一个占位串
+/// 都没有，都是 `SAMPLE_TEXT_INVALID`；不在缓存（含身份不一致）是 `KEY_NOT_FOUND`。
+/// 以上任一情况都不会调用 `write`。
+pub async fn copy_text_with_key<W, Fut>(
+    manager: &SessionManager,
+    state: &We2aiKeyState,
+    key_id: i64,
+    text: &str,
+    write: W,
+) -> Result<(), We2aiApiError>
+where
+    W: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    validate_sample_text(text)?;
+    if !text.contains(SAMPLE_KEY_PLACEHOLDER) {
+        return Err(invalid(SAMPLE_TEXT_INVALID, "示例文本里没有占位串"));
+    }
+    let plaintext = state
+        .manage_secret_for(manager.current_identity(), key_id)
+        .ok_or_else(unknown_key_error)?;
+    write(text.replace(SAMPLE_KEY_PLACEHOLDER, &plaintext))
+        .await
+        .map_err(clipboard_error)
+}
+
 // ---------------------------------------------------------------------------
 // Tauri 命令
 // ---------------------------------------------------------------------------
@@ -602,6 +670,36 @@ pub async fn we2ai_copy_key(
     id: i64,
 ) -> Result<(), We2aiApiError> {
     copy_key(&session.0, &keys, id, |text| async move {
+        crate::commands::copy_text_to_clipboard(text)
+            .await
+            .map(|_| ())
+    })
+    .await
+}
+
+/// 复制非敏感文本到系统剪贴板（示例代码的环境变量版、Base URL）。WE2AI 模式下上游
+/// `copy_text_to_clipboard` 不在 IPC 白名单，前端 `navigator.clipboard` 又依赖用户手势，
+/// 所以由 Rust 写（见 [`copy_text`]）。不得用于明文。
+#[tauri::command]
+pub async fn we2ai_copy_text(text: String) -> Result<(), We2aiApiError> {
+    copy_text(&text, |text| async move {
+        crate::commands::copy_text_to_clipboard(text)
+            .await
+            .map(|_| ())
+    })
+    .await
+}
+
+/// 调用示例「填入真实 Key」的复制：前端传带占位串的示例文本，Rust 替换为明文后写
+/// 系统剪贴板（见 [`copy_text_with_key`]），返回 `()`，明文不经 IPC。
+#[tauri::command]
+pub async fn we2ai_copy_text_with_key(
+    session: State<'_, We2aiSessionState>,
+    keys: State<'_, We2aiKeyState>,
+    id: i64,
+    text: String,
+) -> Result<(), We2aiApiError> {
+    copy_text_with_key(&session.0, &keys, id, &text, |text| async move {
         crate::commands::copy_text_to_clipboard(text)
             .await
             .map(|_| ())
@@ -1464,6 +1562,237 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "KEY_NOT_FOUND");
+    }
+
+    // ----- 调用示例：带占位串的文本替换为明文再复制 -----
+
+    const PLACEHOLDER: &str = SAMPLE_KEY_PLACEHOLDER;
+
+    #[test]
+    fn sample_placeholder_literal_is_pinned() {
+        // 与 src/we2ai/codeSamples.ts 的 KEY_PLACEHOLDER 同值（守卫 4.16 也校验）。
+        assert_eq!(SAMPLE_KEY_PLACEHOLDER, "__WE2AI_API_KEY__");
+        assert!(SAMPLE_KEY_PLACEHOLDER
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    }
+
+    /// 记录型 writer：返回「被写入剪贴板的文本」，`None` 表示 writer 没被调用。
+    async fn copied_with_key(
+        manager: &SessionManager,
+        state: &We2aiKeyState,
+        id: i64,
+        text: &str,
+    ) -> (Result<(), We2aiApiError>, Option<String>) {
+        let slot = Arc::new(std::sync::Mutex::new(None::<String>));
+        let writer_slot = slot.clone();
+        let result = copy_text_with_key(manager, state, id, text, |out| async move {
+            *writer_slot.lock().unwrap() = Some(out);
+            Ok(())
+        })
+        .await;
+        let written = slot.lock().unwrap().take();
+        (result, written)
+    }
+
+    async fn copied_plain(text: &str) -> (Result<(), We2aiApiError>, Option<String>) {
+        let slot = Arc::new(std::sync::Mutex::new(None::<String>));
+        let writer_slot = slot.clone();
+        let result = copy_text(text, |out| async move {
+            *writer_slot.lock().unwrap() = Some(out);
+            Ok(())
+        })
+        .await;
+        let written = slot.lock().unwrap().take();
+        (result, written)
+    }
+
+    async fn listed_state(dir: &TempDir, server: &MockServer) -> (SessionManager, We2aiKeyState) {
+        mount_keys_page(
+            server,
+            1,
+            1,
+            vec![mkey(1, SECRET_A, "active"), mkey(2, SECRET_B, "inactive")],
+        )
+        .await;
+        mount_rates(server, Value::Null).await;
+        let manager = seeded(dir, server);
+        let state = We2aiKeyState::default();
+        manage_list_keys(&manager, &state).await.unwrap();
+        (manager, state)
+    }
+
+    #[tokio::test]
+    async fn copy_text_writes_non_sensitive_text_verbatim() {
+        let text = format!("export K=$WE2AI_API_KEY\n{PLACEHOLDER} stays literal");
+        let (result, written) = copied_plain(&text).await;
+        result.unwrap();
+        // 不做任何替换：这条命令碰不到缓存。
+        assert_eq!(written.as_deref(), Some(text.as_str()));
+        let (result, written) = copied_plain("https://api.we2ai.com/v1").await;
+        result.unwrap();
+        assert_eq!(written.as_deref(), Some("https://api.we2ai.com/v1"));
+    }
+
+    #[tokio::test]
+    async fn copy_text_rejects_empty_and_oversized_text_without_calling_the_writer() {
+        let (result, written) = copied_plain("").await;
+        assert_eq!(result.unwrap_err().code, "SAMPLE_TEXT_INVALID");
+        assert!(written.is_none());
+
+        let at_limit = "x".repeat(SAMPLE_TEXT_MAX_BYTES);
+        let (result, written) = copied_plain(&at_limit).await;
+        result.unwrap();
+        assert_eq!(written.unwrap().len(), SAMPLE_TEXT_MAX_BYTES);
+
+        let over = "x".repeat(SAMPLE_TEXT_MAX_BYTES + 1);
+        let (result, written) = copied_plain(&over).await;
+        assert_eq!(result.unwrap_err().code, "SAMPLE_TEXT_INVALID");
+        assert!(written.is_none());
+
+        // 上限按字节计：多字节字符不能绕过。
+        let multibyte = "测".repeat(SAMPLE_TEXT_MAX_BYTES / 3 + 1);
+        let (result, written) = copied_plain(&multibyte).await;
+        assert_eq!(result.unwrap_err().code, "SAMPLE_TEXT_INVALID");
+        assert!(written.is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_text_clipboard_failure_maps_to_clipboard_failed() {
+        let err = copy_text("hello", |_| async {
+            Err("写入系统剪贴板失败: denied".to_string())
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "CLIPBOARD_FAILED");
+    }
+
+    #[tokio::test]
+    async fn copy_text_with_key_replaces_every_placeholder_with_the_cached_plaintext() {
+        let dir = TempDir::new().unwrap();
+        let server = MockServer::start().await;
+        let (manager, state) = listed_state(&dir, &server).await;
+        let text = format!(
+            "export K={PLACEHOLDER}\ncurl -H \"Authorization: Bearer {PLACEHOLDER}\" -H 'x: {PLACEHOLDER}'"
+        );
+
+        let (result, written) = copied_with_key(&manager, &state, 1, &text).await;
+
+        result.unwrap();
+        let written = written.expect("writer was called");
+        assert_eq!(
+            written,
+            format!(
+                "export K={SECRET_A}\ncurl -H \"Authorization: Bearer {SECRET_A}\" -H 'x: {SECRET_A}'"
+            )
+        );
+        assert!(!written.contains(PLACEHOLDER));
+        // 已禁用的 Key 也能取到（与 copy_key 一致）。
+        let (result, written) = copied_with_key(&manager, &state, 2, "k=__WE2AI_API_KEY__").await;
+        result.unwrap();
+        assert_eq!(written.as_deref(), Some(format!("k={SECRET_B}").as_str()));
+    }
+
+    #[tokio::test]
+    async fn copy_text_with_key_misses_the_cache_without_calling_the_writer() {
+        let dir = TempDir::new().unwrap();
+        let server = MockServer::start().await;
+        let (live, state) = listed_state(&dir, &server).await;
+
+        // 不在缓存的 id。
+        let (result, written) = copied_with_key(&live, &state, 99, PLACEHOLDER).await;
+        assert_eq!(result.unwrap_err().code, "KEY_NOT_FOUND");
+        assert!(written.is_none());
+
+        // 缓存已失效（写操作后）。
+        state.invalidate();
+        let (result, written) = copied_with_key(&live, &state, 1, PLACEHOLDER).await;
+        assert_eq!(result.unwrap_err().code, "KEY_NOT_FOUND");
+        assert!(written.is_none());
+
+        // 没有会话。
+        let dir2 = TempDir::new().unwrap();
+        let no_session = manager(&dir2);
+        let (result, written) =
+            copied_with_key(&no_session, &We2aiKeyState::default(), 1, PLACEHOLDER).await;
+        assert_eq!(result.unwrap_err().code, "KEY_NOT_FOUND");
+        assert!(written.is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_text_with_key_rejects_a_mismatched_session_identity() {
+        let dir = TempDir::new().unwrap();
+        let server = MockServer::start().await;
+        let (manager, state) = listed_state(&dir, &server).await;
+        let (ok, _) = copied_with_key(&manager, &state, 1, PLACEHOLDER).await;
+        ok.unwrap();
+
+        // 换账号后旧缓存不可见，回到原账号也不复活（同 copy_key）。
+        manager.test_seed_active(Region::International, 7, "access-1", server.uri());
+        let (result, written) = copied_with_key(&manager, &state, 1, PLACEHOLDER).await;
+        assert_eq!(result.unwrap_err().code, "KEY_NOT_FOUND");
+        assert!(written.is_none());
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let (result, written) = copied_with_key(&manager, &state, 1, PLACEHOLDER).await;
+        assert_eq!(result.unwrap_err().code, "KEY_NOT_FOUND");
+        assert!(written.is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_text_with_key_validates_text_before_touching_the_secret() {
+        let dir = TempDir::new().unwrap();
+        let server = MockServer::start().await;
+        let (manager, state) = listed_state(&dir, &server).await;
+
+        for text in [
+            // 空文本。
+            "",
+            // 占位串出现 0 次（环境变量版 / 掩码版 / 只含片段）。
+            "curl $WE2AI_API_KEY",
+            "Bearer sk-we2…7777",
+            "__WE2AI_API_KEY",
+        ] {
+            let (result, written) = copied_with_key(&manager, &state, 1, text).await;
+            assert_eq!(result.unwrap_err().code, "SAMPLE_TEXT_INVALID", "{text:?}");
+            assert!(written.is_none());
+        }
+
+        // 超长：恰好上限放行，超 1 字节拒绝。
+        let at_limit = format!(
+            "{PLACEHOLDER}{}",
+            "x".repeat(SAMPLE_TEXT_MAX_BYTES - PLACEHOLDER.len())
+        );
+        assert_eq!(at_limit.len(), SAMPLE_TEXT_MAX_BYTES);
+        let (result, written) = copied_with_key(&manager, &state, 1, &at_limit).await;
+        result.unwrap();
+        assert!(written.unwrap().starts_with(SECRET_A));
+        let over = format!("{at_limit}x");
+        let (result, written) = copied_with_key(&manager, &state, 1, &over).await;
+        assert_eq!(result.unwrap_err().code, "SAMPLE_TEXT_INVALID");
+        assert!(written.is_none());
+
+        // 校验先于取明文：不存在的 id + 非法输入报输入错误，不泄露缓存里有没有该 Key。
+        let (result, _) = copied_with_key(&manager, &state, 99, "abc").await;
+        assert_eq!(result.unwrap_err().code, "SAMPLE_TEXT_INVALID");
+    }
+
+    #[tokio::test]
+    async fn copy_text_with_key_clipboard_failure_does_not_leak_the_secret() {
+        let dir = TempDir::new().unwrap();
+        let server = MockServer::start().await;
+        let (manager, state) = listed_state(&dir, &server).await;
+
+        let err = copy_text_with_key(&manager, &state, 1, PLACEHOLDER, |_| async {
+            Err("写入系统剪贴板失败: denied".to_string())
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.code, "CLIPBOARD_FAILED");
+        assert!(!err.message.contains(SECRET_A));
+        // 失败不清缓存，可重试。
+        let (result, _) = copied_with_key(&manager, &state, 1, PLACEHOLDER).await;
+        result.unwrap();
     }
 
     #[tokio::test]

@@ -44,6 +44,8 @@ describe("isSessionNeutralError", () => {
       "NETWORK_ERROR",
       "IDEMPOTENCY_IN_PROGRESS",
       "IDEMPOTENCY_RETRY_BACKOFF",
+      "CLIPBOARD_FAILED",
+      "SAMPLE_TEXT_INVALID",
     ]) {
       expect(isSessionNeutralError(code)).toBe(true);
     }

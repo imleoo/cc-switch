@@ -80,12 +80,15 @@ flowchart LR
 | 列表展示 | 新视图 `KeyManageView`（掩码 + 额度等），**不改** `KeyView` | 否 |
 | 复制 Key | 新命令 `we2ai_copy_key(id)`：Rust 从管理页明文缓存取出，用 `arboard` 直接写系统剪贴板；前端只传 id | **否** |
 | 创建成功卡片 | `we2ai_create_key` 响应带一次性 `plaintext`，只用于卡片展示，关闭即清；卡片里的复制同样走 `we2ai_copy_key(newId)`（创建时新 Key 明文已并入 Rust 缓存） | 是，仅卡片生命周期 |
-| P3 示例「填入真实 Key」 | **届时再定**：明文不过 IPC 的约束下需要新命令或在 Rust 侧渲染样例，不恢复 reveal 类命令 | — |
-| 示例默认 | 使用占位 `$WE2AI_API_KEY` / `os.environ["WE2AI_API_KEY"]` | 否 |
+| 示例默认 | 代码框用环境变量占位（`$WE2AI_API_KEY` 等），复制走新命令 `we2ai_copy_text(text)`（Rust 写剪贴板，只收非敏感文本） | 否 |
+| 示例「填入真实 Key」 | 代码框显示**掩码**；复制时前端把带占位串 `__WE2AI_API_KEY__` 的文本传给新命令 `we2ai_copy_text_with_key(id, text)`，Rust 从明文缓存取明文，替换文本中**所有**占位串后写剪贴板（占位串是 Rust 常量 `SAMPLE_KEY_PLACEHOLDER`，前端 `codeSamples.ts::KEY_PLACEHOLDER` 各写一份，守卫校验一致，命令不接收占位串参数） | **否** |
 
 - `we2ai_copy_key` 只接受缓存里已有的 keyId（不在缓存 → `KEY_NOT_FOUND`），写剪贴板失败 → `CLIPBOARD_FAILED`，不提供批量导出。
-- 原方案的 `we2ai_reveal_key`（返回明文给前端再 `copyText()`）已取消：`copyText()` 依赖的 `copy_text_to_clipboard` 不在 IPC 白名单，回退到 `navigator.clipboard` 又受用户手势限制，且让明文过 IPC，得不偿失。
-- 守卫新增：`KeyManageView` 字段清单锁定、不含 `key` 字段；`lib.rs` 不得注册 reveal 类命令；Key 管理页面不得使用 `copyText` / `navigator.clipboard`。
+- `we2ai_copy_text_with_key` 身份校验与 `KEY_NOT_FOUND`、`CLIPBOARD_FAILED` 语义同 `we2ai_copy_key`；另校验 `text` 非空、≤ 64KB、至少含一个占位串，违反返回 `SAMPLE_TEXT_INVALID`（先于取明文校验，不调用 writer）。返回 `()`，错误文案不含明文。
+- `we2ai_copy_text(text)`：只写**非敏感**文本（示例的环境变量版代码、Base URL），只校验非空、≤ 64KB（`SAMPLE_TEXT_INVALID`），写失败 `CLIPBOARD_FAILED`；不碰缓存，不替换任何内容，不得用于明文。
+- 原方案的 `we2ai_reveal_key`（返回明文给前端再 `copyText()`）已取消：`copyText()` 依赖的 `copy_text_to_clipboard` 不在 IPC 白名单，被 gate 拒绝后回退 `navigator.clipboard`，此时用户手势已丢失（macOS WKWebView、Linux WebKitGTK 上大概率失败），且让明文过 IPC，得不偿失。示例局部 state 存明文的方案同样不采用。
+- 同一原因，示例抽屉里**非敏感**文本也不用 `copyText`，统一走 `we2ai_copy_text` / `we2ai_copy_text_with_key`，剪贴板只由 Rust 写（`arboard`）。
+- 守卫新增：`KeyManageView` 字段清单锁定、不含 `key` 字段；`lib.rs` 不得注册 reveal 类命令；Key 管理页面不得使用 `copyText` / `navigator.clipboard`；两个示例复制命令都返回 `Result<(), We2aiApiError>`；Rust / TS 占位串一致；`CodeSampleDrawer.tsx` / `codeSamples.ts` 不得调用返回明文的命令，不得出现 `revealKey`、`plaintext`、`created.`、`copyText`、`navigator.clipboard`。
 
 ## 3. 调用示例抽屉
 
@@ -95,7 +98,9 @@ flowchart LR
 ┌ 调用示例 · 我的Key(默认分组) ──────────────── ✕ ┐
 │ 协议: [OpenAI 兼容] [Anthropic] [Responses]     │
 │ 模型: [claude-sonnet-4-5 ▾]   □ 填入真实 Key     │
-│ 语言: curl | Python | Node.js | Java | Go       │
+│ 先设置环境变量：export … (bash/zsh) / $env:… (PS) │
+│ 前置条件：pip install openai 等（随语言变化）     │
+│ 语言: curl | Python | Node.js | Java | Go | PowerShell │
 │ ┌──────────────────────────────────────────┐   │
 │ │ <代码块，mono，语法高亮可选>               │   │
 │ └──────────────────────────────────────────┘   │
@@ -104,10 +109,12 @@ flowchart LR
 └────────────────────────────────────────────────┘
 ```
 
-- 模型下拉：来自现有 `we2ai_key_models(keyId)`（B1），只列 `callable` 模型；默认选第一个。
-- 协议默认值：分组 `platform=anthropic` → Anthropic；其余 → OpenAI 兼容。
+- 模型下拉：来自现有 `we2ai_key_models(keyId)`（B1），只列 `callable` 模型；默认选第一个。B1 只认模型广场缓存里的 Key（active / quota_exhausted），对已禁用、已过期或不在缓存的 Key 会失败；失败、`callable=false` 或空列表时退化为可编辑文本框（预填 `claude-sonnet-4-5`（Anthropic）/ `gpt-4.1`（其余），手改后不再随协议变化）并显示一行说明。
+- 协议默认值：分组 `platform=anthropic` → Anthropic；其余 → OpenAI 兼容。管理列表视图 `KeyManageView.group` 没有 `platform`，抽屉打开时调 `we2ai_list_key_groups` 按 `group.id` 查（查不到或失败 → OpenAI 兼容；用户已手动选过协议则不再覆盖）。
 - Base URL：新命令 `we2ai_gateway_info` 返回 `region.base_url()`；OpenAI/Responses 用 `{base}/v1`，Anthropic 用 `{base}`（与 `apply.rs` 写入工具的规则一致）。
 - 「Anthropic」协议下 Java/Go 样例用原生 HTTP，不引入 SDK。
+- 「填入真实 Key」勾选时：代码框把 Key 处显示为掩码字面量（如 `sk-a1b2…9f3e`），并提示「复制时将填入完整 Key」；「复制代码」走 `we2ai_copy_text_with_key`（见 2.4），代码框内容与剪贴板内容仅差「掩码 ↔ 真实 Key」。未勾选时走 `we2ai_copy_text`，代码框与剪贴板内容完全一致。手填的模型名含占位串 `__WE2AI_API_KEY__` 时禁用复制并提示（否则该处也会被替换成明文）；模型列表加载中同样禁用复制。
+- 「复制 Base URL」走 `we2ai_copy_text`（非敏感）。入口：Key 列表每行「调用示例」、「Key 已创建」卡片的「查看调用示例」（打开前先关卡片，明文 state 随之清除）。关闭抽屉即卸载，不残留状态。
 
 ### 3.2 模板矩阵（`{BASE}`、`{MODEL}`、`{KEY}` 为占位）
 
@@ -118,6 +125,7 @@ flowchart LR
 | Node.js | `openai` SDK | `@anthropic-ai/sdk` | `openai` SDK |
 | Java | `java.net.http`（JDK 11+，无依赖） | 同左 | 同左 |
 | Go | `net/http` 标准库 | 同左 | 同左 |
+| PowerShell | `Invoke-RestMethod`（5.1 / 7+，body 以 UTF-8 字节发送） | 同左（`x-api-key`） | 同左 |
 
 示例（OpenAI 兼容 · curl）：
 
@@ -151,11 +159,14 @@ import java.net.http.*;
 
 public class We2aiDemo {
     public static void main(String[] args) throws Exception {
-        String body = """
-            {"model":"{MODEL}","messages":[{"role":"user","content":"Hello"}]}
-            """;
+        String apiKey = System.getenv("WE2AI_API_KEY");
+        // 字符串拼接而非文本块，保证 JDK 11 可编译
+        String body = "{"
+            + "\"model\":\"{MODEL}\","
+            + "\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]"
+            + "}";
         HttpRequest req = HttpRequest.newBuilder(URI.create("{BASE}/v1/chat/completions"))
-            .header("Authorization", "Bearer " + System.getenv("WE2AI_API_KEY"))
+            .header("Authorization", "Bearer " + apiKey)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build();
@@ -166,8 +177,9 @@ public class We2aiDemo {
 }
 ```
 
-- 模板放 `src/we2ai/codeSamples.ts`，纯函数 `renderSample(lang, protocol, {base, model, key})`，全部单测快照覆盖（15 个组合）。
-- 「填入真实 Key」关闭时：curl 用 `$WE2AI_API_KEY`，其余语言读环境变量；并在代码块上方提示 `export WE2AI_API_KEY=sk-...`。
+- 模板放 `src/we2ai/codeSamples.ts`，纯函数 `renderSample(lang, protocol, { baseUrl, model, keyExpr })`，`keyExpr` 为 `{kind:"env"}`（读环境变量）或 `{kind:"literal", value}`（掩码 / 待替换串）；全部单测快照覆盖（6 语言 × 3 协议，环境变量与掩码两种各一份），另测三种 keyExpr 模式与模型名特殊字符转义。
+- 请求体最小：一条 `user` 消息 `Hello`；Anthropic 带 `max_tokens: 1024` 与 `anthropic-version: 2023-06-01`；Responses 用 `input`。Java 用字符串拼接（不用文本块，兼容 JDK 11）。
+- 环境变量表达：curl `$WE2AI_API_KEY`、Python `os.environ["WE2AI_API_KEY"]`、Node `process.env.WE2AI_API_KEY`、Java `System.getenv("WE2AI_API_KEY")`、Go `os.Getenv("WE2AI_API_KEY")`；代码块上方同时提示 bash / zsh 的 `export WE2AI_API_KEY=<你的 Key>` 与 PowerShell 的 `$env:WE2AI_API_KEY="<你的 Key>"`；PowerShell 为 `$env:WE2AI_API_KEY`。每种语言代码块上方另有一行前置条件（curl 为 bash / zsh 语法，Windows 用 Git Bash / WSL 或 PowerShell 标签；Python `pip install openai` / `anthropic`；Node.js 22+、`npm i openai` / `@anthropic-ai/sdk`、保存为 `.mjs`；Java 保存为 `We2aiDemo.java`、JDK 11+、`java We2aiDemo.java`；Go 1.20+、`go run main.go`）。
 
 ## 4. 充值：复用 Web 充值页
 
@@ -236,7 +248,9 @@ stateDiagram-v2
 | `we2ai_create_key` | `POST /keys` + `Idempotency-Key` | `KeyManageView` + 一次性明文（仅用于创建成功卡片展示） |
 | `we2ai_update_key` | `PUT /keys/:id` | `KeyManageView` |
 | `we2ai_delete_key` | `DELETE /keys/:id` | `()` |
-| `we2ai_copy_key` | —（读管理页缓存，Rust 写系统剪贴板） | `()`（明文不经 IPC；P3 示例「填入真实 Key」届时再定） |
+| `we2ai_copy_key` | —（读管理页缓存，Rust 写系统剪贴板） | `()`（明文不经 IPC） |
+| `we2ai_copy_text` | —（Rust 写系统剪贴板；`text` 非空且 ≤ 64KB；只收非敏感文本） | `()`（P3 示例的环境变量版代码、Base URL） |
+| `we2ai_copy_text_with_key` | —（读管理页缓存；`text` 中所有 Rust 常量占位串替换为明文后 Rust 写系统剪贴板；`text` 非空、≤ 64KB、至少一个占位串） | `()`（明文不经 IPC；P3 示例「填入真实 Key」） |
 
 - 打开充值页复用已在白名单的上游命令 `open_external`，不新增命令。
 - 全部走现有 `call_protected_api`（自动续期、401 终止会话同 `keys.rs`）。
@@ -270,6 +284,6 @@ stateDiagram-v2
 |---|---|---|
 | P1 | **国际版充值**：顶栏余额 + 充值 Tab（跳转 `https://api.we2ai.com/purchase`）+ 到账检测 + 余额不足「去充值」 | 国际版账号点击后浏览器打开正确页面，未登录时登录后回到 `/purchase`；国际版实付 1 笔（最小金额）后 10s 内 toast 到账并刷新顶栏；5 分钟超时、「停止」「我已完成支付」行为正确 |
 | P2 | Key 管理列表 + 新建/编辑/删除/启停 + 复制（国际版验收） | 四种操作后 Web 端与客户端列表一致；模型广场下拉同步刷新；日志、IPC 抓包中除 `create` 响应的一次性 `plaintext` 外无明文 |
-| P3 | 调用示例抽屉（5 语言 × 3 协议，国际版验收） | 15 个快照单测通过；curl/Python/Java 三种在国际版实测返回 200 |
+| P3 | 调用示例抽屉（6 语言 × 3 协议，国际版验收） | 全部快照单测通过；curl/Python/Java 三种在国际版实测返回 200 |
 | P4 | 国内版验收（代码同 P1–P3，不单独开发） | `api.wtgo.com.cn` / `jiwu.wtgo.com.cn` 充值页打开正确、支付宝或微信 1 笔到账检测通过；Key 管理与示例在国内版回归通过 |
 | 每期 | `check-guards.sh` 新增条目、`自定义开发功能列表.md` 新增功能 20/21 | `./scripts/we2ai/check-guards.sh` 通过；`pnpm typecheck`、`vitest`、`cargo test` 通过 |

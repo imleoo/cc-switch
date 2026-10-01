@@ -223,14 +223,17 @@ export function isValidKeyName(trimmedName: string): boolean {
 }
 
 /**
- * 与会话状态无关的错误码：网络类，以及幂等键「处理中 / 退避中」（服务端在处理上
- * 一次同键请求，稍后重试即可）。遇到这些不需要让外壳复查会话。
+ * 与会话状态无关的错误码：网络类、幂等键「处理中 / 退避中」（服务端在处理上
+ * 一次同键请求，稍后重试即可），以及本地剪贴板 / 示例文本校验失败。遇到这些不需要
+ * 让外壳复查会话。
  */
 const SESSION_NEUTRAL_CODES = new Set([
   "TRANSIENT",
   "NETWORK_ERROR",
   "IDEMPOTENCY_IN_PROGRESS",
   "IDEMPOTENCY_RETRY_BACKOFF",
+  "CLIPBOARD_FAILED",
+  "SAMPLE_TEXT_INVALID",
 ]);
 
 export function isSessionNeutralError(code: string): boolean {

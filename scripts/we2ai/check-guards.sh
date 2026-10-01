@@ -1416,6 +1416,58 @@ if grep -nE '(window\.)?confirm\(' src/we2ai/KeyManagePage.tsx | grep -vE '^[0-9
   err "src/we2ai/KeyManagePage.tsx: 出现 confirm(...)（功能 21：删除确认须为应用内弹窗）"
 fi
 
+# 4.16 功能 22（调用示例）：机械字面量检查。语义行为由 `cargo test --lib we2ai::key_manage`、
+# `tests/we2ai/{codeSamples,CodeSampleDrawer,copyCommands,KeyManagePage}.test.*` 覆盖。
+# ① 两个命令（we2ai_copy_text 非敏感文本、we2ai_copy_text_with_key 带占位串的 Key 替换）在 lib.rs 注册；
+# ② 两者都返回 ()（返回值一变就等于把明文交给了前端）；
+# ③ 占位串字面量 Rust（key_manage.rs::SAMPLE_KEY_PLACEHOLDER）与 TS（codeSamples.ts::KEY_PLACEHOLDER）一致，
+#    we2ai_copy_text_with_key 不接收占位串参数；
+# ④ 抽屉与模板文件不调用任何返回明文的命令（createKey 响应带一次性明文、reveal 类命令）、不碰
+#    copyText / navigator.clipboard（WE2AI 模式下 copy_text_to_clipboard 被 IPC gate 拒绝，前端剪贴板又依赖用户手势，
+#    非敏感文本也必须走 we2ai_copy_text），也不出现 plaintext / created.（创建结果明文）；
+#    「填入真实 Key」只能走 copyTextWithKey（Rust 替换占位串后写剪贴板）。
+for needle in \
+  'we2ai::key_manage::we2ai_copy_text,' \
+  'we2ai::key_manage::we2ai_copy_text_with_key,'; do
+  if ! grep -qF "$needle" "$lib_rs"; then
+    err "$lib_rs: 找不到 ${needle%,}（功能 22：调用示例复制命令注册）"
+  fi
+done
+for cmd in we2ai_copy_text we2ai_copy_text_with_key; do
+  cmd_sig="$(awk -v name="$cmd" 'index($0, "pub async fn " name "(") {f=1} f{print} f&&/\{[[:space:]]*$/{exit}' "$key_manage_rs" 2>/dev/null)"
+  if ! printf '%s\n' "$cmd_sig" | grep -qE '\)[[:space:]]*->[[:space:]]*Result<\(\),[[:space:]]*We2aiApiError>'; then
+    err "$key_manage_rs: ${cmd} 的返回类型不是 Result<(), We2aiApiError>（功能 22：明文不得经 IPC 返回前端）"
+  fi
+  if ! grep -qF "invoke(\"${cmd}\"" src/we2ai/api.ts; then
+    err "src/we2ai/api.ts: 找不到 invoke(\"${cmd}\")（功能 22）"
+  fi
+done
+if printf '%s\n' "$(awk '/pub async fn we2ai_copy_text_with_key\(/{f=1} f{print} f&&/\{[[:space:]]*$/{exit}' "$key_manage_rs" 2>/dev/null)" | grep -q 'placeholder'; then
+  err "$key_manage_rs: we2ai_copy_text_with_key 不应接收占位串参数（功能 22：占位串只认 Rust 常量 SAMPLE_KEY_PLACEHOLDER）"
+fi
+rust_placeholder="$(sed -n 's/.*SAMPLE_KEY_PLACEHOLDER: &str = "\([^"]*\)".*/\1/p' "$key_manage_rs" 2>/dev/null)"
+ts_placeholder="$(sed -n 's/.*KEY_PLACEHOLDER = "\([^"]*\)".*/\1/p' src/we2ai/codeSamples.ts 2>/dev/null)"
+if [[ -z "$rust_placeholder" || "$rust_placeholder" != "$ts_placeholder" ]]; then
+  err "Key 占位串两侧不一致（功能 22）：key_manage.rs='${rust_placeholder}'，codeSamples.ts='${ts_placeholder}'"
+fi
+for f in src/we2ai/CodeSampleDrawer.tsx src/we2ai/codeSamples.ts; do
+  if [[ ! -f "$f" ]]; then
+    err "$f 不存在（功能 22）"
+    continue
+  fi
+  if grep -nE 'revealKey|we2ai_reveal|\.createKey\(|\.copyKey\(|we2ai_create_key|we2ai_copy_key|plaintext|created\.' "$f" | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+    err "$f: 出现返回明文的命令、revealKey、plaintext 或 created.（功能 22：示例不得拿到明文，「填入真实 Key」只能走 copyTextWithKey）"
+  fi
+  if grep -nE '(^|[^A-Za-z0-9_])copyText([^A-Za-z0-9_]|$)|navigator\.clipboard|lib/clipboard' "$f" | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+    err "$f: 出现 copyText / navigator.clipboard（功能 22：WE2AI 模式下前端剪贴板不可靠，非敏感文本走 we2aiApi.copyPlainText，Key 走 copyTextWithKey）"
+  fi
+done
+for fn in copyTextWithKey copyPlainText; do
+  if ! grep -qF "$fn" src/we2ai/CodeSampleDrawer.tsx 2>/dev/null; then
+    err "src/we2ai/CodeSampleDrawer.tsx: 找不到 ${fn}（功能 22：复制必须由 Rust 写剪贴板）"
+  fi
+done
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi

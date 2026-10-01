@@ -408,6 +408,7 @@ describe("KeyManagePage", () => {
       await waitFor(() =>
         expect(toast.error).toHaveBeenCalledWith(t.keyMgrCopyFailed),
       );
+      expect(onSessionMaybeEnded).not.toHaveBeenCalled();
       expect(document.body.textContent).not.toContain(SECRET);
     });
   });
@@ -931,6 +932,125 @@ describe("KeyManagePage", () => {
       expect(events.isSubscribed()).toBe(true);
       view.unmount();
       expect(events.isSubscribed()).toBe(false);
+    });
+  });
+
+  describe("code samples drawer", () => {
+    beforeEach(() => {
+      vi.spyOn(we2aiApi, "gatewayInfo").mockResolvedValue({
+        baseUrl: "https://api.we2ai.com",
+      });
+      vi.spyOn(we2aiApi, "keyModels").mockResolvedValue({
+        models: [{ id: "gpt-4.1", provider: null, tools: [], price: null }],
+        callable: true,
+        blockedReason: null,
+        pricing: null,
+      });
+    });
+
+    it("every row has a 调用示例 action that opens the drawer for that key and closes cleanly", async () => {
+      vi.spyOn(we2aiApi, "manageListKeys").mockResolvedValue([
+        makeKey(1, { name: "alpha" }),
+        makeKey(2, { name: "beta", group: { id: 8, name: "另一组", rate: 1 } }),
+      ]);
+      const keyModels = vi.spyOn(we2aiApi, "keyModels");
+      await renderPage();
+      await screen.findByTestId("key-row-1");
+      expect(
+        screen.getByRole("button", { name: "调用示例 alpha" }),
+      ).toBeInTheDocument();
+
+      await userEvent.click(
+        screen.getByRole("button", { name: "调用示例 beta" }),
+      );
+
+      const drawer = await screen.findByTestId("code-sample-drawer");
+      expect(
+        within(drawer).getByRole("heading", {
+          name: "调用示例 · beta（另一组）",
+        }),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(keyModels).toHaveBeenCalledWith(2));
+      expect(
+        await within(drawer).findByTestId("sample-code"),
+      ).toHaveTextContent("https://api.we2ai.com/v1/chat/completions");
+
+      await userEvent.click(
+        within(drawer).getByRole("button", { name: "关闭调用示例" }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByTestId("code-sample-drawer")).toBeNull(),
+      );
+    });
+
+    it("the drawer's real-key copy goes through Rust and a stale cache triggers a list refresh", async () => {
+      const list = vi
+        .spyOn(we2aiApi, "manageListKeys")
+        .mockResolvedValue([makeKey(1, { name: "alpha" })]);
+      const copyTextWithKey = vi
+        .spyOn(we2aiApi, "copyTextWithKey")
+        .mockRejectedValueOnce(apiError("KEY_NOT_FOUND"));
+      await renderPage();
+      await screen.findByTestId("key-row-1");
+      await userEvent.click(
+        screen.getByRole("button", { name: "调用示例 alpha" }),
+      );
+      const drawer = await screen.findByTestId("code-sample-drawer");
+      await userEvent.click(
+        within(drawer).getByRole("checkbox", { name: "填入真实 Key" }),
+      );
+
+      await userEvent.click(
+        within(drawer).getByRole("button", { name: "复制代码" }),
+      );
+
+      await waitFor(() => expect(copyTextWithKey).toHaveBeenCalledTimes(1));
+      expect(copyTextWithKey.mock.calls[0][0]).toBe(1);
+      await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+      expect(copyText).not.toHaveBeenCalled();
+      expect(document.body.textContent).not.toContain(SECRET);
+    });
+
+    it("the created card's 查看调用示例 closes the card (dropping the plaintext) and opens the drawer for the new key", async () => {
+      const created: We2aiCreatedKey = {
+        key: makeKey(9, { name: "新 Key", maskedKey: "sk-we2…9999" }),
+        plaintext: SECRET,
+      };
+      vi.spyOn(we2aiApi, "listKeyGroups").mockResolvedValue([
+        { id: 7, name: "默认分组", platform: "anthropic", rate: 1 },
+      ]);
+      vi.spyOn(we2aiApi, "createKey").mockResolvedValue(created);
+      vi.spyOn(we2aiApi, "manageListKeys")
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([created.key]);
+      const user = userEvent.setup();
+      await renderPage();
+      await screen.findByTestId("key-manage-empty");
+      await user.click(screen.getByRole("button", { name: "+ 新建 Key" }));
+      await user.type(await screen.findByLabelText("名称"), "新 Key");
+      const submit = screen.getByRole("button", { name: "创建" });
+      await waitFor(() => expect(submit).toBeEnabled());
+      await user.click(submit);
+      const card = await screen.findByTestId("key-created-dialog");
+      expect(card).toHaveTextContent(SECRET);
+
+      await user.click(
+        within(card).getByRole("button", { name: "查看调用示例" }),
+      );
+
+      const drawer = await screen.findByTestId("code-sample-drawer");
+      expect(
+        within(drawer).getByRole("heading", {
+          name: "调用示例 · 新 Key（默认分组）",
+        }),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("key-created-dialog")).toBeNull();
+      expect(document.body.textContent).not.toContain(SECRET);
+      await waitFor(() =>
+        expect(
+          within(drawer).getByRole("button", { name: "Anthropic" }),
+        ).toHaveAttribute("aria-pressed", "true"),
+      );
     });
   });
 });

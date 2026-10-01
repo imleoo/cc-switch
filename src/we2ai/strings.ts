@@ -339,6 +339,39 @@ export interface We2aiStrings {
   keyMgrErrResultUnknown: string;
   keyMgrErrSessionChanged: string;
   keyMgrExpiryDayNote: string;
+  // 调用示例抽屉（功能 22）
+  sampleAction: string;
+  sampleFromCreated: string;
+  /** 标题模板，占位 {name} {group}。 */
+  sampleTitle: string;
+  sampleClose: string;
+  sampleProtocolLabel: string;
+  sampleProtocolOpenai: string;
+  sampleProtocolAnthropic: string;
+  sampleProtocolResponses: string;
+  sampleModelLabel: string;
+  sampleModelsLoading: string;
+  sampleModelFallbackNote: string;
+  sampleFillRealKey: string;
+  sampleFillRealHint: string;
+  sampleLangLabel: string;
+  sampleEnvHint: string;
+  sampleEnvKeyPlaceholder: string;
+  sampleModelDefaultHint: string;
+  sampleModelPlaceholderConflict: string;
+  sampleReqCurl: string;
+  sampleReqPythonOpenai: string;
+  sampleReqPythonAnthropic: string;
+  sampleReqNodeOpenai: string;
+  sampleReqNodeAnthropic: string;
+  sampleReqJava: string;
+  sampleReqGo: string;
+  sampleReqPowershell: string;
+  sampleBaseUrlLabel: string;
+  sampleCopyBaseUrl: string;
+  sampleCopyCode: string;
+  sampleBaseLoading: string;
+  sampleBaseFailed: string;
   /** 模型广场无 Key 空状态里的按钮：跳 Key 管理并打开新建弹窗。 */
   keyCreateFromEmpty: string;
 }
@@ -653,6 +686,44 @@ const zh: We2aiStrings = {
   keyMgrErrResultUnknown: "请求结果未知，请刷新列表确认后再操作",
   keyMgrErrSessionChanged: "会话已切换，原操作可能已生效，请刷新后确认结果",
   keyMgrExpiryDayNote: "按天计算，实际到期时间可能晚于所选日期不足 1 天",
+  sampleAction: "调用示例",
+  sampleFromCreated: "查看调用示例",
+  sampleTitle: "调用示例 · {name}（{group}）",
+  sampleClose: "关闭调用示例",
+  sampleProtocolLabel: "协议",
+  sampleProtocolOpenai: "OpenAI 兼容",
+  sampleProtocolAnthropic: "Anthropic",
+  sampleProtocolResponses: "Responses",
+  sampleModelLabel: "模型",
+  sampleModelsLoading: "正在加载模型…",
+  sampleModelFallbackNote:
+    "没能取到这个 Key 的可用模型列表（Key 已禁用、已过期或不可调用），请手动填写模型名。",
+  sampleFillRealKey: "填入真实 Key",
+  sampleFillRealHint: "代码里显示的是掩码，复制时将填入完整 Key。",
+  sampleLangLabel: "语言",
+  sampleEnvHint: "先设置环境变量：",
+  sampleEnvKeyPlaceholder: "你的 Key",
+  sampleModelDefaultHint: "预填的是默认模型，请替换为你分组可用的模型。",
+  sampleModelPlaceholderConflict:
+    "模型名不能包含 __WE2AI_API_KEY__（它是 Key 占位串），请改一下。",
+  sampleReqCurl:
+    "bash / zsh 语法。Windows 请用 Git Bash 或 WSL，或切到 PowerShell 标签。",
+  sampleReqPythonOpenai: "先执行 pip install openai",
+  sampleReqPythonAnthropic: "先执行 pip install anthropic",
+  sampleReqNodeOpenai:
+    "Node.js 22+，先执行 npm i openai；保存为 .mjs 运行（或在 package.json 里设置 type 为 module）。",
+  sampleReqNodeAnthropic:
+    "Node.js 22+，先执行 npm i @anthropic-ai/sdk；保存为 .mjs 运行（或在 package.json 里设置 type 为 module）。",
+  sampleReqJava:
+    "JDK 11+，无第三方依赖；保存为 We2aiDemo.java，执行 java We2aiDemo.java。",
+  sampleReqGo: "Go 1.20+，无第三方依赖；保存为 main.go，执行 go run main.go。",
+  sampleReqPowershell:
+    "Windows PowerShell 5.1 或 PowerShell 7+，无需安装其它工具。",
+  sampleBaseUrlLabel: "Base URL",
+  sampleCopyBaseUrl: "复制 Base URL",
+  sampleCopyCode: "复制代码",
+  sampleBaseLoading: "正在读取网关地址…",
+  sampleBaseFailed: "网关地址读取失败，请重试",
 };
 
 const en: We2aiStrings = {
@@ -1003,6 +1074,47 @@ const en: We2aiStrings = {
     "The session changed; the previous action may already have taken effect. Refresh to check the result",
   keyMgrExpiryDayNote:
     "Counted in whole days: the key may expire up to less than a day after the chosen date",
+  sampleAction: "Code samples",
+  sampleFromCreated: "View code samples",
+  sampleTitle: "Code samples · {name} ({group})",
+  sampleClose: "Close code samples",
+  sampleProtocolLabel: "Protocol",
+  sampleProtocolOpenai: "OpenAI compatible",
+  sampleProtocolAnthropic: "Anthropic",
+  sampleProtocolResponses: "Responses",
+  sampleModelLabel: "Model",
+  sampleModelsLoading: "Loading models...",
+  sampleModelFallbackNote:
+    "Could not load the models this key can call (it may be disabled, expired or not callable). Enter a model name manually.",
+  sampleFillRealKey: "Fill in the real key",
+  sampleFillRealHint:
+    "The code shows a masked key; the full key is filled in when you copy.",
+  sampleLangLabel: "Language",
+  sampleEnvHint: "Set the environment variable first: ",
+  sampleEnvKeyPlaceholder: "your key",
+  sampleModelDefaultHint:
+    "The model name is a default; replace it with a model your group can use.",
+  sampleModelPlaceholderConflict:
+    "The model name cannot contain __WE2AI_API_KEY__ (the key placeholder). Please change it.",
+  sampleReqCurl:
+    "bash / zsh syntax. On Windows use Git Bash or WSL, or switch to the PowerShell tab.",
+  sampleReqPythonOpenai: "Run pip install openai first.",
+  sampleReqPythonAnthropic: "Run pip install anthropic first.",
+  sampleReqNodeOpenai:
+    "Node.js 22+. Run npm i openai first; save as .mjs (or set type to module in package.json).",
+  sampleReqNodeAnthropic:
+    "Node.js 22+. Run npm i @anthropic-ai/sdk first; save as .mjs (or set type to module in package.json).",
+  sampleReqJava:
+    "JDK 11+, no third-party dependencies. Save as We2aiDemo.java and run java We2aiDemo.java.",
+  sampleReqGo:
+    "Go 1.20+, no third-party dependencies. Save as main.go and run go run main.go.",
+  sampleReqPowershell:
+    "Windows PowerShell 5.1 or PowerShell 7+; nothing else to install.",
+  sampleBaseUrlLabel: "Base URL",
+  sampleCopyBaseUrl: "Copy Base URL",
+  sampleCopyCode: "Copy code",
+  sampleBaseLoading: "Reading gateway address...",
+  sampleBaseFailed: "Could not read the gateway address, please retry",
 };
 
 const TABLE: Record<We2aiLanguage, We2aiStrings> = { zh, en };
@@ -1104,6 +1216,8 @@ export function getWe2aiKeyErrorMessage(t: We2aiStrings, code: string): string {
       return t.keyMgrErrInProgress;
     case "CLIPBOARD_FAILED":
       return t.keyMgrCopyFailed;
+    case "SAMPLE_TEXT_INVALID":
+      return t.keyMgrErrInvalid;
     case "SESSION_CHANGED":
       return t.keyMgrErrSessionChanged;
     default:

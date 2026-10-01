@@ -26,6 +26,7 @@ import {
   type We2aiManagedKey,
   type We2aiManagedKeyStatus,
 } from "./api";
+import { CodeSampleDrawer } from "./CodeSampleDrawer";
 import { KeyEditDialog } from "./KeyEditDialog";
 import {
   describeExpiry,
@@ -107,6 +108,9 @@ export function KeyManagePage({
     null,
   );
   const [created, setCreated] = useState<We2aiCreatedKey | null>(null);
+  const [sampleTarget, setSampleTarget] = useState<We2aiManagedKey | null>(
+    null,
+  );
 
   // 相对时间（过期倒计时、最近使用、已过期判定）用的「现在」：每分钟刷新一次，
   // 列表重新拉取成功时也刷新，避免页面停留很久后显示过期的相对时间。
@@ -423,6 +427,14 @@ export function KeyManagePage({
                       <button
                         type="button"
                         className="we2ai-model-action"
+                        aria-label={`${t.sampleAction} ${key.name}`}
+                        onClick={() => setSampleTarget(key)}
+                      >
+                        {t.sampleAction}
+                      </button>
+                      <button
+                        type="button"
+                        className="we2ai-model-action"
                         disabled={busy}
                         aria-label={`${t.keyMgrEdit} ${key.name}`}
                         onClick={() => setEditTarget({ mode: "edit", key })}
@@ -570,6 +582,23 @@ export function KeyManagePage({
           onCopy={() => handleCopy(created.key)}
           // 关闭即清除前端持有的明文。
           onClose={() => setCreated(null)}
+          // 打开示例抽屉前先关掉本卡片：明文 state 随之清除，抽屉里的「填入真实 Key」
+          // 走 Rust 缓存，不需要前端再持有明文。
+          onViewSamples={() => {
+            setSampleTarget(created.key);
+            setCreated(null);
+          }}
+        />
+      )}
+
+      {sampleTarget && (
+        <CodeSampleDrawer
+          key={sampleTarget.id}
+          t={t}
+          keyItem={sampleTarget}
+          onClose={() => setSampleTarget(null)}
+          onKeyStale={() => void load()}
+          onSessionMaybeEnded={onSessionMaybeEnded}
         />
       )}
 
@@ -597,12 +626,15 @@ function KeyCreatedDialog({
   created,
   onCopy,
   onClose,
+  onViewSamples,
 }: {
   t: We2aiStrings;
   created: We2aiCreatedKey;
   /** 复制走 Rust（创建时新 Key 的明文已并入管理页缓存），前端不回传明文。 */
   onCopy: () => Promise<void>;
   onClose: () => void;
+  /** 打开新 Key 的调用示例抽屉（父组件同时关闭本卡片）。 */
+  onViewSamples: () => void;
 }) {
   return (
     <Dialog
@@ -638,6 +670,14 @@ function KeyCreatedDialog({
             className={secondaryButtonClass}
           >
             {t.keyMgrCopy}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onViewSamples}
+            className={secondaryButtonClass}
+          >
+            {t.sampleFromCreated}
           </Button>
           <Button
             type="button"

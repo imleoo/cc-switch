@@ -1559,6 +1559,8 @@ pub fn run() {
                 we2ai::key_manage::we2ai_update_key,
                 we2ai::key_manage::we2ai_delete_key,
                 we2ai::key_manage::we2ai_copy_key,
+                we2ai::key_manage::we2ai_copy_text,
+                we2ai::key_manage::we2ai_copy_text_with_key,
                 we2ai::billing::we2ai_get_balance,
                 we2ai::billing::we2ai_gateway_info,
                 we2ai::announcements::we2ai_list_announcements,

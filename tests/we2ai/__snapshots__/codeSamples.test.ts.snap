@@ -1,0 +1,675 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderSample snapshots (env placeholder) > curl / anthropic 1`] = `
+"curl https://api.we2ai.com/v1/messages \\
+  -H "x-api-key: $WE2AI_API_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'"
+`;
+
+exports[`renderSample snapshots (env placeholder) > curl / openai 1`] = `
+"curl https://api.we2ai.com/v1/chat/completions \\
+  -H "Authorization: Bearer $WE2AI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}]}'"
+`;
+
+exports[`renderSample snapshots (env placeholder) > curl / responses 1`] = `
+"curl https://api.we2ai.com/v1/responses \\
+  -H "Authorization: Bearer $WE2AI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"claude-sonnet-4-5","input":"Hello"}'"
+`;
+
+exports[`renderSample snapshots (env placeholder) > go / anthropic 1`] = `
+"package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+)
+
+func main() {
+	apiKey := os.Getenv("WE2AI_API_KEY")
+	body := \`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}\`
+
+	req, err := http.NewRequest("POST", "https://api.we2ai.com/v1/messages", strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(out))
+}"
+`;
+
+exports[`renderSample snapshots (env placeholder) > go / openai 1`] = `
+"package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+)
+
+func main() {
+	apiKey := os.Getenv("WE2AI_API_KEY")
+	body := \`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}]}\`
+
+	req, err := http.NewRequest("POST", "https://api.we2ai.com/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(out))
+}"
+`;
+
+exports[`renderSample snapshots (env placeholder) > go / responses 1`] = `
+"package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+)
+
+func main() {
+	apiKey := os.Getenv("WE2AI_API_KEY")
+	body := \`{"model":"claude-sonnet-4-5","input":"Hello"}\`
+
+	req, err := http.NewRequest("POST", "https://api.we2ai.com/v1/responses", strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(out))
+}"
+`;
+
+exports[`renderSample snapshots (env placeholder) > java / anthropic 1`] = `
+"import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class We2aiDemo {
+    public static void main(String[] args) throws Exception {
+        String apiKey = System.getenv("WE2AI_API_KEY");
+        String body = "{"
+            + "\\"model\\":\\"claude-sonnet-4-5\\","
+            + "\\"max_tokens\\":1024,"
+            + "\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"Hello\\"}]"
+            + "}";
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create("https://api.we2ai.com/v1/messages"))
+            .header("x-api-key", apiKey)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> resp = HttpClient.newHttpClient()
+            .send(req, HttpResponse.BodyHandlers.ofString());
+        System.out.println(resp.body());
+    }
+}"
+`;
+
+exports[`renderSample snapshots (env placeholder) > java / openai 1`] = `
+"import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class We2aiDemo {
+    public static void main(String[] args) throws Exception {
+        String apiKey = System.getenv("WE2AI_API_KEY");
+        String body = "{"
+            + "\\"model\\":\\"claude-sonnet-4-5\\","
+            + "\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"Hello\\"}]"
+            + "}";
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create("https://api.we2ai.com/v1/chat/completions"))
+            .header("Authorization", "Bearer " + apiKey)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> resp = HttpClient.newHttpClient()
+            .send(req, HttpResponse.BodyHandlers.ofString());
+        System.out.println(resp.body());
+    }
+}"
+`;
+
+exports[`renderSample snapshots (env placeholder) > java / responses 1`] = `
+"import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class We2aiDemo {
+    public static void main(String[] args) throws Exception {
+        String apiKey = System.getenv("WE2AI_API_KEY");
+        String body = "{"
+            + "\\"model\\":\\"claude-sonnet-4-5\\","
+            + "\\"input\\":\\"Hello\\""
+            + "}";
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create("https://api.we2ai.com/v1/responses"))
+            .header("Authorization", "Bearer " + apiKey)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> resp = HttpClient.newHttpClient()
+            .send(req, HttpResponse.BodyHandlers.ofString());
+        System.out.println(resp.body());
+    }
+}"
+`;
+
+exports[`renderSample snapshots (env placeholder) > node / anthropic 1`] = `
+"import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "https://api.we2ai.com",
+  apiKey: process.env.WE2AI_API_KEY,
+});
+
+const msg = await client.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(msg.content[0].text);"
+`;
+
+exports[`renderSample snapshots (env placeholder) > node / openai 1`] = `
+"import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://api.we2ai.com/v1",
+  apiKey: process.env.WE2AI_API_KEY,
+});
+
+const resp = await client.chat.completions.create({
+  model: "claude-sonnet-4-5",
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(resp.choices[0].message.content);"
+`;
+
+exports[`renderSample snapshots (env placeholder) > node / responses 1`] = `
+"import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://api.we2ai.com/v1",
+  apiKey: process.env.WE2AI_API_KEY,
+});
+
+const resp = await client.responses.create({
+  model: "claude-sonnet-4-5",
+  input: "Hello",
+});
+console.log(resp.output_text);"
+`;
+
+exports[`renderSample snapshots (env placeholder) > powershell / anthropic 1`] = `
+"$headers = @{
+    "x-api-key" = $env:WE2AI_API_KEY
+    "anthropic-version" = '2023-06-01'
+}
+$body = '{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
+$resp = Invoke-RestMethod \`
+  -Uri 'https://api.we2ai.com/v1/messages' \`
+  -Method Post \`
+  -Headers $headers \`
+  -ContentType "application/json" \`
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+$resp | ConvertTo-Json -Depth 10"
+`;
+
+exports[`renderSample snapshots (env placeholder) > powershell / openai 1`] = `
+"$headers = @{
+    "Authorization" = "Bearer $env:WE2AI_API_KEY"
+}
+$body = '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}]}'
+
+$resp = Invoke-RestMethod \`
+  -Uri 'https://api.we2ai.com/v1/chat/completions' \`
+  -Method Post \`
+  -Headers $headers \`
+  -ContentType "application/json" \`
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+$resp | ConvertTo-Json -Depth 10"
+`;
+
+exports[`renderSample snapshots (env placeholder) > powershell / responses 1`] = `
+"$headers = @{
+    "Authorization" = "Bearer $env:WE2AI_API_KEY"
+}
+$body = '{"model":"claude-sonnet-4-5","input":"Hello"}'
+
+$resp = Invoke-RestMethod \`
+  -Uri 'https://api.we2ai.com/v1/responses' \`
+  -Method Post \`
+  -Headers $headers \`
+  -ContentType "application/json" \`
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+$resp | ConvertTo-Json -Depth 10"
+`;
+
+exports[`renderSample snapshots (env placeholder) > python / anthropic 1`] = `
+"import os
+from anthropic import Anthropic
+
+client = Anthropic(base_url="https://api.we2ai.com", api_key=os.environ["WE2AI_API_KEY"])
+msg = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(msg.content[0].text)"
+`;
+
+exports[`renderSample snapshots (env placeholder) > python / openai 1`] = `
+"import os
+from openai import OpenAI
+
+client = OpenAI(base_url="https://api.we2ai.com/v1", api_key=os.environ["WE2AI_API_KEY"])
+resp = client.chat.completions.create(
+    model="claude-sonnet-4-5",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(resp.choices[0].message.content)"
+`;
+
+exports[`renderSample snapshots (env placeholder) > python / responses 1`] = `
+"import os
+from openai import OpenAI
+
+client = OpenAI(base_url="https://api.we2ai.com/v1", api_key=os.environ["WE2AI_API_KEY"])
+resp = client.responses.create(
+    model="claude-sonnet-4-5",
+    input="Hello",
+)
+print(resp.output_text)"
+`;
+
+exports[`renderSample snapshots (literal mask) > curl / anthropic 1`] = `
+"curl https://api.we2ai.com/v1/messages \\
+  -H "x-api-key: sk-a1b2…9f3e" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'"
+`;
+
+exports[`renderSample snapshots (literal mask) > curl / openai 1`] = `
+"curl https://api.we2ai.com/v1/chat/completions \\
+  -H "Authorization: Bearer sk-a1b2…9f3e" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}]}'"
+`;
+
+exports[`renderSample snapshots (literal mask) > curl / responses 1`] = `
+"curl https://api.we2ai.com/v1/responses \\
+  -H "Authorization: Bearer sk-a1b2…9f3e" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"claude-sonnet-4-5","input":"Hello"}'"
+`;
+
+exports[`renderSample snapshots (literal mask) > go / anthropic 1`] = `
+"package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+)
+
+func main() {
+	apiKey := "sk-a1b2…9f3e"
+	body := \`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}\`
+
+	req, err := http.NewRequest("POST", "https://api.we2ai.com/v1/messages", strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(out))
+}"
+`;
+
+exports[`renderSample snapshots (literal mask) > go / openai 1`] = `
+"package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+)
+
+func main() {
+	apiKey := "sk-a1b2…9f3e"
+	body := \`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}]}\`
+
+	req, err := http.NewRequest("POST", "https://api.we2ai.com/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(out))
+}"
+`;
+
+exports[`renderSample snapshots (literal mask) > go / responses 1`] = `
+"package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+)
+
+func main() {
+	apiKey := "sk-a1b2…9f3e"
+	body := \`{"model":"claude-sonnet-4-5","input":"Hello"}\`
+
+	req, err := http.NewRequest("POST", "https://api.we2ai.com/v1/responses", strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(out))
+}"
+`;
+
+exports[`renderSample snapshots (literal mask) > java / anthropic 1`] = `
+"import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class We2aiDemo {
+    public static void main(String[] args) throws Exception {
+        String apiKey = "sk-a1b2…9f3e";
+        String body = "{"
+            + "\\"model\\":\\"claude-sonnet-4-5\\","
+            + "\\"max_tokens\\":1024,"
+            + "\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"Hello\\"}]"
+            + "}";
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create("https://api.we2ai.com/v1/messages"))
+            .header("x-api-key", apiKey)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> resp = HttpClient.newHttpClient()
+            .send(req, HttpResponse.BodyHandlers.ofString());
+        System.out.println(resp.body());
+    }
+}"
+`;
+
+exports[`renderSample snapshots (literal mask) > java / openai 1`] = `
+"import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class We2aiDemo {
+    public static void main(String[] args) throws Exception {
+        String apiKey = "sk-a1b2…9f3e";
+        String body = "{"
+            + "\\"model\\":\\"claude-sonnet-4-5\\","
+            + "\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"Hello\\"}]"
+            + "}";
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create("https://api.we2ai.com/v1/chat/completions"))
+            .header("Authorization", "Bearer " + apiKey)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> resp = HttpClient.newHttpClient()
+            .send(req, HttpResponse.BodyHandlers.ofString());
+        System.out.println(resp.body());
+    }
+}"
+`;
+
+exports[`renderSample snapshots (literal mask) > java / responses 1`] = `
+"import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class We2aiDemo {
+    public static void main(String[] args) throws Exception {
+        String apiKey = "sk-a1b2…9f3e";
+        String body = "{"
+            + "\\"model\\":\\"claude-sonnet-4-5\\","
+            + "\\"input\\":\\"Hello\\""
+            + "}";
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create("https://api.we2ai.com/v1/responses"))
+            .header("Authorization", "Bearer " + apiKey)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+        HttpResponse<String> resp = HttpClient.newHttpClient()
+            .send(req, HttpResponse.BodyHandlers.ofString());
+        System.out.println(resp.body());
+    }
+}"
+`;
+
+exports[`renderSample snapshots (literal mask) > node / anthropic 1`] = `
+"import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "https://api.we2ai.com",
+  apiKey: "sk-a1b2…9f3e",
+});
+
+const msg = await client.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(msg.content[0].text);"
+`;
+
+exports[`renderSample snapshots (literal mask) > node / openai 1`] = `
+"import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://api.we2ai.com/v1",
+  apiKey: "sk-a1b2…9f3e",
+});
+
+const resp = await client.chat.completions.create({
+  model: "claude-sonnet-4-5",
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(resp.choices[0].message.content);"
+`;
+
+exports[`renderSample snapshots (literal mask) > node / responses 1`] = `
+"import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://api.we2ai.com/v1",
+  apiKey: "sk-a1b2…9f3e",
+});
+
+const resp = await client.responses.create({
+  model: "claude-sonnet-4-5",
+  input: "Hello",
+});
+console.log(resp.output_text);"
+`;
+
+exports[`renderSample snapshots (literal mask) > powershell / anthropic 1`] = `
+"$headers = @{
+    "x-api-key" = 'sk-a1b2…9f3e'
+    "anthropic-version" = '2023-06-01'
+}
+$body = '{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+
+$resp = Invoke-RestMethod \`
+  -Uri 'https://api.we2ai.com/v1/messages' \`
+  -Method Post \`
+  -Headers $headers \`
+  -ContentType "application/json" \`
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+$resp | ConvertTo-Json -Depth 10"
+`;
+
+exports[`renderSample snapshots (literal mask) > powershell / openai 1`] = `
+"$headers = @{
+    "Authorization" = 'Bearer sk-a1b2…9f3e'
+}
+$body = '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}]}'
+
+$resp = Invoke-RestMethod \`
+  -Uri 'https://api.we2ai.com/v1/chat/completions' \`
+  -Method Post \`
+  -Headers $headers \`
+  -ContentType "application/json" \`
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+$resp | ConvertTo-Json -Depth 10"
+`;
+
+exports[`renderSample snapshots (literal mask) > powershell / responses 1`] = `
+"$headers = @{
+    "Authorization" = 'Bearer sk-a1b2…9f3e'
+}
+$body = '{"model":"claude-sonnet-4-5","input":"Hello"}'
+
+$resp = Invoke-RestMethod \`
+  -Uri 'https://api.we2ai.com/v1/responses' \`
+  -Method Post \`
+  -Headers $headers \`
+  -ContentType "application/json" \`
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+$resp | ConvertTo-Json -Depth 10"
+`;
+
+exports[`renderSample snapshots (literal mask) > python / anthropic 1`] = `
+"from anthropic import Anthropic
+
+client = Anthropic(base_url="https://api.we2ai.com", api_key="sk-a1b2…9f3e")
+msg = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(msg.content[0].text)"
+`;
+
+exports[`renderSample snapshots (literal mask) > python / openai 1`] = `
+"from openai import OpenAI
+
+client = OpenAI(base_url="https://api.we2ai.com/v1", api_key="sk-a1b2…9f3e")
+resp = client.chat.completions.create(
+    model="claude-sonnet-4-5",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(resp.choices[0].message.content)"
+`;
+
+exports[`renderSample snapshots (literal mask) > python / responses 1`] = `
+"from openai import OpenAI
+
+client = OpenAI(base_url="https://api.we2ai.com/v1", api_key="sk-a1b2…9f3e")
+resp = client.responses.create(
+    model="claude-sonnet-4-5",
+    input="Hello",
+)
+print(resp.output_text)"
+`;
