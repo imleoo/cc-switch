@@ -262,6 +262,13 @@ interface ModelSquarePageProps {
    * 确认——避免网络异常时把确认按钮永久挡住。
    */
   onBeforeApplyDialogOpen?: () => Promise<boolean>;
+  /** Key 因余额不足被拦截时，提示条上的「去充值」按钮：外壳切到充值 Tab。 */
+  onOpenBilling?: () => void;
+  /**
+   * 外部刷新信号：数值变化（如充值到账）时重拉当前 Key 的模型与准入状态，让
+   * 「余额不足」提示条立即更新。首次渲染的初始值不触发。
+   */
+  reloadSignal?: number;
 }
 
 export function ModelSquarePage({
@@ -271,6 +278,8 @@ export function ModelSquarePage({
   quickCcSwitchStatus = null,
   onApplied,
   onBeforeApplyDialogOpen,
+  onOpenBilling,
+  reloadSignal = 0,
 }: ModelSquarePageProps) {
   // Codex 验收 W2/V2：快速检测取得确定结果时优先于旧的完整报告，而不是
   // 与之 OR 合并（见 `quickCcSwitchStatus` 的文档）；复用与顶栏
@@ -300,6 +309,12 @@ export function ModelSquarePage({
   const supersededRetried = useRef(false);
   // "刷新"成功后即使选中的 Key 没变也重拉模型与准入状态。
   const [modelsReloadTick, setModelsReloadTick] = useState(0);
+  const lastReloadSignal = useRef(reloadSignal);
+  useEffect(() => {
+    if (reloadSignal === lastReloadSignal.current) return;
+    lastReloadSignal.current = reloadSignal;
+    setModelsReloadTick((n) => n + 1);
+  }, [reloadSignal]);
 
   const handleError = useCallback(
     (error: unknown, setMessage: (message: string) => void) => {
@@ -581,9 +596,18 @@ export function ModelSquarePage({
       {models && !models.callable && (
         <div
           role="alert"
-          className="border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-orange)] px-3 py-2 text-xs font-medium text-[var(--we2ai-paper)]"
+          className="flex items-center justify-between gap-3 border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-orange)] px-3 py-2 text-xs font-medium text-[var(--we2ai-paper)]"
         >
-          {describeBlockedReason(t, models.blockedReason)}
+          <span>{describeBlockedReason(t, models.blockedReason)}</span>
+          {models.blockedReason === "INSUFFICIENT_BALANCE" && onOpenBilling && (
+            <button
+              type="button"
+              onClick={onOpenBilling}
+              className="we2ai-model-action shrink-0"
+            >
+              {t.keyBlockedTopUp}
+            </button>
+          )}
         </div>
       )}
 

@@ -1309,6 +1309,39 @@ if ! grep -q 'NOTIFIED_MAX: usize = 200' src-tauri/src/we2ai/announcements.rs; t
   err "src-tauri/src/we2ai/announcements.rs: 已通知 id 上限 NOTIFIED_MAX 不是 200（功能 19）"
 fi
 
+# 4.14 功能 20（充值入口与余额）：机械字面量检查。客户端不实现支付，充值统一跳 Web 充值页；
+# 语义行为由 `cargo test --lib we2ai::billing`、`tests/we2ai/{useBalanceWatch,BillingPage}.test.tsx`、
+# `tests/integration/We2aiShellBilling.test.tsx` 覆盖。
+for needle in \
+  'we2ai::billing::we2ai_get_balance' \
+  'we2ai::billing::we2ai_gateway_info'; do
+  if ! grep -qF "$needle" "$lib_rs"; then
+    err "$lib_rs: 找不到 ${needle}（功能 20：余额与网关地址命令注册）"
+  fi
+done
+billing_page=src/we2ai/BillingPage.tsx
+if ! grep -qF '"/purchase"' "$billing_page"; then
+  err "$billing_page: 找不到 \"/purchase\"，充值页跳转（功能 20）可能已被改动"
+fi
+if grep -nE 'https?://' "$billing_page" | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+  err "$billing_page: 出现写死的 http(s) 地址（功能 20：充值页地址必须来自 we2ai_gateway_info 的 base_url，不得硬编码域名）"
+fi
+# openExternal 参数必须是 base_url 拼接，不能是别的来源。
+if ! grep -qF 'openExternal(`${base}${path}`)' "$billing_page"; then
+  err "$billing_page: 找不到 openExternal(\`\${base}\${path}\`)，充值页地址必须由 gateway base_url 拼接（功能 20）"
+fi
+# 不带协议的硬编码域名同样不允许（注释行除外）。
+if grep -nE 'we2ai\.com|wtgo\.com\.cn' "$billing_page" | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+  err "$billing_page: 出现写死的域名（api.we2ai.com / api.wtgo.com.cn 等，功能 20：地址必须来自 we2ai_gateway_info 的 base_url）"
+fi
+if ! grep -q 'BillingPage' "$we2ai_shell_tsx"; then
+  err "$we2ai_shell_tsx: 找不到 BillingPage，充值 Tab（功能 20）可能已被移除"
+fi
+# 充值不引入支付 SDK / 二维码库：支付只在浏览器里的 Web 页完成。
+if grep -nE '^[[:space:]]*"(@stripe/[^"]*|qrcode[^"]*)":' package.json; then
+  err "package.json: 出现支付 SDK 或二维码依赖（@stripe/*、qrcode*），功能 20 要求客户端不接触支付"
+fi
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi

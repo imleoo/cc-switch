@@ -203,6 +203,43 @@ export interface We2aiStrings {
   announcementDialogDescription: string;
   /** `{count}` 为排在后面的未读弹窗公告条数。 */
   announcementQueueRemaining: string;
+
+  // 充值入口与余额（功能 20）
+  navBilling: string;
+  /** 顶栏余额 chip 的无障碍名称，`{amount}` 为已格式化金额（如 `$12.48`）。 */
+  balanceChipLabel: string;
+  balanceChipUnknown: string;
+  billingTitle: string;
+  billingDescription: string;
+  billingAvailable: string;
+  billingFrozen: string;
+  billingTotalRecharged: string;
+  billingBalanceUnavailable: string;
+  billingSectionRecharge: string;
+  billingRechargeButton: string;
+  billingPayNoteInternational: string;
+  billingPayNoteDomestic: string;
+  billingFirstLoginHint: string;
+  billingSectionMore: string;
+  billingOrders: string;
+  billingMoreHint: string;
+  billingWaiting: string;
+  /** `{count}` 为已检查次数。 */
+  billingWaitingMeta: string;
+  billingPaid: string;
+  billingStop: string;
+  billingDismiss: string;
+  /** `{amount}` 为本次到账金额（如 `$100.00`）。 */
+  billingSuccessToast: string;
+  billingTimeoutTitle: string;
+  billingTimeoutHint: string;
+  billingRecheck: string;
+  billingViewOrders: string;
+  billingOpenFailed: string;
+  billingBaselineFailed: string;
+  billingGatewayFailed: string;
+  /** 模型广场「余额不足」提示条上的按钮。 */
+  keyBlockedTopUp: string;
 }
 
 const zh: We2aiStrings = {
@@ -383,6 +420,38 @@ const zh: We2aiStrings = {
   announcementClose: "关闭",
   announcementDialogDescription: "来自 WE2AI 的公告",
   announcementQueueRemaining: "还有 {count} 条未读公告",
+  navBilling: "充值",
+  balanceChipLabel: "可用余额 {amount}，点击前往充值",
+  balanceChipUnknown: "余额暂不可用，点击前往充值",
+  billingTitle: "充值",
+  billingDescription: "在 WE2AI 网页完成支付，余额自动同步到客户端。",
+  billingAvailable: "可用余额",
+  billingFrozen: "冻结金额",
+  billingTotalRecharged: "累计充值",
+  billingBalanceUnavailable: "余额暂时无法获取，请点击刷新重试",
+  billingSectionRecharge: "充值",
+  billingRechargeButton: "去 WE2AI 充值 ↗",
+  billingPayNoteInternational:
+    "支持银行卡（Stripe）等国际支付，将在浏览器中打开",
+  billingPayNoteDomestic: "支持支付宝 / 微信 / 兑换码，将在浏览器中打开",
+  billingFirstLoginHint: "首次打开需在浏览器登录一次",
+  billingSectionMore: "更多",
+  billingOrders: "订单记录 ↗",
+  billingMoreHint: "兑换码、退款、发票均在网页端处理。",
+  billingWaiting: "已在浏览器打开充值页 · 等待到账…",
+  billingWaitingMeta: "每 10 秒检查一次 · 已检查 {count} 次 · 最长 5 分钟",
+  billingPaid: "我已完成支付",
+  billingStop: "停止",
+  billingDismiss: "关闭",
+  billingSuccessToast: "充值成功，到账 {amount}",
+  billingTimeoutTitle: "5 分钟内未检测到到账",
+  billingTimeoutHint: "支付可能仍在处理中，回到客户端时会自动再检查一次。",
+  billingRecheck: "重新检查",
+  billingViewOrders: "去订单记录查看 ↗",
+  billingOpenFailed: "无法打开浏览器，请稍后重试",
+  billingBaselineFailed: "无法获取当前余额，请重试",
+  billingGatewayFailed: "暂时无法获取充值地址，请稍后重试",
+  keyBlockedTopUp: "去充值",
 };
 
 const en: We2aiStrings = {
@@ -586,6 +655,46 @@ const en: We2aiStrings = {
   announcementClose: "Close",
   announcementDialogDescription: "Announcement from WE2AI",
   announcementQueueRemaining: "{count} more unread announcement(s)",
+  navBilling: "Top up",
+  balanceChipLabel: "Available balance {amount}, open top-up",
+  balanceChipUnknown: "Balance unavailable, open top-up",
+  billingTitle: "Top up",
+  billingDescription:
+    "Pay on the WE2AI website; your balance syncs back to this app automatically.",
+  billingAvailable: "Available",
+  billingFrozen: "Frozen",
+  billingTotalRecharged: "Total recharged",
+  billingBalanceUnavailable:
+    "Balance is unavailable right now. Press Refresh to retry",
+  billingSectionRecharge: "Top up",
+  billingRechargeButton: "Top up on WE2AI ↗",
+  billingPayNoteInternational:
+    "Cards (Stripe) and other international payments, opens in your browser",
+  billingPayNoteDomestic:
+    "Alipay / WeChat Pay / redeem codes, opens in your browser",
+  billingFirstLoginHint:
+    "You need to sign in once in the browser the first time",
+  billingSectionMore: "More",
+  billingOrders: "Order history ↗",
+  billingMoreHint:
+    "Redeem codes, refunds and invoices are handled on the website.",
+  billingWaiting: "Top-up page opened in your browser · waiting for payment…",
+  billingWaitingMeta:
+    "Checks every 10 seconds · checked {count} time(s) · up to 5 minutes",
+  billingPaid: "I've paid",
+  billingStop: "Stop",
+  billingDismiss: "Dismiss",
+  billingSuccessToast: "Top-up received: {amount}",
+  billingTimeoutTitle: "No payment detected within 5 minutes",
+  billingTimeoutHint:
+    "The payment may still be processing; the app checks again when you come back to this window.",
+  billingRecheck: "Check again",
+  billingViewOrders: "View order history ↗",
+  billingOpenFailed: "Couldn't open the browser, please try again later",
+  billingBaselineFailed: "Couldn't get your current balance, please retry",
+  billingGatewayFailed:
+    "Couldn't get the top-up address, please try again later",
+  keyBlockedTopUp: "Top up",
 };
 
 const TABLE: Record<We2aiLanguage, We2aiStrings> = { zh, en };

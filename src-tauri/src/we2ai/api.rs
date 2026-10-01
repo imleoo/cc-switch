@@ -235,6 +235,18 @@ pub struct UserProfile {
     pub email: String,
 }
 
+/// `GET /api/v1/user/profile` 中余额相关字段（美元）。所有字段都可能缺失
+/// （旧版服务端或字段被裁剪），缺失按 0 处理由 `billing.rs` 负责。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoteBalance {
+    #[serde(default)]
+    pub balance: Option<f64>,
+    #[serde(default)]
+    pub frozen_balance: Option<f64>,
+    #[serde(default)]
+    pub total_recharged: Option<f64>,
+}
+
 /// `POST /api/v1/auth/login` 的两种成功结果。
 #[derive(Debug, Clone)]
 pub enum LoginResult {
@@ -474,6 +486,15 @@ impl ApiClient {
     }
 
     pub async fn get_profile(&self, access_token: &str) -> Result<UserProfile, ApiCallError> {
+        self.send(
+            self.request(reqwest::Method::GET, "/api/v1/user/profile")
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
+    /// 余额（`GET /api/v1/user/profile` 的余额字段，充值与余额设计方案 P1）。
+    pub async fn get_balance(&self, access_token: &str) -> Result<RemoteBalance, ApiCallError> {
         self.send(
             self.request(reqwest::Method::GET, "/api/v1/user/profile")
                 .bearer_auth(access_token),

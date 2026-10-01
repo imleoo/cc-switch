@@ -16,6 +16,8 @@
   --we2ai-ink: #0a0a08;
   --we2ai-orange: #ff4d00;
   --we2ai-blue: #2438e8;
+  /* 外链文字色：浅色主题用品牌蓝，深色主题换更亮的蓝 */
+  --we2ai-link: var(--we2ai-blue);
   --we2ai-font-sans:
     -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, "PingFang SC",
     "Noto Sans CJK SC", sans-serif;
@@ -31,6 +33,7 @@
   --we2ai-paper: #0a0a08;
   --we2ai-paper-2: #1c1c17;
   --we2ai-ink: #f4f1e8;
+  --we2ai-link: #8f9bff;
 }
 
 /* 标题：粗体、负字距 */
@@ -414,4 +417,141 @@ body:has(.we2ai-theme) {
 .we2ai-theme .we2ai-announcement-content a:focus-visible {
   outline: 2px solid var(--we2ai-ink);
   outline-offset: 2px;
+}
+
+/* 充值：顶栏余额 chip（可点击的实体按钮，余额 < $1 变橙色） */
+.we2ai-theme .we2ai-balance-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 2px solid var(--we2ai-ink);
+  border-radius: 0;
+  background: var(--we2ai-paper);
+  color: var(--we2ai-ink);
+  box-shadow: 2px 2px 0 var(--we2ai-ink);
+  font-family: var(--we2ai-font-mono);
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.we2ai-theme .we2ai-balance-chip:hover {
+  background: var(--we2ai-paper-2);
+}
+
+.we2ai-theme .we2ai-balance-chip:focus-visible {
+  outline: 2px solid var(--we2ai-ink);
+  outline-offset: 3px;
+}
+
+.we2ai-theme .we2ai-balance-chip[data-low="true"] {
+  background: var(--we2ai-orange);
+  color: var(--we2ai-paper);
+}
+
+/* 充值页：余额卡三格 */
+.we2ai-theme .we2ai-billing-balance {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.we2ai-theme .we2ai-billing-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 20px;
+}
+
+.we2ai-theme .we2ai-billing-cell + .we2ai-billing-cell {
+  border-left: 2px solid var(--we2ai-ink);
+}
+
+.we2ai-theme .we2ai-billing-amount {
+  font-family: var(--we2ai-font-mono);
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.we2ai-theme .we2ai-billing-amount[data-low="true"] {
+  color: var(--we2ai-orange);
+}
+
+/* 充值页：主按钮（橙底直角硬阴影） */
+.we2ai-theme .we2ai-billing-primary {
+  padding: 14px 24px;
+  border: 2px solid var(--we2ai-ink);
+  border-radius: 0;
+  background: var(--we2ai-orange);
+  color: var(--we2ai-paper);
+  box-shadow: 4px 4px 0 var(--we2ai-ink);
+  font-size: 18px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.we2ai-theme .we2ai-billing-primary--small {
+  min-height: 32px;
+  padding: 0 12px;
+  box-shadow: 2px 2px 0 var(--we2ai-ink);
+  font-family: var(--we2ai-font-mono);
+  font-size: 14px;
+}
+
+.we2ai-theme .we2ai-billing-primary:hover:enabled {
+  background: var(--we2ai-ink);
+  color: var(--we2ai-paper);
+}
+
+.we2ai-theme .we2ai-billing-primary:focus-visible {
+  outline: 2px solid var(--we2ai-ink);
+  outline-offset: 3px;
+}
+
+.we2ai-theme .we2ai-billing-primary:disabled {
+  box-shadow: none;
+  border-style: dashed;
+  cursor: not-allowed;
+}
+
+/* 充值页：文字链接（浏览器内打开的外链） */
+.we2ai-theme .we2ai-link {
+  display: inline-block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--we2ai-link);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.we2ai-theme .we2ai-link:focus-visible {
+  outline: 2px solid var(--we2ai-ink);
+  outline-offset: 2px;
+}
+
+/* 到账检测：等待提示、进度条、成功条 */
+.we2ai-theme .we2ai-billing-waiting {
+  font-weight: 900;
+}
+
+.we2ai-theme .we2ai-billing-pulse {
+  height: 8px;
+  border: 2px solid var(--we2ai-ink);
+  background: linear-gradient(
+    90deg,
+    var(--we2ai-orange) 0 38%,
+    var(--we2ai-paper) 38%
+  );
+}
+
+.we2ai-theme .we2ai-billing-toast {
+  padding: 12px 14px;
+  border: 2px solid var(--we2ai-ink);
+  background: var(--we2ai-ink);
+  color: var(--we2ai-paper);
+  box-shadow: 4px 4px 0 var(--we2ai-orange);
+  font-weight: 900;
 }

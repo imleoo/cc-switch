@@ -437,6 +437,10 @@ pub struct SessionSummary {
     pub logged_in: bool,
     pub region: Option<String>,
     pub email_masked: Option<String>,
+    /// 用户 id（非敏感）。前端用 `区域:userId` 识别会话身份：`email_masked` 只保留
+    /// 前两个字符与域名，同区域的 alice@x.com 与 alex@x.com 摘要相同，不能用来
+    /// 判断「是不是同一个账号」。未登录为 `None`。
+    pub user_id: Option<i64>,
     pub keyring_degraded: bool,
     /// 见 [`ActiveSession::index_degraded`]：会话索引写入失败，这次登录只在
     /// 当前进程内存里有效，前端应提示"登录状态无法保存，下次启动需要重新
@@ -803,6 +807,7 @@ impl SessionManager {
                 logged_in: true,
                 region: Some(s.region.storage_key().to_string()),
                 email_masked: Some(s.email_masked.clone()),
+                user_id: Some(s.user_id),
                 keyring_degraded: s.keyring_degraded,
                 index_degraded: s.index_degraded,
                 offline_retry_in_seconds,
@@ -812,6 +817,7 @@ impl SessionManager {
                 logged_in: false,
                 region: None,
                 email_masked: None,
+                user_id: None,
                 keyring_degraded: false,
                 index_degraded: false,
                 offline_retry_in_seconds: None,

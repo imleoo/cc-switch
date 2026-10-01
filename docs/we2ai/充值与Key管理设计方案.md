@@ -178,7 +178,7 @@ public class We2aiDemo {
 | 顶栏余额 chip | 切到「充值」Tab |
 | 「充值」Tab 主按钮「去 WE2AI 充值」 | `open_external({base}/purchase)` |
 | 「充值」Tab 次按钮「订单记录」 | `open_external({base}/orders)` |
-| 模型广场「余额不足」提示条 | 「去充值」→ 同主按钮 |
+| 模型广场「余额不足」提示条 | 「去充值」→ 切到充值 Tab 并直接执行主按钮流程（打开 `{base}/purchase` + 开始到账检测） |
 
 - URL 由 Rust 侧 `we2ai_gateway_info` 返回的 `base_url` 拼接，前端不硬编码域名；`domestic_dev` 自动指向 `https://jiwu.wtgo.com.cn/purchase`。
 - **优先级：国际版先行**。首个交付只验收国际版 `https://api.we2ai.com/purchase`（浏览器内完成 Stripe/Airwallex 等国际支付，客户端不接触支付 SDK）；国内版代码路径相同，随后单独验收。
@@ -189,7 +189,7 @@ public class We2aiDemo {
 
 | 区块 | 内容 |
 |---|---|
-| 余额卡 | 可用余额 `$`（hover 显示人民币折算）、冻结、累计充值；「刷新」按钮 |
+| 余额卡 | 可用余额 `$`、冻结、累计充值；「刷新」按钮。人民币 hover 折算**本期未做**：汇率只在 B1 `pricing.cnyRate`（随 `we2ai_key_models` 返回，仅模型广场页内持有），顶栏/充值页没有现成汇率，不为此新增接口；后续若 `/user/profile` 或网关信息带汇率再补 |
 | 主操作 | 「去 WE2AI 充值」大按钮 + 按区域切换的支付方式说明（见 4.1） |
 | 等待到账条 | 点击主按钮后出现：「等待到账… 已检查 3 次」+「我已完成支付」（立即刷新）+「停止」 |
 | 次操作 | 「订单记录」链接 |
@@ -199,13 +199,18 @@ public class We2aiDemo {
 ```mermaid
 stateDiagram-v2
   [*] --> Idle
-  Idle --> Waiting: 点「去 WE2AI 充值」\n记录 baseline=balance
+  Idle --> Waiting: 点「去 WE2AI 充值」（含余额不足提示条的「去充值」）\n基线=当前余额（未知则先拉一次，拉不到不打开浏览器、提示重试）\n成功打开浏览器后进入
   Waiting --> Waiting: 每 10s 拉 /user/profile\n窗口回前台立即拉一次
   Waiting --> Success: balance > baseline
-  Waiting --> Idle: 5 分钟超时 / 点「停止」
-  Success --> Idle: toast「充值成功，到账 $X」\n刷新顶栏、模型广场 Key 可用性
+  Waiting --> Timeout: 5 分钟无到账
+  Waiting --> Idle: 点「停止」
+  Timeout --> Success: 窗口回前台 / 点「重新检查」时 balance > baseline
+  Timeout --> Waiting: 点「重新检查」仍未到账\n沿用原 baseline 再等 5 分钟
+  Success --> Idle: 点「关闭」（toast「充值成功，到账 $X」\n同时刷新顶栏、模型广场 Key 可用性）
 ```
 
+- Timeout 是独立状态（不回 Idle）：停止自动轮询，但窗口回前台与「重新检查」仍会检查；面板提供「重新检查」「去订单记录查看」。
+- Success 保持显示到点「关闭」或再次发起充值；到账同时通知模型广场重拉准入状态，「余额不足」提示条随之消失。
 - 轮询放前端（用户此时在浏览器付款，客户端窗口可能失焦但未隐藏；超时后停止，不常驻）。
 - 10s 一次 × 5 分钟 = 30 次，远低于 240 次/分钟限流。
 - 余额增加但非本次充值（如他人代充）同样提示成功，不区分来源。
@@ -253,7 +258,7 @@ stateDiagram-v2
 |---|---|---|
 | Q1 | 国际支付（Stripe） | ✅ 已解决：Web 充值页自带 |
 | Q2 | Web 面板地址 | ✅ 已确认与 API 同域，`{base}/purchase` 可打开 |
-| Q3 | 余额显示美元还是人民币 | 主显示美元，hover 显示按 `subscription_usd_to_cny_rate` 折算人民币 |
+| Q3 | 余额显示美元还是人民币 | 主显示美元；hover 人民币折算 P1 未做（见 4.2） |
 | Q4 | 一期是否开放 IP 名单/限速/自定义 Key | 不开放，放二期「高级设置」 |
 | Q5 | 示例语言是否需要 Gemini 协议 | 不需要 |
 
@@ -262,7 +267,7 @@ stateDiagram-v2
 | 期 | 范围 | 验收标准 |
 |---|---|---|
 | P1 | **国际版充值**：顶栏余额 + 充值 Tab（跳转 `https://api.we2ai.com/purchase`）+ 到账检测 + 余额不足「去充值」 | 国际版账号点击后浏览器打开正确页面，未登录时登录后回到 `/purchase`；国际版实付 1 笔（最小金额）后 10s 内 toast 到账并刷新顶栏；5 分钟超时、「停止」「我已完成支付」行为正确 |
-| P1.1 | 国内版充值验收（代码同 P1） | `api.wtgo.com.cn` / `jiwu.wtgo.com.cn` 打开正确；测试环境支付宝或微信 1 笔到账检测通过 |
-| P2 | Key 管理列表 + 新建/编辑/删除/启停 + 复制 | 四种操作后 Web 端与客户端列表一致；模型广场下拉同步刷新；日志、IPC 抓包中除 `reveal`/`create` 响应外无明文 |
-| P3 | 调用示例抽屉（5 语言 × 3 协议） | 15 个快照单测通过；curl/Python/Java 三种在国际版实测返回 200 |
+| P2 | Key 管理列表 + 新建/编辑/删除/启停 + 复制（国际版验收） | 四种操作后 Web 端与客户端列表一致；模型广场下拉同步刷新；日志、IPC 抓包中除 `reveal`/`create` 响应外无明文 |
+| P3 | 调用示例抽屉（5 语言 × 3 协议，国际版验收） | 15 个快照单测通过；curl/Python/Java 三种在国际版实测返回 200 |
+| P4 | 国内版验收（代码同 P1–P3，不单独开发） | `api.wtgo.com.cn` / `jiwu.wtgo.com.cn` 充值页打开正确、支付宝或微信 1 笔到账检测通过；Key 管理与示例在国内版回归通过 |
 | 每期 | `check-guards.sh` 新增条目、`自定义开发功能列表.md` 新增功能 20/21 | `./scripts/we2ai/check-guards.sh` 通过；`pnpm typecheck`、`vitest`、`cargo test` 通过 |

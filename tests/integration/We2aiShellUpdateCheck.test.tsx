@@ -76,6 +76,7 @@ function mockLoggedInShell(extra: Record<string, (body: any) => JsonBodyType> = 
       if (command === "we2ai_session_status") {
         return HttpResponse.json({
           loggedIn: true,
+          userId: 42,
           region: "international",
           emailMasked: "u****@we2ai.com",
           keyringDegraded: false,
@@ -88,6 +89,17 @@ function mockLoggedInShell(extra: Record<string, (body: any) => JsonBodyType> = 
         return HttpResponse.json({ keys: [], selectedKeyId: null });
       }
       const handler = extra[command];
+      // 余额与网关地址：已登录壳会在登录后请求，给默认响应避免无关的报错日志。
+      if (!handler && command === "we2ai_get_balance") {
+        return HttpResponse.json({
+          balance: 12.48,
+          frozenBalance: 0,
+          totalRecharged: 0,
+        });
+      }
+      if (!handler && command === "we2ai_gateway_info") {
+        return HttpResponse.json({ baseUrl: "https://api.we2ai.com" });
+      }
       if (handler) {
         const body = await request.text();
         return HttpResponse.json(handler(body ? JSON.parse(body) : {}));

@@ -1553,6 +1553,8 @@ pub fn run() {
                 we2ai::keys::we2ai_list_keys,
                 we2ai::keys::we2ai_select_key,
                 we2ai::keys::we2ai_key_models,
+                we2ai::billing::we2ai_get_balance,
+                we2ai::billing::we2ai_gateway_info,
                 we2ai::announcements::we2ai_list_announcements,
                 we2ai::announcements::we2ai_mark_announcement_read,
                 we2ai::commands_apply::we2ai_tool_status,

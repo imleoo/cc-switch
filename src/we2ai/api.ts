@@ -70,6 +70,12 @@ export interface We2aiSessionSummary {
   loggedIn: boolean;
   region: We2aiRegion | null;
   emailMasked: string | null;
+  /**
+   * 用户 id（非敏感），未登录为 `null`。会话身份一律用 `区域:userId`
+   * （见 `sessionIdentityKey`）：`emailMasked` 只保留前两个字符与域名，同区域
+   * 不同账号的摘要可能完全相同，不能用来识别账号。
+   */
+  userId: number | null;
   keyringDegraded: boolean;
   /**
    * 登录成功时会话索引写入失败：这次会话仅在当前进程内有效，不可持久
@@ -85,6 +91,17 @@ export interface We2aiSessionSummary {
    * 该会话。未登录界面也要展示提示与重试入口（Codex 验收第 5 轮高危项 2）。
    */
   localCleanupPending: boolean;
+}
+
+/**
+ * 会话身份键：`区域:userId`。未登录或字段缺失返回 `null`。外壳用它给
+ * 按会话重建的页面作 `key`、判断「是否换了会话」，不要再用 `emailMasked`。
+ */
+export function sessionIdentityKey(
+  session: Pick<We2aiSessionSummary, "loggedIn" | "region" | "userId"> | null,
+): string | null {
+  if (!session?.loggedIn || session.userId == null) return null;
+  return `${session.region ?? ""}:${session.userId}`;
 }
 
 /** 客户端能写入的三个工具（B1 `tools` 字段取值）。 */
@@ -305,6 +322,21 @@ export interface We2aiAnnouncement {
   createdAt: string;
 }
 
+/**
+ * 账户余额（`src-tauri/src/we2ai/billing.rs` 的 `BalanceView`），单位美元。
+ * 字段缺失时 Rust 侧已按 0 处理；欠费账户 `balance` 可能为负。
+ */
+export interface We2aiBalance {
+  balance: number;
+  frozenBalance: number;
+  totalRecharged: number;
+}
+
+/** 当前会话区域的网关基础地址（不含尾部 `/`），用于拼充值页 / 订单页链接。 */
+export interface We2aiGatewayInfo {
+  baseUrl: string;
+}
+
 /** Rust 后台轮询发现未读公告集合变化时发出的事件名。 */
 export const WE2AI_ANNOUNCEMENTS_CHANGED_EVENT = "we2ai-announcements-changed";
 
@@ -475,6 +507,24 @@ export const we2aiApi = {
 
   async markAnnouncementRead(id: number): Promise<void> {
     await invoke("we2ai_mark_announcement_read", { id });
+  },
+
+  /** 余额（`GET /user/profile`）；服务端异常返回空值时当作失败。 */
+  async getBalance(): Promise<We2aiBalance> {
+    const result = await invoke<We2aiBalance | null>("we2ai_get_balance");
+    if (!result || typeof result.balance !== "number") {
+      throw new Error("we2ai: empty balance response");
+    }
+    return result;
+  },
+
+  /** 当前活动会话所在区域的基础地址。 */
+  async gatewayInfo(): Promise<We2aiGatewayInfo> {
+    const result = await invoke<We2aiGatewayInfo | null>("we2ai_gateway_info");
+    if (!result || typeof result.baseUrl !== "string" || !result.baseUrl) {
+      throw new Error("we2ai: empty gateway info response");
+    }
+    return result;
   },
 
   /** 订阅 Rust 后台轮询的"公告有变化"事件，返回取消订阅函数。 */

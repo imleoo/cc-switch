@@ -15,14 +15,18 @@ import { WE2AI_WEBSITE_URL } from "@/config/we2ai";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import "./we2ai-theme.css";
 import {
+  isWe2aiApiError,
   resolveCcSwitchRunning,
+  sessionIdentityKey,
   we2aiApi,
+  type We2aiBalance,
   type We2aiCcSwitchRunningStatus,
   type We2aiSessionSummary,
   type We2aiSettings,
   type We2aiToolStatusReport,
 } from "./api";
 import { AnnouncementCenter } from "./AnnouncementCenter";
+import { BillingPage, formatWe2aiUsd } from "./BillingPage";
 import { LoginPage, notifyLogoutOutcome } from "./LoginPage";
 import { ModelSquarePage } from "./ModelSquarePage";
 import { ToolStatusBar } from "./ToolStatusBar";
@@ -59,6 +63,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { extractErrorMessage } from "@/utils/errorUtils";
+
+type ShellTab = "marketplace" | "billing" | "settings";
+
+/** 网络类错误码：不代表会话状态变化（与模型广场、公告一致）。 */
+const NETWORK_ERROR_CODES = new Set(["TRANSIENT", "NETWORK_ERROR"]);
+
+/** 余额低于该值（美元）时顶栏 chip 变橙色。 */
+const LOW_BALANCE_THRESHOLD_USD = 1;
 
 /**
  * WE2AI 的极简客户端外壳：登录页（未登录时）+ 品牌顶栏 + 模型广场占位页 +
@@ -103,6 +115,7 @@ export function We2aiShell() {
     loggedIn: false,
     region: null,
     emailMasked: null,
+    userId: null,
     keyringDegraded: false,
     indexDegraded: false,
     offlineRetryInSeconds: null,
@@ -513,9 +526,7 @@ export function We2aiShell() {
     status: We2aiCcSwitchRunningStatus;
   } | null>(null);
   const quickCcSwitchCheckSeq = useRef(0);
-  const loggedInIdentity = session?.loggedIn
-    ? `${session.region ?? ""}:${session.emailMasked ?? ""}`
-    : null;
+  const loggedInIdentity = sessionIdentityKey(session);
   useEffect(() => {
     if (loggedInIdentity) {
       void refreshToolStatus();
@@ -530,6 +541,82 @@ export function We2aiShell() {
     quickCcSwitchCheckSeq.current += 1;
     setQuickCcSwitchCheck(null);
   }, [loggedInIdentity, refreshToolStatus]);
+
+  // 余额（功能 20）：顶栏 chip 与充值页共用这一份状态。登录后、切到充值 Tab、
+  // 窗口重新聚焦、到账检测每次轮询都会刷新。
+  // - 失败：网络类错误（`TRANSIENT`/`NETWORK_ERROR`）保留上一次的值，其余错误
+  //   才清空（chip 显示 `—`）；都不弹错误。
+  // - 去重：已有请求在途时复用它的结果，不再发第二个请求（窗口聚焦时外壳与
+  //   到账检测 hook 各有一个 `focus` 监听，等待到账期间会同时触发）。
+  // - 换账号/区域/登出时序号递增并丢弃在途请求，旧响应不会写入新会话的状态。
+  const [balance, setBalance] = useState<We2aiBalance | null>(null);
+  const balanceRequestSeq = useRef(0);
+  const balanceInflight = useRef<Promise<We2aiBalance | null> | null>(null);
+  const refreshBalance = useCallback((): Promise<We2aiBalance | null> => {
+    if (balanceInflight.current) return balanceInflight.current;
+    const seq = ++balanceRequestSeq.current;
+    const request: Promise<We2aiBalance | null> = (async () => {
+      try {
+        const next = await we2aiApi.getBalance();
+        // 会话已换（登出/换账号/换区域，序号被作废）：旧结果既不写状态，也不返回
+        // 给调用方，否则旧流程（如充值页取基线后打开支付页）会拿着旧会话的数据继续。
+        if (seq !== balanceRequestSeq.current) return null;
+        setBalance(next);
+        return next;
+      } catch (error) {
+        console.debug("[we2ai] balance fetch failed", error);
+        if (seq === balanceRequestSeq.current) {
+          const networkError =
+            isWe2aiApiError(error) && NETWORK_ERROR_CODES.has(error.code);
+          if (!networkError) setBalance(null);
+          // 非网络类错误码（会话被终止等）交给外壳复查会话状态，同模型广场。
+          if (isWe2aiApiError(error) && !networkError) {
+            void refreshSessionStatus();
+          }
+        }
+        return null;
+      }
+    })().finally(() => {
+      if (balanceInflight.current === request) balanceInflight.current = null;
+    });
+    balanceInflight.current = request;
+    return request;
+  }, [refreshSessionStatus]);
+  // 到账检测成功时递增，通知模型广场重拉模型与 Key 准入状态（「余额不足」提示条
+  // 随之消失）。用 prop 传递，不走全局事件。
+  const [balanceArrivedTick, setBalanceArrivedTick] = useState(0);
+  const handleBalanceArrived = useCallback(
+    () => setBalanceArrivedTick((n) => n + 1),
+    [],
+  );
+  const [activeTab, setActiveTab] = useState<ShellTab>("marketplace");
+  // 模型广场「余额不足」提示条的「去充值」：切到充值 Tab 并让 BillingPage 直接走
+  // 主按钮的流程（设计 4.1）。用 prop 传递的一次性计数，不走全局事件。
+  const [billingLaunchTick, setBillingLaunchTick] = useState(0);
+  const handleTabChange = useCallback(
+    (value: string) => {
+      setActiveTab(value as ShellTab);
+      if (value === "billing") void refreshBalance();
+    },
+    [refreshBalance],
+  );
+  const handleLaunchRecharge = useCallback(() => {
+    handleTabChange("billing");
+    setBillingLaunchTick((n) => n + 1);
+  }, [handleTabChange]);
+  useEffect(() => {
+    balanceRequestSeq.current += 1;
+    balanceInflight.current = null;
+    setBalance(null);
+    setActiveTab("marketplace");
+    if (loggedInIdentity) void refreshBalance();
+  }, [loggedInIdentity, refreshBalance]);
+  useEffect(() => {
+    if (!loggedInIdentity) return;
+    const onFocus = () => void refreshBalance();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loggedInIdentity, refreshBalance]);
 
   // apply 前只等"CC Switch 是否在运行"这一项快速检测（Codex 验收 Y1）：
   // 此前这里直接等待完整的 `refreshToolStatus()`——它连带调用
@@ -634,10 +721,38 @@ export function We2aiShell() {
         className={`flex h-14 shrink-0 items-center justify-between border-b-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] pr-4 ${macDragPadding}`}
         data-tauri-drag-region
       >
-        <span className="we2ai-heading flex items-center gap-2 text-base">
-          <img src={we2aiLogo} alt="" aria-hidden="true" className="h-5 w-5" />
-          {t.brand}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="we2ai-heading flex items-center gap-2 text-base">
+            <img
+              src={we2aiLogo}
+              alt=""
+              aria-hidden="true"
+              className="h-5 w-5"
+            />
+            {t.brand}
+          </span>
+          <button
+            type="button"
+            data-testid="balance-chip"
+            style={{ WebkitAppRegion: "no-drag" } as any}
+            data-low={
+              balance && balance.balance < LOW_BALANCE_THRESHOLD_USD
+                ? "true"
+                : "false"
+            }
+            aria-label={
+              balance
+                ? formatWe2aiString(t.balanceChipLabel, {
+                    amount: formatWe2aiUsd(balance.balance),
+                  })
+                : t.balanceChipUnknown
+            }
+            onClick={() => handleTabChange("billing")}
+            className="we2ai-balance-chip"
+          >
+            {balance ? formatWe2aiUsd(balance.balance) : "—"}
+          </button>
+        </div>
         <div
           className="flex items-center gap-3"
           style={{ WebkitAppRegion: "no-drag" } as any}
@@ -649,7 +764,7 @@ export function We2aiShell() {
           )}
           {/* 以会话身份作 key：换账号或换区域后整体重建，不沿用上个会话的公告。 */}
           <AnnouncementCenter
-            key={`${session.region ?? ""}:${session.emailMasked ?? ""}`}
+            key={loggedInIdentity ?? ""}
             t={t}
             onSessionMaybeEnded={() => void refreshSessionStatus()}
           />
@@ -783,13 +898,23 @@ export function We2aiShell() {
       )}
 
       <div className="we2ai-scroll flex-1 overflow-y-auto p-6">
-        <Tabs defaultValue="marketplace" className="w-full">
+        <Tabs
+          value={activeTab}
+          onValueChange={handleTabChange}
+          className="w-full"
+        >
           <TabsList className="rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
             <TabsTrigger
               value="marketplace"
               className="we2ai-label rounded-none border-0 data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
             >
               {t.navMarketplace}
+            </TabsTrigger>
+            <TabsTrigger
+              value="billing"
+              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navBilling}
             </TabsTrigger>
             <TabsTrigger
               value="settings"
@@ -813,13 +938,42 @@ export function We2aiShell() {
                 {/* 以会话身份作 key：换账号或换区域后整页重建，不沿用上个
                     会话的 Key 列表与选择。 */}
                 <ModelSquarePage
-                  key={`${session.region ?? ""}:${session.emailMasked ?? ""}`}
+                  key={loggedInIdentity ?? ""}
                   t={t}
                   onSessionMaybeEnded={() => void refreshSessionStatus()}
                   toolStatus={toolStatus}
                   quickCcSwitchStatus={quickCcSwitchCheck?.status ?? null}
                   onApplied={() => void refreshToolStatus()}
                   onBeforeApplyDialogOpen={checkCcSwitchRunningBeforeApply}
+                  onOpenBilling={handleLaunchRecharge}
+                  reloadSignal={balanceArrivedTick}
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* forceMount：切到别的 Tab 时不卸载，否则等待到账的检测会随页面卸载
+              而静默停止。隐藏时只有检测在进行（waiting / timeout）才会发请求。 */}
+          <TabsContent
+            value="billing"
+            forceMount
+            className="data-[state=inactive]:hidden"
+          >
+            <Card className="we2ai-panel">
+              <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
+                <CardTitle className="we2ai-heading text-xl">
+                  {t.billingTitle}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-6">
+                <BillingPage
+                  key={loggedInIdentity ?? ""}
+                  t={t}
+                  region={session.region}
+                  balance={balance}
+                  refreshBalance={refreshBalance}
+                  onBalanceArrived={handleBalanceArrived}
+                  launchSignal={billingLaunchTick}
                 />
               </CardContent>
             </Card>

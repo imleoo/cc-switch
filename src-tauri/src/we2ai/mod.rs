@@ -9,6 +9,7 @@ pub mod api;
 pub mod apply;
 #[cfg(test)]
 mod apply_tests;
+pub mod billing;
 pub mod captcha;
 pub mod commands;
 pub mod commands_apply;

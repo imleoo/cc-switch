@@ -72,6 +72,17 @@ function mockShellCommands(extra: Record<string, (body: any) => JsonBodyType>) {
         return HttpResponse.json("international");
       }
       const handler = extra[command];
+      // 余额与网关地址：已登录壳会在登录后请求，给默认响应避免无关的报错日志。
+      if (!handler && command === "we2ai_get_balance") {
+        return HttpResponse.json({
+          balance: 12.48,
+          frozenBalance: 0,
+          totalRecharged: 0,
+        });
+      }
+      if (!handler && command === "we2ai_gateway_info") {
+        return HttpResponse.json({ baseUrl: "https://api.we2ai.com" });
+      }
       if (!handler && command === "we2ai_list_keys") {
         // 已登录视图会挂载模型广场；本文件只测会话横幅，给一个空 Key 列表。
         return HttpResponse.json({ keys: [], selectedKeyId: null });
@@ -105,6 +116,7 @@ describe("We2aiShell offline retry banner", () => {
         sessionStatusCalls += 1;
         return {
           loggedIn: true,
+          userId: 42,
           region: "international",
           emailMasked: "u****@we2ai.com",
           keyringDegraded: false,
@@ -137,6 +149,7 @@ describe("We2aiShell offline retry banner", () => {
       we2ai_resume_session: () => "offlineRetained",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -172,6 +185,7 @@ describe("We2aiShell offline retry banner", () => {
         sessionStatusCalls += 1;
         return {
           loggedIn: true,
+          userId: 42,
           region: "international",
           emailMasked: "u****@we2ai.com",
           keyringDegraded: false,
@@ -233,6 +247,7 @@ describe("We2aiShell offline retry banner", () => {
           // 先展示出来。
           return HttpResponse.json({
             loggedIn: true,
+            userId: 42,
             region: "international",
             emailMasked: "u****@we2ai.com",
             keyringDegraded: false,
@@ -287,6 +302,7 @@ describe("We2aiShell session-not-persistable warning", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -311,6 +327,7 @@ describe("We2aiShell session-not-persistable warning", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: true,
@@ -457,6 +474,7 @@ describe("We2aiShell logout restoring official config", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -517,6 +535,7 @@ describe("We2aiShell logout with local cleanup failure", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -636,6 +655,7 @@ describe("We2aiShell logout with local cleanup failure", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "domestic_prod",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -705,6 +725,7 @@ describe("We2aiShell apply dialog refreshes tool status", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -802,6 +823,7 @@ describe("We2aiShell apply dialog refreshes tool status", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -874,6 +896,7 @@ describe("We2aiShell apply dialog refreshes tool status", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -984,6 +1007,7 @@ describe("We2aiShell apply dialog refreshes tool status", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,
@@ -1070,6 +1094,7 @@ describe("We2aiShell apply dialog refreshes tool status", () => {
       we2ai_resume_session: () => "restored",
       we2ai_session_status: () => ({
         loggedIn: true,
+        userId: 42,
         region: "international",
         emailMasked: "u****@we2ai.com",
         keyringDegraded: false,

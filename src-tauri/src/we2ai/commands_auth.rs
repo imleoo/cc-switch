@@ -520,6 +520,7 @@ mod serde_shape_tests {
             logged_in: true,
             region: Some("international".to_string()),
             email_masked: Some("a****@b.com".to_string()),
+            user_id: Some(42),
             keyring_degraded: false,
             index_degraded: false,
             offline_retry_in_seconds: Some(4),
@@ -532,11 +533,38 @@ mod serde_shape_tests {
                 "loggedIn": true,
                 "region": "international",
                 "emailMasked": "a****@b.com",
+                "userId": 42,
                 "keyringDegraded": false,
                 "indexDegraded": false,
                 "offlineRetryInSeconds": 4,
                 "localCleanupPending": false
             })
         );
+    }
+
+    #[test]
+    fn session_summary_without_session_has_null_user_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(
+            std::sync::Arc::new(
+                super::super::secret_store::test_support::InMemorySecretStore::new(),
+            ),
+            dir.path().to_path_buf(),
+            "test".to_string(),
+        );
+        let logged_out = serde_json::to_value(manager.summary()).unwrap();
+        assert_eq!(logged_out["loggedIn"], serde_json::json!(false));
+        assert_eq!(logged_out["userId"], serde_json::Value::Null);
+
+        manager.test_seed_active(
+            super::super::region::Region::International,
+            42,
+            "access-1",
+            "http://unused".to_string(),
+        );
+        let active = serde_json::to_value(manager.summary()).unwrap();
+        assert_eq!(active["userId"], serde_json::json!(42));
+        // 只有 id，不含令牌。
+        assert!(!active.to_string().contains("access-1"));
     }
 }
