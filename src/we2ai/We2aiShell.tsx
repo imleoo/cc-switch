@@ -494,6 +494,17 @@ export function We2aiShell() {
     void settingsApi.openExternal(WE2AI_WEBSITE_URL);
   };
 
+  // 非文本模型（生图/生视频等）不在客户端模型广场展示，引导到当前区域的 Web
+  // 模型广场；地址由 Rust 侧区域基址拼接，不硬编码域名（同充值页做法）。
+  const handleOpenWebModels = async () => {
+    try {
+      const { baseUrl } = await we2aiApi.gatewayInfo();
+      await settingsApi.openExternal(`${baseUrl}/models`);
+    } catch {
+      toast.error(t.billingOpenFailed);
+    }
+  };
+
   // 顶栏工具状态（方案第 1、4.4 节）：登录后与每次写入成功后刷新。
   const [toolStatus, setToolStatus] = useState<We2aiToolStatusReport | null>(
     null,
@@ -953,6 +964,16 @@ export function We2aiShell() {
                 </CardTitle>
                 <CardDescription className="text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
                   {t.marketplaceDescription}
+                  <span className="mt-1 block" data-testid="we2ai-media-hint">
+                    {t.marketplaceMediaHint}{" "}
+                    <button
+                      type="button"
+                      className="we2ai-link font-bold underline"
+                      onClick={() => void handleOpenWebModels()}
+                    >
+                      {t.marketplaceMediaLink}
+                    </button>
+                  </span>
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-6">

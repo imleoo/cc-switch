@@ -14,6 +14,9 @@ export interface We2aiStrings {
   navSettings: string;
   marketplaceTitle: string;
   marketplaceDescription: string;
+  /** 模型广场只列文本模型（B1 kind 过滤）；非文本模型引导到 Web 模型广场。 */
+  marketplaceMediaHint: string;
+  marketplaceMediaLink: string;
   // 模型广场（方案第 1 节、第 8 节 P3）
   keyLabel: string;
   keyPlaceholder: string;
@@ -383,6 +386,8 @@ const zh: We2aiStrings = {
   navSettings: "设置",
   marketplaceTitle: "模型广场",
   marketplaceDescription: "选择 Key 后查看它可用的模型，以及每个模型支持的工具",
+  marketplaceMediaHint: "生图、生视频等非文本模型不在此列出，请登录官网查看。",
+  marketplaceMediaLink: "官网模型广场 ↗",
   keyLabel: "Key",
   keyPlaceholder: "选择一个 Key",
   loadingKeys: "正在加载 Key 列表",
@@ -736,6 +741,9 @@ const en: We2aiStrings = {
   marketplaceTitle: "Model Marketplace",
   marketplaceDescription:
     "Pick a key to see the models it can use and the tools each model supports",
+  marketplaceMediaHint:
+    "Image, video and other non-text models are not listed here; sign in on the website to see them.",
+  marketplaceMediaLink: "Website models ↗",
   keyLabel: "Key",
   keyPlaceholder: "Select a key",
   loadingKeys: "Loading keys",

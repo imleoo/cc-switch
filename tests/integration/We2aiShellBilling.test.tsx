@@ -231,6 +231,29 @@ describe("We2aiShell balance chip and billing tab", () => {
     await waitFor(() => expect(chip).toHaveTextContent("$8.00"));
   });
 
+  it("the model square hint links non-text models to the region's web model square", async () => {
+    const opened: string[] = [];
+    mockShellCommands({
+      open_external: (body) => {
+        opened.push(body.url);
+        return null;
+      },
+    });
+    const user = userEvent.setup();
+
+    renderShell();
+
+    const hint = await screen.findByTestId("we2ai-media-hint");
+    expect(hint).toHaveTextContent("生图、生视频等非文本模型不在此列出");
+    await user.click(
+      within(hint).getByRole("button", { name: "官网模型广场 ↗" }),
+    );
+
+    await waitFor(() =>
+      expect(opened).toEqual(["https://api.we2ai.com/models"]),
+    );
+  });
+
   it("the insufficient-balance banner button opens the billing tab and runs the main recharge flow (opens /purchase, starts waiting)", async () => {
     const opened: string[] = [];
     mockShellCommands({
