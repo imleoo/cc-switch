@@ -436,6 +436,14 @@ describe("ModelSquarePage", () => {
       ).toHaveTextContent("¥108.00 / $15.00");
       expect(within(card).getByText(t.priceInput)).toBeInTheDocument();
       expect(within(card).getByText(t.priceOutput)).toBeInTheDocument();
+      // 标签不换行；单位单独一行，有折扣时不会被挤断。
+      expect(within(card).getByText(t.priceInput)).toHaveClass(
+        "whitespace-nowrap",
+      );
+      const inputRow = within(card).getByTestId("we2ai-price-row-input");
+      expect(
+        within(inputRow).getByText(t.priceUnitPerMillionTokens),
+      ).toHaveClass("block");
       expect(
         within(card).queryByTestId("we2ai-price-row-cacheRead"),
       ).not.toBeInTheDocument();

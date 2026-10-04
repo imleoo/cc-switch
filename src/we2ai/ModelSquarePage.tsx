@@ -143,7 +143,9 @@ function ModelPriceSection({
                 className="flex items-baseline justify-between gap-2"
                 data-testid={`we2ai-price-row-${row.field}`}
               >
-                <span>{priceRowLabel(t, row)}</span>
+                <span className="shrink-0 whitespace-nowrap">
+                  {priceRowLabel(t, row)}
+                </span>
                 <span className="text-right">
                   {row.strikethroughLine && (
                     <del
@@ -161,8 +163,10 @@ function ModelPriceSection({
                       {t.priceDiscountedSrLabel}
                     </span>
                     {row.line}
-                  </span>{" "}
-                  <span className={mutedClass}>
+                  </span>
+                  {/* 单位单独一行：有折扣（划线原价 + 折后价）时同一行放不下，
+                      单位跟在后面会被挤断成「每百 / 万 tokens」。 */}
+                  <span className={`block text-xs ${mutedClass}`}>
                     {priceRowUnit(t, row.unit)}
                   </span>
                 </span>
