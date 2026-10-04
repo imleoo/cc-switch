@@ -19,6 +19,7 @@ import {
   type We2aiToolStatusReport,
 } from "./api";
 import { ApplyDialog, type ApplyTarget } from "./ApplyDialog";
+import { isTextModel } from "./modelKind";
 import { WE2AI_TOOL_LABELS } from "./toolLabels";
 import {
   buildWe2aiPriceRows,
@@ -586,6 +587,7 @@ export function ModelSquarePage({
   }
 
   const selectedKey = keys.find((k) => k.id === selectedKeyId) ?? null;
+  const textModels = models?.models.filter(isTextModel) ?? [];
 
   return (
     <div className="space-y-4">
@@ -676,15 +678,15 @@ export function ModelSquarePage({
         </p>
       )}
 
-      {models && models.models.length === 0 && (
+      {models && textModels.length === 0 && (
         <p className="text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
-          {t.noModels}
+          {models.models.length === 0 ? t.noModels : t.noTextModels}
         </p>
       )}
 
-      {models && models.models.length > 0 && (
+      {models && textModels.length > 0 && (
         <ul className="we2ai-model-grid">
-          {models.models.map((model) => {
+          {textModels.map((model) => {
             const isInUseSomewhere = model.tools.some(
               (tool) =>
                 toolStatus?.tools.find((s) => s.tool === tool)?.managedModel ===
@@ -768,11 +770,9 @@ export function ModelSquarePage({
           t={t}
           keyId={selectedKeyId}
           target={applyTarget}
-          claudeModels={
-            models?.models
-              .filter((m) => m.tools.includes("claude_code"))
-              .map((m) => m.id) ?? []
-          }
+          claudeModels={textModels
+            .filter((m) => m.tools.includes("claude_code"))
+            .map((m) => m.id)}
           toolInstalled={
             applyTarget
               ? (toolStatus?.tools.find((s) => s.tool === applyTarget.tool)

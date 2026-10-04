@@ -183,6 +183,11 @@ export interface We2aiModelView {
   id: string;
   provider: string | null;
   tools: We2aiTool[];
+  /**
+   * B1 模型类型：`text`/`image`/`video`/`audio`。旧服务端不返回，为空；
+   * 模型广场只隐藏明确为非 `text` 的模型，缺失时不过滤。
+   */
+  kind?: string | null;
   price: We2aiModelPrice | null;
 }
 

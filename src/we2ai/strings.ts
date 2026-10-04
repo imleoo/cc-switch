@@ -22,6 +22,7 @@ export interface We2aiStrings {
   refresh: string;
   loadingModels: string;
   noModels: string;
+  noTextModels: string;
   modelNoTools: string;
   // 分组折扣价（B1 定价扩展，docs/we2ai/B1定价契约.md）
   priceInput: string;
@@ -389,6 +390,8 @@ const zh: We2aiStrings = {
   refresh: "刷新",
   loadingModels: "正在加载可用模型",
   noModels: "这个 Key 当前没有可用的模型",
+  noTextModels:
+    "这个 Key 当前没有可用的文本模型（生图、生视频、音频模型不在此展示）",
   modelNoTools: "暂无支持的工具",
   priceInput: "输入",
   priceOutput: "输出",
@@ -741,6 +744,8 @@ const en: We2aiStrings = {
   refresh: "Refresh",
   loadingModels: "Loading available models",
   noModels: "This key has no available models right now",
+  noTextModels:
+    "This key has no text models right now (image, video and audio models are not listed here)",
   modelNoTools: "No supported tools yet",
   priceInput: "Input",
   priceOutput: "Output",

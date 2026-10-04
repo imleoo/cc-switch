@@ -103,12 +103,13 @@ const status: We2aiToolStatusReport = {
 function setup(
   toolStatus: We2aiToolStatusReport | null = status,
   onBeforeApplyDialogOpen?: () => Promise<boolean>,
+  keyModels: We2aiKeyModels = models,
 ) {
   vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
     keys: [key],
     selectedKeyId: 7,
   });
-  vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(models);
+  vi.spyOn(we2aiApi, "keyModels").mockResolvedValue(keyModels);
   vi.spyOn(we2aiApi, "applyPlan").mockImplementation(async (tool) => ({
     files: [planFile(`/home/u/${tool}.conf`)],
     fields: ["model"],
@@ -389,6 +390,49 @@ describe("WE2AI apply flow", () => {
       opus: null,
       haiku: "claude-haiku-4-5",
     });
+  });
+
+  it("never offers non-text models as Claude Code slot candidates", async () => {
+    setup(status, undefined, {
+      ...models,
+      models: [
+        ...models.models,
+        {
+          id: "claude-image-x",
+          provider: "anthropic",
+          tools: ["claude_code"],
+          kind: "image",
+          price: null,
+        },
+        {
+          id: "claude-embed-x",
+          provider: "anthropic",
+          tools: ["claude_code"],
+          kind: "other",
+          price: null,
+        },
+        {
+          id: "claude-opus-4-5",
+          provider: "anthropic",
+          tools: ["claude_code"],
+          kind: "text",
+          price: null,
+        },
+      ],
+    });
+    const dialog = await openApply("claude-sonnet-4-5", "Claude Code");
+    await userEvent.click(within(dialog).getByText(t.applyAdvanced));
+    await userEvent.click(
+      within(dialog).getByRole("combobox", { name: t.slotHaiku }),
+    );
+
+    const options = (await screen.findAllByRole("option")).map(
+      (o) => o.textContent,
+    );
+    expect(options).toContain("claude-haiku-4-5");
+    expect(options).toContain("claude-opus-4-5");
+    expect(options).not.toContain("claude-image-x");
+    expect(options).not.toContain("claude-embed-x");
   });
 
   it("asks before overwriting a WorkBuddy entry and retries with overwrite", async () => {

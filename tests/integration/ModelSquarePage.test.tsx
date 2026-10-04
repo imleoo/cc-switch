@@ -87,6 +87,71 @@ describe("ModelSquarePage", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  describe("model kind filtering", () => {
+    const model = (id: string, kind?: string | null) => ({
+      id,
+      provider: null,
+      tools: ["codex" as const],
+      price: null,
+      ...(kind === undefined ? {} : { kind }),
+    });
+
+    async function renderWithModels(models: We2aiKeyModels["models"]) {
+      vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
+        keys: [claudeKey],
+        selectedKeyId: 1,
+      });
+      vi.spyOn(we2aiApi, "keyModels").mockResolvedValue({
+        ...claudeModels,
+        models,
+      });
+      renderPage();
+    }
+
+    it("shows text models and models without kind, hides image/video/audio", async () => {
+      await renderWithModels([
+        model("text-model", "text"),
+        model("legacy-model"),
+        model("null-kind-model", null),
+        model("image-model", "image"),
+        model("video-model", "video"),
+        model("audio-model", "audio"),
+        model("embed-model", "other"),
+        model("future-model", "hologram"),
+        model("empty-kind-model", ""),
+      ]);
+
+      await screen.findByText("text-model");
+      expect(screen.getByText("legacy-model")).toBeInTheDocument();
+      expect(screen.getByText("null-kind-model")).toBeInTheDocument();
+      expect(screen.queryByText("image-model")).not.toBeInTheDocument();
+      expect(screen.queryByText("video-model")).not.toBeInTheDocument();
+      expect(screen.queryByText("audio-model")).not.toBeInTheDocument();
+      expect(screen.queryByText("embed-model")).not.toBeInTheDocument();
+      expect(screen.queryByText("future-model")).not.toBeInTheDocument();
+      expect(screen.getByText("empty-kind-model")).toBeInTheDocument();
+      expect(screen.getAllByTestId("we2ai-model-card")).toHaveLength(4);
+    });
+
+    it("shows a dedicated empty state when every model is filtered out", async () => {
+      await renderWithModels([
+        model("image-model", "image"),
+        model("video-model", "video"),
+      ]);
+
+      expect(await screen.findByText(t.noTextModels)).toBeInTheDocument();
+      expect(screen.queryByText(t.noModels)).not.toBeInTheDocument();
+      expect(screen.queryByTestId("we2ai-model-card")).not.toBeInTheDocument();
+    });
+
+    it("keeps the original empty state when the server returns no models", async () => {
+      await renderWithModels([]);
+
+      expect(await screen.findByText(t.noModels)).toBeInTheDocument();
+      expect(screen.queryByText(t.noTextModels)).not.toBeInTheDocument();
+    });
+  });
+
   it("shows different models and buttons per key and remembers the choice", async () => {
     vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
       keys: [claudeKey, openaiKey],

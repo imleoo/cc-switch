@@ -839,6 +839,10 @@ pub struct RemoteKeyModel {
     pub provider: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// 模型类型：`text`/`image`/`video`/`audio`。旧服务端不返回，为 `None`；
+    /// 模型广场只隐藏明确为非 text 的模型，缺失时不过滤。客户端不自行按名称判定类型。
+    #[serde(default)]
+    pub kind: Option<String>,
     /// 方案 3.2 节 B1 可选能力字段，无数据时服务端省略。
     #[serde(default)]
     pub supports_tool_call: Option<bool>,
@@ -1114,6 +1118,25 @@ mod tests {
         let parsed: RemoteKeyModels = serde_json::from_value(body).unwrap();
         assert!(parsed.pricing.is_none());
         assert!(parsed.models[0].price.is_none());
+        assert!(parsed.models[0].kind.is_none());
+    }
+
+    // B1 模型类型：服务端返回 `kind`（以及客户端不使用的 `mode`）时解析为 `Some`，
+    // 缺失时为 `None`（旧服务端），未知值原样保留由前端按"非 text 才隐藏"处理。
+    #[test]
+    fn remote_key_models_parses_kind_when_present() {
+        let body = json!({
+            "models": [
+                {"id": "claude-sonnet-4-5", "tools": ["claude_code"], "mode": "chat", "kind": "text"},
+                {"id": "jimeng_t2v_v30", "tools": ["codex"], "mode": "video_generation", "kind": "video"},
+                {"id": "legacy", "tools": ["codex"]}
+            ],
+            "callable": true
+        });
+        let parsed: RemoteKeyModels = serde_json::from_value(body).unwrap();
+        assert_eq!(parsed.models[0].kind.as_deref(), Some("text"));
+        assert_eq!(parsed.models[1].kind.as_deref(), Some("video"));
+        assert_eq!(parsed.models[2].kind, None);
     }
 
     // 顶层 `pricing` 对象存在但个别倍率字段缺失：单独字段变 `None`，不影响

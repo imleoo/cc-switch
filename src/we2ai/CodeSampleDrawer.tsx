@@ -12,6 +12,7 @@ import "./we2ai-theme.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { isWe2aiApiError, we2aiApi, type We2aiManagedKey } from "./api";
+import { isTextModel } from "./modelKind";
 import {
   API_KEY_ENV,
   KEY_PLACEHOLDER,
@@ -140,7 +141,7 @@ export function CodeSampleDrawer({
   }, [loadBase]);
 
   // 模型：B1 只认模型广场缓存里的 Key（active/quota_exhausted），已禁用/已过期或不在
-  // 缓存时会失败；失败、不可调用或空列表都退化为手填。
+  // 缓存时会失败；失败、不可调用或空列表（含过滤掉非文本模型后为空）都退化为手填。
   useEffect(() => {
     let cancelled = false;
     void we2aiApi
@@ -148,7 +149,9 @@ export function CodeSampleDrawer({
       .then((result) => {
         if (cancelled) return;
         const ids = result.callable
-          ? Array.from(new Set(result.models.map((m) => m.id)))
+          ? Array.from(
+              new Set(result.models.filter(isTextModel).map((m) => m.id)),
+            )
           : [];
         setModels(
           ids.length > 0 ? { status: "list", ids } : { status: "fallback" },

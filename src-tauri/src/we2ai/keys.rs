@@ -272,6 +272,8 @@ pub struct ModelView {
     pub id: String,
     pub provider: Option<String>,
     pub tools: Vec<String>,
+    /// B1 模型类型（`text`/`image`/`video`/`audio`），旧服务端为 `None`。
+    pub kind: Option<String>,
     /// B1 定价扩展（`docs/we2ai/B1定价契约.md`）：无法解析价格的
     /// 模型为 `None`，前端显示"暂无定价"。
     pub price: Option<ModelPriceView>,
@@ -479,6 +481,7 @@ fn to_models_view(remote: RemoteKeyModels) -> KeyModelsView {
                 .filter(|t| m.tools.iter().any(|x| x == *t))
                 .map(|t| t.to_string())
                 .collect(),
+            kind: m.kind.filter(|k| !k.is_empty()),
             price: to_price_view(m.price),
         })
         .collect();
@@ -1041,6 +1044,43 @@ mod tests {
         assert_eq!(price.base_input, Some(6.0));
         assert_eq!(price.cache_write, None);
         assert_eq!(price.multiplier, None, "fixture omits model-level multiplier");
+    }
+
+    /// B1 `kind` 透传给前端视图：有值原样保留，缺失（旧服务端）或空串为 `None`。
+    #[tokio::test]
+    async fn key_models_passes_through_kind_and_tolerates_missing() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        mount_page(&server, 1, 1, vec![key_json(1, SECRET_A, "active", None)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/desktop/keys/1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {
+                    "models": [
+                        {"id": "claude-sonnet-4-5", "tools": ["claude_code"], "mode": "chat", "kind": "text"},
+                        {"id": "jimeng_t2v_v30", "tools": ["codex"], "kind": "video"},
+                        {"id": "legacy-model", "tools": ["codex"]},
+                        {"id": "empty-kind", "tools": ["codex"], "kind": ""}
+                    ],
+                    "callable": true
+                }
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        list_keys(&manager, &state).await.unwrap();
+
+        let result = key_models(&manager, &state, 1).await.unwrap();
+        let kinds: Vec<Option<&str>> = result.models.iter().map(|m| m.kind.as_deref()).collect();
+        assert_eq!(kinds, vec![Some("text"), Some("video"), None, None]);
+        let json = serde_json::to_value(&result.models[1]).unwrap();
+        assert_eq!(
+            json["kind"], "video",
+            "serialized to the frontend as `kind`"
+        );
     }
 
     /// v2 契约端到端：image 类模型自带独立倍率（0.5，不叠加高峰），与顶层

@@ -349,6 +349,48 @@ describe("CodeSampleDrawer", () => {
       expect(code()).toContain('"model":"claude-sonnet-4-5"');
     });
 
+    it("hides non-text models (image/video/audio/other) but keeps text and kind-less ones", async () => {
+      const backend = mockBackend();
+      backend.keyModels.mockResolvedValue({
+        ...models([]),
+        models: [
+          { id: "text-model", kind: "text" },
+          { id: "legacy-model" },
+          { id: "image-model", kind: "image" },
+          { id: "video-model", kind: "video" },
+          { id: "audio-model", kind: "audio" },
+          { id: "embed-model", kind: "other" },
+          { id: "future-model", kind: "hologram" },
+        ].map((m) => ({ provider: null, tools: [], price: null, ...m })),
+      });
+      await renderDrawer();
+
+      const select = await screen.findByRole("combobox", { name: "模型" });
+      const options = within(select)
+        .getAllByRole("option")
+        .map((o) => o.textContent);
+      expect(options).toEqual(["text-model", "legacy-model"]);
+      expect(code()).toContain('"model":"text-model"');
+    });
+
+    it("degrades to the text box when every model is filtered out as non-text", async () => {
+      const backend = mockBackend();
+      backend.keyModels.mockResolvedValue({
+        ...models([]),
+        models: [
+          { id: "image-model", kind: "image" },
+          { id: "video-model", kind: "video" },
+        ].map((m) => ({ provider: null, tools: [], price: null, ...m })),
+      });
+      await renderDrawer();
+
+      expect(await screen.findByRole("textbox", { name: "模型" })).toHaveValue(
+        "gpt-4.1",
+      );
+      expect(screen.getByTestId("sample-model-fallback")).toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: "模型" })).toBeNull();
+    });
+
     it("degrades to an editable text box with a protocol-specific default when B1 fails", async () => {
       mockBackend({ modelsError: apiError("KEY_NOT_FOUND") });
       await renderDrawer();
