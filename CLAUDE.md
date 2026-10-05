@@ -12,7 +12,7 @@
 ## 硬性规则
 
 - 新增或修改 fork 功能时，同一批提交内更新 `自定义开发功能列表.md`；能机械校验的同时加进 `scripts/we2ai/check-guards.sh`
-- 版本号：主号 = 上游主号 + 1（4 处版本文件由脚本维护，不要手改成上游版本）
+- 版本号：主号 = 上游主号 + 1，次/修订号不低于上游；fork 独立发版可只升修订号（4 处版本文件必须一致，不要手改成上游版本）
 - `.github/workflows/*.yml` 的 `on:` 只允许 `workflow_dispatch`
 - 本文件和 `.claude/` 被上游 `.gitignore` 忽略，新增时用 `git add -f`
 - 提交前跑 `./scripts/we2ai/check-guards.sh`

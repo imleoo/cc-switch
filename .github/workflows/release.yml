@@ -675,7 +675,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: WE2AI ${{ github.ref_name }}
-          prerelease: true
+          prerelease: false
           body: |
             ## WE2AI ${{ github.ref_name }}
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # we2ai fork 守卫检查：防止上游同步静默还原 fork 定制。
 # 规则来源：自定义开发功能列表.md 风险表。
-#   1. 功能 1：4 个版本文件版本号一致，且主号 = main 分支主号 + 1
+#   1. 功能 1：4 个版本文件版本号一致，主号 = main 分支主号 + 1，次/修订号不低于 main 对应值
 #   2. 功能 2：.github/workflows/*.yml 的 on: 只允许 workflow_dispatch
 #   3. 功能 4：自动更新地址/签名公钥指向 we2ai，代码里无上游发布页链接
 # 退出码：0 全部通过；非 0 至少一条违规（详见 stderr）
@@ -16,13 +16,24 @@ fail=0
 err() { echo "FAIL: $*" >&2; fail=1; }
 
 # ── 1. 版本号 ────────────────────────────────────────────────
+# 主号必须 = main 主号 + 偏移；次/修订号不得低于 main（fork 独立发版可以只升修订号，
+# 如上游 3.20.4 → we2ai 4.20.5）；四个版本文件必须互相一致。
 expected="$(fork_version "$(ref_version "$MAIN_REF")")"
+first_version=""
 for f in "${WE2AI_VERSION_FILES[@]}"; do
   v="$(read_version "$f" < "$f")"
   if [[ -z "$v" ]]; then
     err "$f: 读不到版本号"
-  elif [[ "$v" != "$expected" ]]; then
-    err "$f: 版本 ${v}，期望 ${expected}（${MAIN_REF} 主号 +${WE2AI_MAJOR_OFFSET}）"
+    continue
+  fi
+  if [[ -z "$first_version" ]]; then
+    first_version="$v"
+  elif [[ "$v" != "$first_version" ]]; then
+    err "$f: 版本 ${v} 与 ${WE2AI_VERSION_FILES[0]} 的 ${first_version} 不一致"
+  fi
+  lowest="$(printf '%s\n%s\n' "$expected" "$v" | sort -V | head -1)"
+  if [[ "${v%%.*}" != "${expected%%.*}" || "$lowest" != "$expected" ]]; then
+    err "$f: 版本 ${v}，期望主号 ${expected%%.*}（${MAIN_REF} 主号 +${WE2AI_MAJOR_OFFSET}）且不低于 ${expected}"
   fi
 done
 
@@ -503,6 +514,11 @@ if [[ -f "$release_yml" ]]; then
   fi
   if ! grep -qE '^\s*HAS_APPLE_CERT:\s*\$\{\{\s*secrets\.APPLE_CERTIFICATE\s*!=\s*.{0,2}\s*\}\}' "$release_yml"; then
     err "$release_yml: 找不到 job 级 env HAS_APPLE_CERT（应为 \${{ secrets.APPLE_CERTIFICATE != '' }}），macOS 签名/公证步骤的 if 条件依赖它（功能 15）"
+  fi
+  # 功能 4：Release 必须是正式版。应用内更新读 releases/latest/download/latest.json，
+  # GitHub 的 latest 不包含 Pre-release，写成 true 会让"检查更新"一直 404。
+  if grep -qE '^\s*prerelease:\s*true\s*$' "$release_yml"; then
+    err "$release_yml: prerelease 不能是 true（功能 4：releases/latest 不包含 Pre-release，应用内更新会 404）"
   fi
   publish_release_block="$(awk '/^  publish-release:/{f=1} f{print} f&&/^  [a-zA-Z]/&&!/^  publish-release:/&&NR>1{if(seen)exit} /^  publish-release:/{seen=1}' "$release_yml")"
   if ! printf '%s\n' "$publish_release_block" | grep -qE '^\s*environment:\s*release\s*$'; then
