@@ -259,6 +259,69 @@ describe("ModelSquarePage", () => {
     expect(keyModels).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the same model cards on screen while refreshing the same key (no flash)", async () => {
+    vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
+      keys: [claudeKey],
+      selectedKeyId: 1,
+    });
+    let resolveSecond: (value: We2aiKeyModels) => void = () => {};
+    vi.spyOn(we2aiApi, "keyModels")
+      .mockResolvedValueOnce(claudeModels)
+      .mockImplementationOnce(
+        () =>
+          new Promise<We2aiKeyModels>((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+    renderPage();
+
+    const cardBefore = await screen.findByTestId("we2ai-model-card");
+    await userEvent.click(screen.getByRole("button", { name: t.refresh }));
+
+    // 第二次拉取在途：旧卡片必须还在页面上（同一个 DOM 节点），
+    // 整块「加载中」占位不能出现，否则整个模型区会先塌掉再重画。
+    await waitFor(() => expect(resolveSecond).not.toBe(undefined));
+    expect(screen.getByTestId("we2ai-model-card")).toBe(cardBefore);
+    expect(screen.getAllByText(t.loadingModels)).toHaveLength(1);
+
+    await act(async () => {
+      resolveSecond({ ...claudeModels });
+    });
+    await waitFor(() =>
+      expect(screen.queryByText(t.loadingModels)).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("we2ai-model-card")).toBe(cardBefore);
+  });
+
+  it("clears the previous key's models when switching to another key", async () => {
+    vi.spyOn(we2aiApi, "listKeys").mockResolvedValue({
+      keys: [claudeKey, openaiKey],
+      selectedKeyId: 1,
+    });
+    let resolveOpenai: (value: We2aiKeyModels) => void = () => {};
+    vi.spyOn(we2aiApi, "keyModels").mockImplementation((id: number) =>
+      id === 1
+        ? Promise.resolve(claudeModels)
+        : new Promise<We2aiKeyModels>((resolve) => {
+            resolveOpenai = resolve;
+          }),
+    );
+    renderPage();
+
+    await screen.findByText("claude-sonnet-4-5");
+    await userEvent.click(screen.getByRole("combobox"));
+    await userEvent.click(await screen.findByRole("option", { name: /个人/ }));
+
+    // 换 Key：旧 Key 的模型不属于新 Key，不能在加载期间继续展示。
+    await waitFor(() =>
+      expect(screen.queryByText("claude-sonnet-4-5")).not.toBeInTheDocument(),
+    );
+    await act(async () => {
+      resolveOpenai(openaiModels);
+    });
+    expect(await screen.findByText("gpt-5")).toBeInTheDocument();
+  });
+
   it("retries once when the latest key list request is reported as superseded", async () => {
     vi.spyOn(we2aiApi, "listKeys")
       .mockRejectedValueOnce({ code: "KEY_LIST_SUPERSEDED", message: "old" })
@@ -690,7 +753,7 @@ describe("ModelSquarePage", () => {
 
     // v3 契约：未识别的 per_request_unit 不展示按次这一行（宁可"暂无
     // 定价"，也不能展示错误单位）。
-    it("shows \"no pricing\" instead of a wrong unit when perRequestUnit is unrecognized", async () => {
+    it('shows "no pricing" instead of a wrong unit when perRequestUnit is unrecognized', async () => {
       const card = await renderWithModels({
         models: [
           {
@@ -781,7 +844,12 @@ describe("ModelSquarePage", () => {
     it('shows "no pricing available" when the model has no price data', async () => {
       const card = await renderWithModels({
         models: [
-          { id: "claude-sonnet-4-5", provider: "anthropic", tools: [], price: null },
+          {
+            id: "claude-sonnet-4-5",
+            provider: "anthropic",
+            tools: [],
+            price: null,
+          },
         ],
         callable: true,
         blockedReason: null,
@@ -923,7 +991,6 @@ describe("ModelSquarePage", () => {
         within(card).getByTestId("we2ai-price-value-input"),
       ).toHaveTextContent(t.priceDiscountedSrLabel);
     });
-
   });
 
   // Opus 复核 P3：价格会随高峰/峰谷边界变化，验证过期时静默重拉，不打断
@@ -1084,14 +1151,12 @@ describe("ModelSquarePage", () => {
         selectedKeyId: 1,
       });
       let resolveModels: ((value: We2aiKeyModels) => void) | undefined;
-      const keyModels = vi
-        .spyOn(we2aiApi, "keyModels")
-        .mockImplementation(
-          () =>
-            new Promise((resolve) => {
-              resolveModels = resolve;
-            }),
-        );
+      const keyModels = vi.spyOn(we2aiApi, "keyModels").mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveModels = resolve;
+          }),
+      );
 
       renderPage();
 

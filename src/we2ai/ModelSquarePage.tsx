@@ -152,16 +152,12 @@ function ModelPriceSection({
                       className={`mr-1 ${mutedClass}`}
                       data-testid={`we2ai-price-strikethrough-${row.field}`}
                     >
-                      <span className="sr-only">
-                        {t.priceOriginalSrLabel}
-                      </span>
+                      <span className="sr-only">{t.priceOriginalSrLabel}</span>
                       {row.strikethroughLine}
                     </del>
                   )}
                   <span data-testid={`we2ai-price-value-${row.field}`}>
-                    <span className="sr-only">
-                      {t.priceDiscountedSrLabel}
-                    </span>
+                    <span className="sr-only">{t.priceDiscountedSrLabel}</span>
                     {row.line}
                   </span>
                   {/* 单位单独一行：有折扣（划线原价 + 折后价）时同一行放不下，
@@ -404,6 +400,10 @@ export function ModelSquarePage({
   // 序号已经不是自己发起时的那个，`finally` 里就再也不会执行，
   // `loadingModels` 会永远卡在 `true`（连带"重试"按钮一直禁用）。
   const loadingModelsRef = useRef(false);
+  // 当前展示的 `models` 属于哪个 Key：同一个 Key 重拉（点「刷新」、Key 列表变化、
+  // 到账后重拉）时保留旧数据直到新数据到达，不先清空整个模型网格再重画（闪屏）；
+  // 换 Key 时旧数据不属于新 Key，必须清空。
+  const modelsKeyIdRef = useRef<number | null>(null);
 
   const loadModels = useCallback(
     async (keyId: number, opts: { silent?: boolean } = {}) => {
@@ -423,7 +423,10 @@ export function ModelSquarePage({
         loadingModelsRef.current = true;
         setLoadingModels(true);
         setModelsError(null);
-        setModels(null);
+        if (modelsKeyIdRef.current !== keyId) {
+          setModels(null);
+          modelsKeyIdRef.current = null;
+        }
         // 新的前台请求（切换 Key、手动刷新）意味着旧数据即将被替换，不能
         // 让过期判断在这次请求完成前沿用上一个 Key/上一批数据的拉取时间
         // （Opus 复核 Q1）。
@@ -433,6 +436,7 @@ export function ModelSquarePage({
         const result = await we2aiApi.keyModels(keyId);
         if (seq === modelsRequestSeq.current) {
           setModels(result);
+          modelsKeyIdRef.current = keyId;
           // 静默刷新成功也要清掉之前可能展示的前台错误——数据已经是新的
           // 了，不应该继续挂着一条"获取失败，请重试"（Opus 复核 Q1）。
           setModelsError(null);
@@ -483,6 +487,7 @@ export function ModelSquarePage({
       loadingModelsRef.current = false;
       setLoadingModels(false);
       setModels(null);
+      modelsKeyIdRef.current = null;
       modelsFetchedAtRef.current = null;
     }
   }, [selectedKeyId, loadModels, modelsReloadTick]);
@@ -498,7 +503,10 @@ export function ModelSquarePage({
     const keyId = selectedKeyIdRef.current;
     if (keyId === null) return;
     const fetchedAt = modelsFetchedAtRef.current;
-    if (fetchedAt !== null && Date.now() - fetchedAt < STALE_MODELS_THRESHOLD_MS) {
+    if (
+      fetchedAt !== null &&
+      Date.now() - fetchedAt < STALE_MODELS_THRESHOLD_MS
+    ) {
       return;
     }
     void loadModelsRef.current(keyId, { silent: true });
@@ -637,6 +645,11 @@ export function ModelSquarePage({
         >
           {t.refresh}
         </Button>
+        {loadingModels && models && (
+          <span className="text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
+            {t.loadingModels}
+          </span>
+        )}
       </div>
 
       {models && !models.callable && (
@@ -676,7 +689,7 @@ export function ModelSquarePage({
         </div>
       )}
 
-      {loadingModels && (
+      {loadingModels && !models && (
         <p className="text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
           {t.loadingModels}
         </p>
