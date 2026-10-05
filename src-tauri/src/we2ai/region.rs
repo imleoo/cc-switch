@@ -2,9 +2,9 @@
 //!
 //! | 区域 | 地址 | 备注 |
 //! |---|---|---|
-//! | 国际版 | `https://api.we2ai.com` | 始终可选 |
-//! | 国内版正式 | `https://api.wtgo.com.cn` | 始终可选 |
-//! | 国内版测试 | `https://jiwu.wtgo.com.cn` | 仅开发构建可选（`cfg!(debug_assertions)`） |
+//! | 国际版 | `https://api.we2ai.com` | 唯一可选 |
+//! | 国内版正式 | `https://api.wtgo.com.cn` | 暂时隐藏（`is_available()` 为 false） |
+//! | 国内版测试 | `https://jiwu.wtgo.com.cn` | 暂时隐藏（`is_available()` 为 false） |
 
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum Region {
     International,
     DomesticProd,
-    /// 国内版测试环境，仅开发构建可选（`is_available()` 在 release 构建下为 false）。
+    /// 国内版测试环境，当前随国内版一起隐藏（`is_available()` 为 false）。
     DomesticDev,
 }
 
@@ -36,11 +36,12 @@ impl Region {
         }
     }
 
-    /// 该区域在当前构建下是否可选。`DomesticDev` 仅开发构建可选。
+    /// 该区域是否可选。国内版（正式 / 测试）暂时隐藏：登录页不展示，命令层
+    /// `parse_region` 也会拒绝，已记住的国内区域按没有记忆处理。重新开放时改这里。
     pub fn is_available(self) -> bool {
         match self {
-            Region::DomesticDev => cfg!(debug_assertions),
-            Region::International | Region::DomesticProd => true,
+            Region::International => true,
+            Region::DomesticProd | Region::DomesticDev => false,
         }
     }
 
@@ -89,10 +90,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn domestic_dev_only_available_in_debug_builds() {
-        assert_eq!(Region::DomesticDev.is_available(), cfg!(debug_assertions));
+    fn only_international_is_available_while_domestic_is_hidden() {
         assert!(Region::International.is_available());
-        assert!(Region::DomesticProd.is_available());
+        assert!(!Region::DomesticProd.is_available());
+        assert!(!Region::DomesticDev.is_available());
     }
 
     #[test]
@@ -124,11 +125,6 @@ mod tests {
     #[test]
     fn available_regions_excludes_unavailable_ones() {
         let regions = Region::available_regions();
-        assert!(regions.contains(&Region::International));
-        assert!(regions.contains(&Region::DomesticProd));
-        assert_eq!(
-            regions.contains(&Region::DomesticDev),
-            cfg!(debug_assertions)
-        );
+        assert_eq!(regions, vec![Region::International]);
     }
 }
