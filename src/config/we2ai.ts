@@ -10,3 +10,5 @@ export const WE2AI_MODE = true;
 
 export const WE2AI_BRAND_NAME = "WE2AI";
 export const WE2AI_WEBSITE_URL = "https://we2ai.com";
+/** 官网注册页：登录页「去官网注册」按钮跳转目标（客户端不提供注册）。 */
+export const WE2AI_REGISTER_URL = `${WE2AI_WEBSITE_URL}/register`;

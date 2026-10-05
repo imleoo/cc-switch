@@ -155,6 +155,8 @@ export interface We2aiStrings {
   phoneLoginButton: string;
   phoneLoginButtonBusy: string;
   freeLoginNote: string;
+  registerPrompt: string;
+  registerButton: string;
   errorNetwork: string;
   errorGeneric: string;
   errorTokenRevoked: string;
@@ -429,7 +431,8 @@ const zh: We2aiStrings = {
   applyConfirmDescription: "只改写以下文件中的这些字段，其余内容保持不变",
   applyFilesLabel: "文件",
   applyFieldsLabel: "字段",
-  applyExtraChangesLabel: "以下内容也会被一并改动（非 WE2AI 托管，由工具自身的写入逻辑触发）",
+  applyExtraChangesLabel:
+    "以下内容也会被一并改动（非 WE2AI 托管，由工具自身的写入逻辑触发）",
   applyAdvanced: "高级：分别指定各槽位模型",
   slotSonnet: "Sonnet 槽位",
   slotOpus: "Opus 槽位",
@@ -445,8 +448,7 @@ const zh: We2aiStrings = {
   workbuddyOverwriteDescription:
     "WorkBuddy 中已有 {model} 条目，且内容与 WE2AI 上次写入的不同。",
   workbuddyOverwriteConfirm: "覆盖为 WE2AI 配置",
-  errorApplyTakeover:
-    "该工具正被其他程序代理接管，请先在该程序中关闭接管",
+  errorApplyTakeover: "该工具正被其他程序代理接管，请先在该程序中关闭接管",
   errorApplyTakeoverDetected: "检测到代理接管，未生效",
   errorApplyPrecondition: "WE2AI 记录的供应商状态异常，已停止写入",
   errorApplyGeneric: "写入失败",
@@ -516,6 +518,8 @@ const zh: We2aiStrings = {
   phoneLoginButtonBusy: "登录中…",
   freeLoginNote:
     "默认最长 30 天免登录，服务端策略、凭证撤销或网络指纹变化可能提前失效",
+  registerPrompt: "还没有账号？",
+  registerButton: "去官网注册 ↗",
   errorNetwork: "网络连接失败，请检查网络后重试",
   errorGeneric: "操作失败，请稍后重试",
   errorTokenRevoked: "登录状态已被撤销，请重新登录",
@@ -850,7 +854,8 @@ const en: We2aiStrings = {
   updateAvailable: "Update available",
   installAndRestart: "Install and restart",
   checkFailed: "Failed to check for updates",
-  checkFailedHint: "Couldn't fetch update information right now. Please try again later.",
+  checkFailedHint:
+    "Couldn't fetch update information right now. Please try again later.",
   officialWebsite: "Official website",
   saveFailed: "Failed to save settings",
 
@@ -883,6 +888,8 @@ const en: We2aiStrings = {
   phoneLoginButtonBusy: "Signing in…",
   freeLoginNote:
     "You'll stay signed in for up to 30 days by default; server policy, credential revocation, or network fingerprint changes may end it sooner.",
+  registerPrompt: "Don't have an account?",
+  registerButton: "Register on the website ↗",
   errorNetwork:
     "Network request failed, please check your connection and try again",
   errorGeneric: "Something went wrong, please try again later",

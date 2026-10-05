@@ -5,6 +5,7 @@ import { http, HttpResponse, type JsonBodyType } from "msw";
 import { server } from "../msw/server";
 import { LoginPage } from "@/we2ai/LoginPage";
 import { we2aiApi } from "@/we2ai/api";
+import { settingsApi } from "@/lib/api/settings";
 import { getWe2aiStrings } from "@/we2ai/strings";
 import { isWe2aiIpcAllowed } from "@/we2ai/ipcWhitelist";
 
@@ -101,7 +102,7 @@ describe("LoginPage", () => {
     });
     render(<LoginPage t={t} onLoginSuccess={onLoginSuccess} />);
 
-    await screen.findByText(t.tabEmailLogin);
+    await screen.findByTestId("we2ai-region-select");
     expect(screen.queryByText(t.tabPhoneLogin)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByTestId("we2ai-region-select"), {
@@ -115,6 +116,38 @@ describe("LoginPage", () => {
     expect(onLoginSuccess).not.toHaveBeenCalled();
   });
 
+  it("hides the region select and the tab bar when only international is available", async () => {
+    mockInvoke({
+      we2ai_available_regions: () => ["international"],
+      we2ai_get_last_region: () => null,
+    });
+    render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
+
+    await screen.findByLabelText(t.emailLabel);
+    expect(screen.queryByTestId("we2ai-region-select")).not.toBeInTheDocument();
+    expect(screen.queryByText(t.regionLabel)).not.toBeInTheDocument();
+    expect(screen.queryByText(t.tabEmailLogin)).not.toBeInTheDocument();
+    expect(screen.queryByText(t.tabPhoneLogin)).not.toBeInTheDocument();
+  });
+
+  it("opens the website register page from the register button", async () => {
+    mockInvoke({
+      we2ai_available_regions: () => ["international"],
+      we2ai_get_last_region: () => null,
+    });
+    const openExternal = vi
+      .spyOn(settingsApi, "openExternal")
+      .mockResolvedValue(undefined);
+    render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: t.registerButton }),
+    );
+
+    expect(openExternal).toHaveBeenCalledWith("https://we2ai.com/register");
+    openExternal.mockRestore();
+  });
+
   it("silently resumes the session when switching to a region that already has one", async () => {
     const onLoginSuccess = vi.fn();
     mockInvoke({
@@ -125,7 +158,7 @@ describe("LoginPage", () => {
     });
     render(<LoginPage t={t} onLoginSuccess={onLoginSuccess} />);
 
-    await screen.findByText(t.tabEmailLogin);
+    await screen.findByTestId("we2ai-region-select");
     fireEvent.change(screen.getByTestId("we2ai-region-select"), {
       target: { value: "domestic_prod" },
     });
@@ -280,7 +313,7 @@ describe("LoginPage", () => {
     });
     render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
 
-    await screen.findByText(t.tabEmailLogin);
+    await screen.findByTestId("we2ai-region-select");
     fireEvent.change(screen.getByTestId("we2ai-region-select"), {
       target: { value: "domestic_prod" },
     });

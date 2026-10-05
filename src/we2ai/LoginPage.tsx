@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import we2aiLogo from "@/assets/icons/web-logo.svg";
+import { WE2AI_REGISTER_URL } from "@/config/we2ai";
+import { settingsApi } from "@/lib/api/settings";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import "./we2ai-theme.css";
 import { Button } from "@/components/ui/button";
@@ -277,6 +279,14 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
   // 真实使用中出现的机会（不是唯一的正确性保障，Rust 侧代次校验才是）。
   const loginFlowBusy = captchaFlowBusy || twoFaBusy;
 
+  // 注册只在官网完成：用系统浏览器打开官网注册页，注册后回客户端登录。
+  const handleOpenRegister = () => {
+    settingsApi.openExternal(WE2AI_REGISTER_URL).catch((error) => {
+      console.debug("[we2ai] open register page failed", error);
+      toast.error(t.billingOpenFailed);
+    });
+  };
+
   const inputClass =
     "rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none focus:ring-0 focus:border-[var(--we2ai-orange)]";
   const primaryButtonClass =
@@ -309,32 +319,35 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-6">
-          <div className="space-y-1.5">
-            <Label htmlFor="we2ai-region" className="we2ai-label">
-              {t.regionLabel}
-            </Label>
-            <Select
-              value={region}
-              onValueChange={handleRegionChange}
-              disabled={
-                !regionsLoaded ||
-                regionSwitchBusy ||
-                stage.kind === "twoFa" ||
-                loginFlowBusy
-              }
-            >
-              <SelectTrigger id="we2ai-region" className={inputClass}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
-                {regions.map((r) => (
-                  <SelectItem key={r} value={r}>
-                    {regionLabel(t, r)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {/* 只有一个可选区域时（国内版暂时隐藏）不展示区域选择 */}
+          {regions.length > 1 && (
+            <div className="space-y-1.5">
+              <Label htmlFor="we2ai-region" className="we2ai-label">
+                {t.regionLabel}
+              </Label>
+              <Select
+                value={region}
+                onValueChange={handleRegionChange}
+                disabled={
+                  !regionsLoaded ||
+                  regionSwitchBusy ||
+                  stage.kind === "twoFa" ||
+                  loginFlowBusy
+                }
+              >
+                <SelectTrigger id="we2ai-region" className={inputClass}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
+                  {regions.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {regionLabel(t, r)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {stage.kind === "twoFa" ? (
             <form className="space-y-4" onSubmit={handleTwoFaSubmit}>
@@ -396,22 +409,25 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
               value={tab}
               onValueChange={(v) => setTab(v as "email" | "phone")}
             >
-              <TabsList className="w-full rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
-                <TabsTrigger
-                  className="we2ai-label flex-1 rounded-none border-0 data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
-                  value="email"
-                >
-                  {t.tabEmailLogin}
-                </TabsTrigger>
-                {isDomesticRegion(region) && (
+              {/* 只有邮箱登录一种方式时（仅国内版有手机登录）不展示 Tab 栏 */}
+              {isDomesticRegion(region) && (
+                <TabsList className="w-full rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
                   <TabsTrigger
-                    className="we2ai-label flex-1 rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
-                    value="phone"
+                    className="we2ai-label flex-1 rounded-none border-0 data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+                    value="email"
                   >
-                    {t.tabPhoneLogin}
+                    {t.tabEmailLogin}
                   </TabsTrigger>
-                )}
-              </TabsList>
+                  {isDomesticRegion(region) && (
+                    <TabsTrigger
+                      className="we2ai-label flex-1 rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+                      value="phone"
+                    >
+                      {t.tabPhoneLogin}
+                    </TabsTrigger>
+                  )}
+                </TabsList>
+              )}
 
               <TabsContent value="email">
                 <form className="space-y-4" onSubmit={handleEmailLogin}>
@@ -528,6 +544,22 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                 </TabsContent>
               )}
             </Tabs>
+          )}
+
+          {stage.kind !== "twoFa" && (
+            <div className="space-y-2 text-center">
+              <p className="text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
+                {t.registerPrompt}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className={`w-full ${secondaryButtonClass}`}
+                onClick={handleOpenRegister}
+              >
+                {t.registerButton}
+              </Button>
+            </div>
           )}
 
           <p className="text-center text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
