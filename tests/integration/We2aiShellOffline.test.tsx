@@ -81,7 +81,10 @@ function mockShellCommands(extra: Record<string, (body: any) => JsonBodyType>) {
         });
       }
       if (!handler && command === "we2ai_gateway_info") {
-        return HttpResponse.json({ baseUrl: "https://api.we2ai.com" });
+        return HttpResponse.json({
+          baseUrl: "https://api.we2ai.com",
+          webUrl: "https://we2ai.com",
+        });
       }
       if (!handler && command === "we2ai_list_keys") {
         // 已登录视图会挂载模型广场；本文件只测会话横幅，给一个空 Key 列表。
@@ -770,7 +773,8 @@ describe("We2aiShell apply dialog refreshes tool status", () => {
               installed: true,
               broken: false,
               version: "2.1.0",
-              downloadUrl: "https://docs.anthropic.com/en/docs/claude-code/setup",
+              downloadUrl:
+                "https://docs.anthropic.com/en/docs/claude-code/setup",
               managedModel: null,
             },
             {
@@ -866,7 +870,10 @@ describe("We2aiShell apply dialog refreshes tool status", () => {
     // "running"。两个 `server.use()` 叠加在 `mockShellCommands` 之上，
     // 对这两个命令的匹配优先级更高。
     server.use(
-      http.post(`${TAURI_ENDPOINT}/we2ai_tool_status`, () => new Promise(() => {})),
+      http.post(
+        `${TAURI_ENDPOINT}/we2ai_tool_status`,
+        () => new Promise(() => {}),
+      ),
       http.post(`${TAURI_ENDPOINT}/we2ai_cc_switch_running_quick`, () =>
         HttpResponse.json("running"),
       ),

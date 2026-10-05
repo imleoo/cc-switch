@@ -62,7 +62,10 @@ function mockBackend(
 ) {
   const { platform = "openai", modelIds = ["claude-sonnet-4-5", "gpt-4.1"] } =
     options;
-  vi.spyOn(we2aiApi, "gatewayInfo").mockResolvedValue({ baseUrl: BASE });
+  vi.spyOn(we2aiApi, "gatewayInfo").mockResolvedValue({
+    baseUrl: BASE,
+    webUrl: "https://we2ai.com",
+  });
   vi.spyOn(we2aiApi, "listKeyGroups").mockResolvedValue([
     { id: 3, name: "优选分组", platform, rate: 0.8 },
   ]);
@@ -98,7 +101,10 @@ const langTab = (name: string) => screen.getByRole("tab", { name });
 
 describe("CodeSampleDrawer", () => {
   beforeEach(() => {
-    vi.spyOn(we2aiApi, "gatewayInfo").mockResolvedValue({ baseUrl: BASE });
+    vi.spyOn(we2aiApi, "gatewayInfo").mockResolvedValue({
+      baseUrl: BASE,
+      webUrl: "https://we2ai.com",
+    });
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -717,7 +723,7 @@ describe("CodeSampleDrawer", () => {
       const gateway = vi
         .spyOn(we2aiApi, "gatewayInfo")
         .mockRejectedValueOnce(apiError("NETWORK_ERROR"))
-        .mockResolvedValue({ baseUrl: BASE });
+        .mockResolvedValue({ baseUrl: BASE, webUrl: "https://we2ai.com" });
       await renderDrawer();
 
       expect(await screen.findByRole("alert")).toHaveTextContent(

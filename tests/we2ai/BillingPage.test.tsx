@@ -38,6 +38,13 @@ const BASE_URLS: Record<We2aiRegion, string> = {
   domestic_dev: "https://jiwu.wtgo.com.cn",
 };
 
+// 国际版网站与 API 网关分域名；国内版同域。
+const WEB_URLS: Record<We2aiRegion, string> = {
+  international: "https://we2ai.com",
+  domestic_prod: "https://api.wtgo.com.cn",
+  domestic_dev: "https://jiwu.wtgo.com.cn",
+};
+
 async function renderPage(
   options: {
     region?: We2aiRegion | null;
@@ -93,6 +100,7 @@ describe("BillingPage", () => {
     openExternal = vi.spyOn(settingsApi, "openExternal").mockResolvedValue();
     vi.spyOn(we2aiApi, "gatewayInfo").mockImplementation(async () => ({
       baseUrl: BASE_URLS[region],
+      webUrl: WEB_URLS[region],
     }));
     vi.spyOn(console, "debug").mockImplementation(() => {});
   });
@@ -143,7 +151,7 @@ describe("BillingPage", () => {
     await waitFor(() => {
       expect(openExternal).toHaveBeenCalledTimes(1);
     });
-    expect(openExternal).toHaveBeenCalledWith("https://api.we2ai.com/purchase");
+    expect(openExternal).toHaveBeenCalledWith("https://we2ai.com/purchase");
     expect(
       await screen.findByTestId("billing-watch-waiting"),
     ).toBeInTheDocument();
@@ -177,7 +185,7 @@ describe("BillingPage", () => {
     );
 
     await waitFor(() => {
-      expect(openExternal).toHaveBeenCalledWith("https://api.we2ai.com/orders");
+      expect(openExternal).toHaveBeenCalledWith("https://we2ai.com/orders");
     });
     expect(
       screen.queryByTestId("billing-watch-waiting"),
@@ -288,9 +296,7 @@ describe("BillingPage", () => {
     await userEvent.click(screen.getByRole("button", { name: t.offlineRetry }));
 
     await waitFor(() => {
-      expect(openExternal).toHaveBeenCalledWith(
-        "https://api.we2ai.com/purchase",
-      );
+      expect(openExternal).toHaveBeenCalledWith("https://we2ai.com/purchase");
     });
     expect(openExternal).toHaveBeenCalledTimes(1);
     // 余额请求先于打开浏览器。
@@ -321,9 +327,7 @@ describe("BillingPage", () => {
 
     await rerender(4);
     await waitFor(() => {
-      expect(openExternal).toHaveBeenCalledWith(
-        "https://api.we2ai.com/purchase",
-      );
+      expect(openExternal).toHaveBeenCalledWith("https://we2ai.com/purchase");
     });
     expect(
       await screen.findByTestId("billing-watch-waiting"),
@@ -361,7 +365,10 @@ describe("BillingPage", () => {
 
   it("does not open the browser when the page is unmounted while the gateway address request is still pending", async () => {
     let calls = 0;
-    let resolveGateway: (value: { baseUrl: string }) => void = () => {};
+    let resolveGateway: (value: {
+      baseUrl: string;
+      webUrl: string;
+    }) => void = () => {};
     vi.spyOn(we2aiApi, "gatewayInfo").mockImplementation(() => {
       calls += 1;
       // 挂载时的预取失败，点击时的那次一直挂起。
@@ -379,7 +386,10 @@ describe("BillingPage", () => {
 
     unmount();
     await act(async () => {
-      resolveGateway({ baseUrl: "https://api.we2ai.com" });
+      resolveGateway({
+        baseUrl: "https://api.we2ai.com",
+        webUrl: "https://we2ai.com",
+      });
     });
 
     expect(openExternal).not.toHaveBeenCalled();
@@ -478,6 +488,6 @@ describe("BillingPage", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(openExternal).toHaveBeenCalledWith("https://api.we2ai.com/orders");
+    expect(openExternal).toHaveBeenCalledWith("https://we2ai.com/orders");
   });
 });

@@ -498,8 +498,8 @@ export function We2aiShell() {
   // 模型广场；地址由 Rust 侧区域基址拼接，不硬编码域名（同充值页做法）。
   const handleOpenWebModels = async () => {
     try {
-      const { baseUrl } = await we2aiApi.gatewayInfo();
-      await settingsApi.openExternal(`${baseUrl}/models`);
+      const { webUrl } = await we2aiApi.gatewayInfo();
+      await settingsApi.openExternal(`${webUrl}/models`);
     } catch {
       toast.error(t.billingOpenFailed);
     }
@@ -654,35 +654,37 @@ export function We2aiShell() {
   // 检测"处理并放行（返回 `false`），不无限期挡住确认按钮。完整的顶栏刷新
   // 仍然异步、独立进行，不等待也不阻塞这次调用。
   const APPLY_QUICK_CHECK_TIMEOUT_MS = 2500;
-  const checkCcSwitchRunningBeforeApply = useCallback(async (): Promise<boolean> => {
-    void refreshToolStatus();
-    const seq = ++quickCcSwitchCheckSeq.current;
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const status = await Promise.race([
-        we2aiApi.ccSwitchRunningQuick(),
-        new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(
-            () => reject(new Error("we2ai: quick tool-status check timed out")),
-            APPLY_QUICK_CHECK_TIMEOUT_MS,
-          );
-        }),
-      ]);
-      if (seq === quickCcSwitchCheckSeq.current) {
-        setQuickCcSwitchCheck({ seq, status });
+  const checkCcSwitchRunningBeforeApply =
+    useCallback(async (): Promise<boolean> => {
+      void refreshToolStatus();
+      const seq = ++quickCcSwitchCheckSeq.current;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const status = await Promise.race([
+          we2aiApi.ccSwitchRunningQuick(),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () =>
+                reject(new Error("we2ai: quick tool-status check timed out")),
+              APPLY_QUICK_CHECK_TIMEOUT_MS,
+            );
+          }),
+        ]);
+        if (seq === quickCcSwitchCheckSeq.current) {
+          setQuickCcSwitchCheck({ seq, status });
+        }
+        // "unknown"（Codex 验收 Z2）：检测子进程启动失败/非零退出等，没能
+        // 得出结论，跟超时一样按"未能完成检测"处理，不能当成"确认完成"。
+        return status !== "unknown";
+      } catch {
+        if (seq === quickCcSwitchCheckSeq.current) {
+          setQuickCcSwitchCheck({ seq, status: "unknown" });
+        }
+        return false;
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
-      // "unknown"（Codex 验收 Z2）：检测子进程启动失败/非零退出等，没能
-      // 得出结论，跟超时一样按"未能完成检测"处理，不能当成"确认完成"。
-      return status !== "unknown";
-    } catch {
-      if (seq === quickCcSwitchCheckSeq.current) {
-        setQuickCcSwitchCheck({ seq, status: "unknown" });
-      }
-      return false;
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
-  }, [refreshToolStatus]);
+    }, [refreshToolStatus]);
 
   // macOS 用 `titleBarStyle: "Overlay"`（`src-tauri/tauri.conf.json`），红绿灯
   // 悬浮在内容之上、不占布局空间：顶栏需要预留左侧空间，否则 logo/文字会被
@@ -1181,9 +1183,7 @@ export function We2aiShell() {
                       {t.checkFailed}
                     </span>
                   ) : (
-                    <span className="we2ai-label opacity-60">
-                      {t.upToDate}
-                    </span>
+                    <span className="we2ai-label opacity-60">{t.upToDate}</span>
                   ))}
               </CardContent>
             </Card>

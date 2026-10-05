@@ -106,7 +106,10 @@ function mockShellCommands(
         case "we2ai_session_status":
           return HttpResponse.json(LOGGED_IN);
         case "we2ai_gateway_info":
-          return HttpResponse.json({ baseUrl: "https://api.we2ai.com" });
+          return HttpResponse.json({
+            baseUrl: "https://api.we2ai.com",
+            webUrl: "https://we2ai.com",
+          });
         case "we2ai_get_balance":
           return HttpResponse.json({
             balance: 12.48,

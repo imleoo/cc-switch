@@ -343,9 +343,10 @@ export interface We2aiBalance {
   totalRecharged: number;
 }
 
-/** 当前会话区域的网关基础地址（不含尾部 `/`），用于拼充值页 / 订单页链接。 */
+/** 当前会话区域的地址（均不含尾部 `/`）：`baseUrl` 是 API 网关（代码示例），`webUrl` 是网站（充值页 / 订单页 / 模型广场）。 */
 export interface We2aiGatewayInfo {
   baseUrl: string;
+  webUrl: string;
 }
 
 /** Rust 后台轮询发现未读公告集合变化时发出的事件名。 */
@@ -631,7 +632,13 @@ export const we2aiApi = {
   /** 当前活动会话所在区域的基础地址。 */
   async gatewayInfo(): Promise<We2aiGatewayInfo> {
     const result = await invoke<We2aiGatewayInfo | null>("we2ai_gateway_info");
-    if (!result || typeof result.baseUrl !== "string" || !result.baseUrl) {
+    if (
+      !result ||
+      typeof result.baseUrl !== "string" ||
+      !result.baseUrl ||
+      typeof result.webUrl !== "string" ||
+      !result.webUrl
+    ) {
       throw new Error("we2ai: empty gateway info response");
     }
     return result;

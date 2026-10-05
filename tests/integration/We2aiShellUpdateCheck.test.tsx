@@ -51,7 +51,9 @@ function renderShell() {
   );
 }
 
-function mockLoggedInShell(extra: Record<string, (body: any) => JsonBodyType> = {}) {
+function mockLoggedInShell(
+  extra: Record<string, (body: any) => JsonBodyType> = {},
+) {
   server.use(
     http.post(`${TAURI_ENDPOINT}/*`, async ({ request }) => {
       const command = request.url.slice(`${TAURI_ENDPOINT}/`.length);
@@ -98,7 +100,10 @@ function mockLoggedInShell(extra: Record<string, (body: any) => JsonBodyType> = 
         });
       }
       if (!handler && command === "we2ai_gateway_info") {
-        return HttpResponse.json({ baseUrl: "https://api.we2ai.com" });
+        return HttpResponse.json({
+          baseUrl: "https://api.we2ai.com",
+          webUrl: "https://we2ai.com",
+        });
       }
       if (handler) {
         const body = await request.text();
@@ -163,9 +168,7 @@ describe("We2aiShell update check", () => {
     const button = await goToUpdateSection();
     await userEvent.click(button);
 
-    expect(
-      await screen.findByText(t.checkFailedHint),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(t.checkFailedHint)).toBeInTheDocument();
     expect(
       screen.queryByText(/Could not fetch a valid release JSON/),
     ).not.toBeInTheDocument();
@@ -186,9 +189,9 @@ describe("We2aiShell update check", () => {
 
     await screen.findByText(t.checkFailedHint);
     expect(screen.queryByText(t.upToDate)).not.toBeInTheDocument();
-    expect(
-      screen.getByTestId("we2ai-update-check-failed"),
-    ).toHaveTextContent(t.checkFailed);
+    expect(screen.getByTestId("we2ai-update-check-failed")).toHaveTextContent(
+      t.checkFailed,
+    );
   });
 
   it('shows "up to date" when the check succeeds and finds nothing', async () => {
@@ -204,7 +207,7 @@ describe("We2aiShell update check", () => {
     });
   });
 
-  it("shows the failed status, not the install button or \"up to date\", when a later check fails after an earlier one found an update", async () => {
+  it('shows the failed status, not the install button or "up to date", when a later check fails after an earlier one found an update', async () => {
     checkMock
       .mockResolvedValueOnce({ version: "5.0.0", notes: "", date: "" })
       .mockRejectedValueOnce(new Error("network error"));
@@ -221,7 +224,9 @@ describe("We2aiShell update check", () => {
 
     // `hasUpdate=true` 时 We2aiShell 不再渲染"检查更新"按钮，用独立的
     // trigger 组件复用同一个 UpdateContext 再触发一次检查，这次失败。
-    await userEvent.click(screen.getByRole("button", { name: "manual-recheck" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "manual-recheck" }),
+    );
     await waitFor(() => expect(checkMock).toHaveBeenCalledTimes(2));
 
     expect(

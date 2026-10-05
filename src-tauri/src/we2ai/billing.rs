@@ -6,8 +6,9 @@
 //! - `we2ai_get_balance`：经 `call_protected_api` 读 `GET /api/v1/user/profile` 的余额
 //!   字段，会话续期与 401 终止处理与 `keys.rs` 一致。字段缺失、为 `null` 或非有限数
 //!   一律按 0 处理，不让一个脏字段拖垮顶栏余额。
-//! - `we2ai_gateway_info`：返回当前活动会话所在区域的基础地址，前端据此拼
-//!   `/purchase`、`/orders`，不硬编码域名。
+//! - `we2ai_gateway_info`：返回当前活动会话所在区域的 API 基础地址（`baseUrl`）和
+//!   网站地址（`webUrl`），前端据此拼 `/purchase`、`/orders`、`/models`（用 `webUrl`）
+//!   和代码示例（用 `baseUrl`），不硬编码域名。
 
 use serde::Serialize;
 use tauri::State;
@@ -25,11 +26,12 @@ pub struct BalanceView {
     pub total_recharged: f64,
 }
 
-/// 当前会话区域的网关地址（不含尾部 `/`）。
+/// 当前会话区域的 API 网关地址与网站地址（均不含尾部 `/`）。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayInfoView {
     pub base_url: String,
+    pub web_url: String,
 }
 
 /// 缺失或非有限（`NaN`/`Infinity`）按 0；负数保留（欠费账户余额可能为负）。
@@ -60,6 +62,7 @@ pub fn gateway_info(manager: &SessionManager) -> Result<GatewayInfoView, We2aiAp
         .ok_or(SessionError::NoActiveSession)?;
     Ok(GatewayInfoView {
         base_url: identity.region.base_url().to_string(),
+        web_url: identity.region.web_url().to_string(),
     })
 }
 
@@ -166,9 +169,13 @@ mod tests {
         );
         let info = serde_json::to_value(GatewayInfoView {
             base_url: "https://api.we2ai.com".to_string(),
+            web_url: "https://we2ai.com".to_string(),
         })
         .unwrap();
-        assert_eq!(info, json!({"baseUrl": "https://api.we2ai.com"}));
+        assert_eq!(
+            info,
+            json!({"baseUrl": "https://api.we2ai.com", "webUrl": "https://we2ai.com"})
+        );
     }
 
     #[tokio::test]
@@ -241,10 +248,9 @@ mod tests {
             "access-1",
             "http://unused".to_string(),
         );
-        assert_eq!(
-            gateway_info(&manager).unwrap().base_url,
-            "https://api.we2ai.com"
-        );
+        let intl = gateway_info(&manager).unwrap();
+        assert_eq!(intl.base_url, "https://api.we2ai.com");
+        assert_eq!(intl.web_url, "https://we2ai.com");
 
         manager.test_seed_active(
             Region::DomesticProd,

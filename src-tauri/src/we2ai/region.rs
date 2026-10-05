@@ -27,6 +27,15 @@ impl Region {
         }
     }
 
+    /// 区域网站地址（充值 / 订单 / 模型广场等 Web 页面），不含尾部 `/`。
+    /// 国际版网站与 API 网关分域名；国内版网站与网关同域。
+    pub fn web_url(self) -> &'static str {
+        match self {
+            Region::International => "https://we2ai.com",
+            Region::DomesticProd | Region::DomesticDev => self.base_url(),
+        }
+    }
+
     /// 该区域在当前构建下是否可选。`DomesticDev` 仅开发构建可选。
     pub fn is_available(self) -> bool {
         match self {
@@ -84,6 +93,20 @@ mod tests {
         assert_eq!(Region::DomesticDev.is_available(), cfg!(debug_assertions));
         assert!(Region::International.is_available());
         assert!(Region::DomesticProd.is_available());
+    }
+
+    #[test]
+    fn web_url_splits_site_from_gateway_only_for_international() {
+        assert_eq!(Region::International.web_url(), "https://we2ai.com");
+        assert_eq!(Region::International.base_url(), "https://api.we2ai.com");
+        assert_eq!(
+            Region::DomesticProd.web_url(),
+            Region::DomesticProd.base_url()
+        );
+        assert_eq!(
+            Region::DomesticDev.web_url(),
+            Region::DomesticDev.base_url()
+        );
     }
 
     #[test]

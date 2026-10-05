@@ -89,7 +89,10 @@ function mockShellCommands(
         return HttpResponse.json(LOGGED_IN);
       }
       if (command === "we2ai_gateway_info") {
-        return HttpResponse.json({ baseUrl: "https://api.we2ai.com" });
+        return HttpResponse.json({
+          baseUrl: "https://api.we2ai.com",
+          webUrl: "https://we2ai.com",
+        });
       }
       if (command === "we2ai_get_balance") {
         return HttpResponse.json({
@@ -249,9 +252,7 @@ describe("We2aiShell balance chip and billing tab", () => {
       within(hint).getByRole("button", { name: "官网模型广场 ↗" }),
     );
 
-    await waitFor(() =>
-      expect(opened).toEqual(["https://api.we2ai.com/models"]),
-    );
+    await waitFor(() => expect(opened).toEqual(["https://we2ai.com/models"]));
   });
 
   it("the insufficient-balance banner button opens the billing tab and runs the main recharge flow (opens /purchase, starts waiting)", async () => {
@@ -300,7 +301,7 @@ describe("We2aiShell balance chip and billing tab", () => {
       ),
     );
     expect(await screen.findByTestId("billing-watch-waiting")).toBeVisible();
-    expect(opened).toEqual(["https://api.we2ai.com/purchase"]);
+    expect(opened).toEqual(["https://we2ai.com/purchase"]);
     // 不会因重渲染重复触发。
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(opened).toHaveLength(1);

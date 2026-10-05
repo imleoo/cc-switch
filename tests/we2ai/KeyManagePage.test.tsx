@@ -939,6 +939,7 @@ describe("KeyManagePage", () => {
     beforeEach(() => {
       vi.spyOn(we2aiApi, "gatewayInfo").mockResolvedValue({
         baseUrl: "https://api.we2ai.com",
+        webUrl: "https://we2ai.com",
       });
       vi.spyOn(we2aiApi, "keyModels").mockResolvedValue({
         models: [{ id: "gpt-4.1", provider: null, tools: [], price: null }],

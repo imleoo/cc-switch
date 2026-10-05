@@ -88,7 +88,7 @@ export function BillingPage({
     void we2aiApi
       .gatewayInfo()
       .then((info) => {
-        if (!cancelled) setBaseUrl(info.baseUrl);
+        if (!cancelled) setBaseUrl(info.webUrl);
       })
       .catch((error) => {
         // 静默：点击按钮时会再取一次并给出明确提示。
@@ -118,8 +118,8 @@ export function BillingPage({
       // 等待期间页面已卸载（登出/换账号/换区域时按会话身份 key 重建）：放弃，
       // 不能拿旧会话区域的地址继续打开支付页。
       if (!alive.current) return null;
-      setBaseUrl(info.baseUrl);
-      return info.baseUrl;
+      setBaseUrl(info.webUrl);
+      return info.webUrl;
     } catch (error) {
       console.debug("[we2ai] gateway info failed", error);
       if (alive.current) toast.error(t.billingGatewayFailed);
