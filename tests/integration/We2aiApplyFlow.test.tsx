@@ -282,7 +282,9 @@ describe("WE2AI apply flow", () => {
     expect(
       await within(dialog).findByTestId("we2ai-apply-extra-changes"),
     ).toHaveTextContent("model_providers.openai");
-    expect(within(dialog).getByText(t.applyExtraChangesLabel)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(t.applyExtraChangesLabel),
+    ).toBeInTheDocument();
   });
 
   // 偏差修复项 B 的 L6 追加：确认时必须把用户看到的 `extraChanges` 原样带
@@ -292,7 +294,9 @@ describe("WE2AI apply flow", () => {
     vi.spyOn(we2aiApi, "applyPlan").mockResolvedValue({
       files: [planFile("/home/u/.codex/config.toml")],
       fields: ["model_provider", "model"],
-      extraChanges: [extraChange("[model_providers.openai].name（写入时会被补全）")],
+      extraChanges: [
+        extraChange("[model_providers.openai].name（写入时会被补全）"),
+      ],
     });
     const apply = vi.spyOn(we2aiApi, "applyModel").mockResolvedValue({
       model: "gpt-5",
@@ -365,6 +369,79 @@ describe("WE2AI apply flow", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows all three Claude Code slots by default with the main model selected", async () => {
+    setup();
+    const apply = vi.spyOn(we2aiApi, "applyModel").mockResolvedValue({
+      model: "claude-sonnet-4-5",
+      files: [],
+      warnings: [],
+    });
+    const dialog = await openApply("claude-sonnet-4-5", "Claude Code");
+    for (const label of [t.slotSonnet, t.slotOpus, t.slotHaiku]) {
+      expect(
+        within(dialog).getByRole("combobox", { name: label }),
+      ).toHaveTextContent("claude-sonnet-4-5");
+    }
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: t.applyConfirm }),
+    );
+
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    expect(apply).toHaveBeenCalledWith({
+      tool: "claude_code",
+      keyId: 7,
+      model: "claude-sonnet-4-5",
+      claudeSlots: { sonnet: null, opus: null, haiku: null },
+      overwrite: false,
+      expectedExtraChanges: [],
+    });
+  });
+
+  it("allows manually collapsing Claude Code slots and expands them again after cancelling and reopening", async () => {
+    setup();
+    const apply = vi.spyOn(we2aiApi, "applyModel");
+    const dialog = await openApply("claude-sonnet-4-5", "Claude Code");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: t.applyAdvanced }),
+    );
+    expect(within(dialog).queryByRole("combobox")).not.toBeInTheDocument();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: t.applyCancel }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    const reopened = await openApply("claude-sonnet-4-5", "Claude Code");
+    for (const label of [t.slotSonnet, t.slotOpus, t.slotHaiku]) {
+      expect(
+        within(reopened).getByRole("combobox", { name: label }),
+      ).toHaveTextContent("claude-sonnet-4-5");
+    }
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["gpt-5", "Codex"],
+    ["claude-sonnet-4-5", "WorkBuddy"],
+  ])("does not show Claude Code slots for %s in %s", async (modelId, tool) => {
+    setup();
+    const dialog = await openApply(modelId, tool);
+    expect(
+      within(dialog).queryByRole("button", { name: t.applyAdvanced }),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("does not show Claude Code slots when only one Claude model is available", async () => {
+    setup(status, undefined, { ...models, models: [models.models[0]] });
+    const dialog = await openApply("claude-sonnet-4-5", "Claude Code");
+    expect(
+      within(dialog).queryByRole("button", { name: t.applyAdvanced }),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
   it("lets Claude Code slots be chosen separately under advanced", async () => {
     setup();
     const apply = vi.spyOn(we2aiApi, "applyModel").mockResolvedValue({
@@ -373,7 +450,6 @@ describe("WE2AI apply flow", () => {
       warnings: [],
     });
     const dialog = await openApply("claude-sonnet-4-5", "Claude Code");
-    await userEvent.click(within(dialog).getByText(t.applyAdvanced));
     await userEvent.click(
       within(dialog).getByRole("combobox", { name: t.slotHaiku }),
     );
@@ -385,10 +461,17 @@ describe("WE2AI apply flow", () => {
     );
 
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
-    expect(apply.mock.calls[0][0].claudeSlots).toEqual({
-      sonnet: null,
-      opus: null,
-      haiku: "claude-haiku-4-5",
+    expect(apply).toHaveBeenCalledWith({
+      tool: "claude_code",
+      keyId: 7,
+      model: "claude-sonnet-4-5",
+      claudeSlots: {
+        sonnet: null,
+        opus: null,
+        haiku: "claude-haiku-4-5",
+      },
+      overwrite: false,
+      expectedExtraChanges: [],
     });
   });
 
@@ -421,7 +504,6 @@ describe("WE2AI apply flow", () => {
       ],
     });
     const dialog = await openApply("claude-sonnet-4-5", "Claude Code");
-    await userEvent.click(within(dialog).getByText(t.applyAdvanced));
     await userEvent.click(
       within(dialog).getByRole("combobox", { name: t.slotHaiku }),
     );

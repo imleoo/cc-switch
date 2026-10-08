@@ -121,7 +121,7 @@ export function ApplyDialog({
   const [planFailed, setPlanFailed] = useState(false);
   const [applying, setApplying] = useState(false);
   const [needsOverwrite, setNeedsOverwrite] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(true);
   // Codex 验收 X5：本次打开弹窗触发的工具状态检测是否仍在进行。确认按钮
   // 在它完成前必须禁用，否则用户可能在新的并存警告返回之前就已经点了
   // 确认。没有传入回调（如旧版本调用方）时视为"从不检测"，不阻塞确认。
@@ -139,7 +139,7 @@ export function ApplyDialog({
     setPlan(null);
     setPlanFailed(false);
     setNeedsOverwrite(false);
-    setShowAdvanced(false);
+    setShowAdvanced(true);
     setSlots({ sonnet: SAME_AS_MAIN, opus: SAME_AS_MAIN, haiku: SAME_AS_MAIN });
     setCheckingToolStatus(false);
     setDetectionIncomplete(false);
