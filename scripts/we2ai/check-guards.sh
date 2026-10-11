@@ -4,6 +4,7 @@
 #   1. 功能 1：4 个版本文件版本号一致，主号 = main 分支主号 + 1，次/修订号不低于 main 对应值
 #   2. 功能 2：.github/workflows/*.yml 的 on: 只允许 workflow_dispatch
 #   3. 功能 4：自动更新地址/签名公钥指向 we2ai，代码里无上游发布页链接
+#   4. 功能 24：@tauri-apps/cli ≥ 2.10.0，release.yml 保留 deb 更新分发要素
 # 退出码：0 全部通过；非 0 至少一条违规（详见 stderr）
 set -euo pipefail
 
@@ -69,6 +70,26 @@ if [[ -n "$upstream_links" ]]; then
   err "代码中残留上游发布页/更新地址：
 ${upstream_links}"
 fi
+
+# ── 3.1 功能 24：Linux deb 应用内更新分发 ────────────────────
+# tauri#14186：@tauri-apps/cli < 2.10.0 在 strip 后的 Linux 二进制上打不上
+# __TAURI_BUNDLE_TYPE 补丁，deb/rpm 安装的客户端 updater 会误走 AppImage 原地
+# 替换路径（对 /usr/bin rename → os error 13）。CLI 必须 ≥ 2.10.0（kmp 字节
+# 搜索补丁），release.yml 必须保留 deb 的 .sig 收集与 latest.json 的
+# linux-*-deb 平台键。
+cli_spec="$(node -e 'console.log(require(process.argv[1]).devDependencies["@tauri-apps/cli"]||"")' "$PWD/package.json")"
+cli_ver="${cli_spec#^}"
+if [[ -z "$cli_ver" ]]; then
+  err "package.json: 缺少 @tauri-apps/cli 依赖（功能 24 需要 ≥ 2.10.0）"
+elif ! [[ "$(printf '%s\n2.10.0\n' "$cli_ver" | sort -V | head -1)" == "2.10.0" ]]; then
+  err "package.json: @tauri-apps/cli 版本 ${cli_spec} 低于 2.10.0（tauri#14186，strip 后 Linux 二进制打不上 bundle 类型补丁）"
+fi
+release_yml=.github/workflows/release.yml
+for needle in '.deb.sig' 'linux-x86_64-deb' 'linux-aarch64-deb'; do
+  if ! grep -qF -- "$needle" "$release_yml"; then
+    err "$release_yml: 缺少 deb 更新分发要素「$needle」（功能 24：deb 安装的应用内更新依赖它）"
+  fi
+done
 
 # ── 4. WE2AI 壳/品牌/数据隔离守卫（P0，方案第 6、7 节） ──────────────
 # 4.1 数据根写死路径只允许出现在带 `// we2ai-allow-cc-switch` 标记的行
