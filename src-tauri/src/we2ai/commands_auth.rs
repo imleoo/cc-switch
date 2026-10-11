@@ -11,7 +11,8 @@ use super::api::ApiClient;
 use super::captcha::{self, We2aiCaptchaState};
 use super::region::Region;
 use super::session::{
-    LoginOutcome, LogoutOutcome, SessionError, SessionManager, SessionSummary, We2aiSessionState,
+    LoginOutcome, LogoutOutcome, RememberedLoginCredentials, SessionError, SessionManager,
+    SessionSummary, We2aiSessionState,
 };
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -221,6 +222,56 @@ impl From<LoginOutcome> for We2aiLoginOutcome {
             },
         }
     }
+}
+
+#[tauri::command]
+pub async fn we2ai_get_remembered_login_credentials(
+    region: String,
+    session: State<'_, We2aiSessionState>,
+) -> Result<Option<RememberedLoginCredentials>, We2aiApiError> {
+    let region = parse_region(&region)?;
+    session
+        .0
+        .remembered_login_credentials(region)
+        .await
+        .map_err(|_| We2aiApiError {
+            code: "LOGIN_CREDENTIALS_STORE_FAILED".to_string(),
+            message: "系统钥匙串不可用".to_string(),
+        })
+}
+
+#[tauri::command]
+pub async fn we2ai_save_remembered_login_credentials(
+    region: String,
+    email: String,
+    password: String,
+    session: State<'_, We2aiSessionState>,
+) -> Result<(), We2aiApiError> {
+    let region = parse_region(&region)?;
+    session
+        .0
+        .save_remembered_login_credentials(region, RememberedLoginCredentials { email, password })
+        .await
+        .map_err(|_| We2aiApiError {
+            code: "LOGIN_CREDENTIALS_STORE_FAILED".to_string(),
+            message: "系统钥匙串不可用".to_string(),
+        })
+}
+
+#[tauri::command]
+pub async fn we2ai_delete_remembered_login_credentials(
+    region: String,
+    session: State<'_, We2aiSessionState>,
+) -> Result<(), We2aiApiError> {
+    let region = parse_region(&region)?;
+    session
+        .0
+        .delete_remembered_login_credentials(region)
+        .await
+        .map_err(|_| We2aiApiError {
+            code: "LOGIN_CREDENTIALS_STORE_FAILED".to_string(),
+            message: "系统钥匙串不可用".to_string(),
+        })
 }
 
 #[tauri::command]

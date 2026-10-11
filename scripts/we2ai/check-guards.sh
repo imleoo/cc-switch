@@ -5,6 +5,7 @@
 #   2. 功能 2：.github/workflows/*.yml 的 on: 只允许 workflow_dispatch
 #   3. 功能 4：自动更新地址/签名公钥指向 we2ai，代码里无上游发布页链接
 #   4. 功能 24：@tauri-apps/cli ≥ 2.10.0，release.yml 保留 deb 更新分发要素
+#   5. 功能 25：登录邮箱密码仅存系统钥匙串，IPC/前端入口同步登记
 # 退出码：0 全部通过；非 0 至少一条违规（详见 stderr）
 set -euo pipefail
 
@@ -1502,6 +1503,36 @@ done
 for fn in copyTextWithKey copyPlainText; do
   if ! grep -qF "$fn" src/we2ai/CodeSampleDrawer.tsx 2>/dev/null; then
     err "src/we2ai/CodeSampleDrawer.tsx: 找不到 ${fn}（功能 22：复制必须由 Rust 写剪贴板）"
+  fi
+done
+
+# 4.17 功能 25（登录凭据记忆）：凭据只能经受信任 IPC 与系统钥匙串流转。
+# Rust 登录命令、前端调用与文案/复选框保持完整，凭据不能进入设置 JSON 或浏览器存储。
+for needle in \
+  'we2ai::commands_auth::we2ai_get_remembered_login_credentials' \
+  'we2ai::commands_auth::we2ai_save_remembered_login_credentials' \
+  'we2ai::commands_auth::we2ai_delete_remembered_login_credentials'; do
+  if ! grep -qF "$needle" "$lib_rs"; then
+    err "$lib_rs: 找不到 ${needle}（功能 25：钥匙串登录凭据命令注册）"
+  fi
+done
+for cmd in \
+  we2ai_get_remembered_login_credentials \
+  we2ai_save_remembered_login_credentials \
+  we2ai_delete_remembered_login_credentials; do
+  if ! grep -qF "\"${cmd}\"" src/we2ai/api.ts; then
+    err "src/we2ai/api.ts: 找不到命令名 ${cmd}（功能 25）"
+  fi
+done
+if ! grep -q 'LOGIN_CREDENTIALS_SERVICE: &str = "com.we2ai.desktop.login"' src-tauri/src/we2ai/session.rs; then
+  err "src-tauri/src/we2ai/session.rs: 登录凭据必须使用独立钥匙串 service（功能 25）"
+fi
+if grep -nE 'localStorage|sessionStorage|AppSettings|save_settings_file' src/we2ai/LoginPage.tsx src-tauri/src/we2ai/commands_auth.rs src-tauri/src/we2ai/session.rs | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' >/dev/null; then
+  err "登录凭据实现触及浏览器存储或设置 JSON（功能 25：密码必须只进入系统钥匙串）"
+fi
+for needle in 'rememberLoginCredentials' 'loginCredentialsSaveFailed' 'loginCredentialsLoadFailed'; do
+  if ! grep -q "$needle" src/we2ai/strings.ts; then
+    err "src/we2ai/strings.ts: 缺少 ${needle} 本地化文案（功能 25）"
   fi
 done
 

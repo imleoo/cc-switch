@@ -72,6 +72,15 @@ function mockInvoke(
       const parsed = body ? JSON.parse(body) : {};
       const handler = handlers[command];
       if (!handler) {
+        if (command === "we2ai_get_remembered_login_credentials") {
+          return HttpResponse.json(null);
+        }
+        if (
+          command === "we2ai_save_remembered_login_credentials" ||
+          command === "we2ai_delete_remembered_login_credentials"
+        ) {
+          return HttpResponse.json(null);
+        }
         throw new Error(`unexpected invoke: ${command}`);
       }
       // `await` 一个非 Promise 的同步返回值是恒等操作，不影响既有用例；
@@ -194,6 +203,173 @@ describe("LoginPage", () => {
     for (const command of invoked) {
       expect(isWe2aiIpcAllowed(command)).toBe(true);
     }
+  });
+
+  it("loads remembered credentials and saves them only after successful email login", async () => {
+    const saveCredentials = vi.fn();
+    mockInvoke({
+      we2ai_available_regions: () => ["international"],
+      we2ai_get_last_region: () => null,
+      we2ai_get_remembered_login_credentials: () => null,
+      we2ai_save_remembered_login_credentials: (body) => {
+        saveCredentials(body);
+        return null;
+      },
+      we2ai_login_email: () => ({ kind: "loggedIn" }),
+    });
+    render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText(t.emailLabel), {
+      target: { value: "user@we2ai.com" },
+    });
+    fireEvent.change(screen.getByLabelText(t.passwordLabel), {
+      target: { value: "pw" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: t.rememberLoginCredentials }));
+    fireEvent.click(screen.getByRole("button", { name: t.loginButton }));
+
+    await waitFor(() => {
+      expect(saveCredentials).toHaveBeenCalledWith({
+        region: "international",
+        email: "user@we2ai.com",
+        password: "pw",
+      });
+    });
+  });
+
+  it("restores saved credentials and deletes them when remember is unchecked", async () => {
+    const deleteCredentials = vi.fn();
+    mockInvoke({
+      we2ai_available_regions: () => ["international"],
+      we2ai_get_last_region: () => null,
+      we2ai_get_remembered_login_credentials: () => ({
+        email: "saved@we2ai.com",
+        password: "saved-password",
+      }),
+      we2ai_delete_remembered_login_credentials: (body) => {
+        deleteCredentials(body);
+        return null;
+      },
+    });
+    render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
+
+    const checkbox = await screen.findByRole("checkbox", {
+      name: t.rememberLoginCredentials,
+    });
+    await waitFor(() => expect(checkbox).toBeChecked());
+    expect(screen.getByLabelText(t.emailLabel)).toHaveValue("saved@we2ai.com");
+    expect(screen.getByLabelText(t.passwordLabel)).toHaveValue("saved-password");
+
+    fireEvent.click(checkbox);
+    await waitFor(() => {
+      expect(deleteCredentials).toHaveBeenCalledWith({ region: "international" });
+    });
+  });
+
+  it("does not save remembered credentials before 2FA succeeds", async () => {
+    const saveCredentials = vi.fn();
+    mockInvoke({
+      we2ai_available_regions: () => ["international"],
+      we2ai_get_last_region: () => null,
+      we2ai_get_remembered_login_credentials: () => null,
+      we2ai_login_email: () => ({
+        kind: "requires2fa",
+        tempToken: "tmp-123",
+        emailMasked: "u****@we2ai.com",
+      }),
+      we2ai_login_2fa: () => null,
+      we2ai_save_remembered_login_credentials: (body) => {
+        saveCredentials(body);
+        return null;
+      },
+    });
+    render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText(t.emailLabel), {
+      target: { value: "user@we2ai.com" },
+    });
+    fireEvent.change(screen.getByLabelText(t.passwordLabel), {
+      target: { value: "pw" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: t.rememberLoginCredentials }));
+    fireEvent.click(screen.getByRole("button", { name: t.loginButton }));
+    await screen.findByText(t.twoFaTitle);
+    expect(saveCredentials).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(t.twoFaCodeLabel), {
+      target: { value: "123456" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t.twoFaSubmit }));
+    await waitFor(() => {
+      expect(saveCredentials).toHaveBeenCalledWith({
+        region: "international",
+        email: "user@we2ai.com",
+        password: "pw",
+      });
+    });
+  });
+
+  it("does not save remembered credentials when the user backs out of 2FA", async () => {
+    const saveCredentials = vi.fn();
+    mockInvoke({
+      we2ai_available_regions: () => ["international"],
+      we2ai_get_last_region: () => null,
+      we2ai_get_remembered_login_credentials: () => null,
+      we2ai_login_email: () => ({
+        kind: "requires2fa",
+        tempToken: "tmp-123",
+        emailMasked: "u****@we2ai.com",
+      }),
+      we2ai_save_remembered_login_credentials: (body) => {
+        saveCredentials(body);
+        return null;
+      },
+    });
+    render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText(t.emailLabel), {
+      target: { value: "user@we2ai.com" },
+    });
+    fireEvent.change(screen.getByLabelText(t.passwordLabel), {
+      target: { value: "pw" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: t.rememberLoginCredentials }));
+    fireEvent.click(screen.getByRole("button", { name: t.loginButton }));
+    await screen.findByText(t.twoFaTitle);
+    fireEvent.click(screen.getByRole("button", { name: t.twoFaBack }));
+
+    expect(saveCredentials).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(t.emailLabel)).toHaveValue("user@we2ai.com");
+  });
+
+  it("does not save remembered credentials when email login fails", async () => {
+    const saveCredentials = vi.fn();
+    mockInvoke({
+      we2ai_available_regions: () => ["international"],
+      we2ai_get_last_region: () => null,
+      we2ai_get_remembered_login_credentials: () => null,
+      we2ai_save_remembered_login_credentials: (body) => {
+        saveCredentials(body);
+        return null;
+      },
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/we2ai_login_email`, () =>
+        HttpResponse.json({ code: "INVALID_CREDENTIALS", message: "failed" }, { status: 500 }),
+      ),
+    );
+    render(<LoginPage t={t} onLoginSuccess={vi.fn()} />);
+    fireEvent.change(await screen.findByLabelText(t.emailLabel), {
+      target: { value: "user@we2ai.com" },
+    });
+    fireEvent.change(screen.getByLabelText(t.passwordLabel), {
+      target: { value: "pw" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: t.rememberLoginCredentials }));
+    fireEvent.click(screen.getByRole("button", { name: t.loginButton }));
+
+    await screen.findByText(t.errorNetwork);
+    expect(saveCredentials).not.toHaveBeenCalled();
   });
 
   it("shows the 2FA form when the server requires it, then completes login", async () => {

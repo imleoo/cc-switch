@@ -6,6 +6,7 @@ import { settingsApi } from "@/lib/api/settings";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import "./we2ai-theme.css";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -66,7 +67,15 @@ interface LoginPageProps {
 
 type LoginStage =
   | { kind: "credentials" }
-  | { kind: "twoFa"; tempToken: string; emailMasked: string };
+  | {
+      kind: "twoFa";
+      tempToken: string;
+      emailMasked: string;
+      pendingRememberedCredentials: {
+        email: string;
+        password: string;
+      };
+    };
 
 export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
   const [regions, setRegions] = useState<We2aiRegion[]>(["international"]);
@@ -79,6 +88,10 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberLoginCredentials, setRememberLoginCredentials] =
+    useState(false);
+  const [credentialsLoadedFor, setCredentialsLoadedFor] =
+    useState<We2aiRegion | null>(null);
   const [totpCode, setTotpCode] = useState("");
   const [phone, setPhone] = useState("");
   const [smsCode, setSmsCode] = useState("");
@@ -93,6 +106,7 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const credentialsLoadSequence = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,6 +134,40 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!regionsLoaded || stage.kind !== "credentials") return;
+    const sequence = ++credentialsLoadSequence.current;
+    setCredentialsLoadedFor(null);
+    setEmail("");
+    setPassword("");
+    setRememberLoginCredentials(false);
+    void we2aiApi
+      .getRememberedLoginCredentials(region)
+      .then((credentials) => {
+        if (credentialsLoadSequence.current !== sequence) return;
+        if (credentials) {
+          setEmail(credentials.email);
+          setPassword(credentials.password);
+          setRememberLoginCredentials(true);
+        } else {
+          setRememberLoginCredentials(false);
+        }
+        setCredentialsLoadedFor(region);
+      })
+      .catch((error) => {
+        if (credentialsLoadSequence.current !== sequence) return;
+        console.warn("[we2ai] failed to load remembered login credentials", error);
+        setRememberLoginCredentials(false);
+        setCredentialsLoadedFor(region);
+        toast.error(t.loginCredentialsLoadFailed);
+      });
+    return () => {
+      if (credentialsLoadSequence.current === sequence) {
+        credentialsLoadSequence.current += 1;
+      }
+    };
+  }, [region, regionsLoaded]);
 
   useEffect(() => {
     if (!isDomesticRegion(region) && tab === "phone") {
@@ -174,20 +222,68 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
     setErrorMessage(message);
   };
 
+  const persistLoginCredentials = async (
+    targetRegion: We2aiRegion,
+    targetEmail: string,
+    targetPassword: string,
+    shouldRemember: boolean,
+  ) => {
+    try {
+      if (shouldRemember) {
+        await we2aiApi.saveRememberedLoginCredentials(
+          targetRegion,
+          targetEmail,
+          targetPassword,
+        );
+      } else {
+        await we2aiApi.deleteRememberedLoginCredentials(targetRegion);
+      }
+    } catch (error) {
+      console.warn("[we2ai] failed to persist login credentials", error);
+      toast.error(
+        shouldRemember
+          ? t.loginCredentialsSaveFailed
+          : t.loginCredentialsDeleteFailed,
+      );
+    }
+  };
+
+  const handleRememberLoginCredentialsChange = (checked: boolean) => {
+    const wasRemembered = rememberLoginCredentials;
+    setRememberLoginCredentials(checked);
+    if (!checked && wasRemembered && credentialsLoadedFor === region) {
+      void we2aiApi.deleteRememberedLoginCredentials(region).catch((error) => {
+        console.warn("[we2ai] failed to delete remembered login credentials", error);
+        toast.error(t.loginCredentialsDeleteFailed);
+      });
+    }
+  };
+
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorCode(null);
     setErrorMessage(null);
     setEmailBusy(true);
     try {
-      const outcome = await we2aiApi.loginEmail(region, email.trim(), password);
+      const normalizedEmail = email.trim();
+      const outcome = await we2aiApi.loginEmail(region, normalizedEmail, password);
       if (outcome.kind === "loggedIn") {
+        await persistLoginCredentials(
+          region,
+          normalizedEmail,
+          password,
+          rememberLoginCredentials,
+        );
         onLoginSuccess();
       } else {
         setStage({
           kind: "twoFa",
           tempToken: outcome.tempToken,
           emailMasked: outcome.emailMasked,
+          pendingRememberedCredentials: {
+            email: normalizedEmail,
+            password,
+          },
         });
       }
     } catch (error) {
@@ -205,6 +301,12 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
     setTwoFaBusy(true);
     try {
       await we2aiApi.login2fa(region, stage.tempToken, totpCode.trim());
+      await persistLoginCredentials(
+        region,
+        stage.pendingRememberedCredentials.email,
+        stage.pendingRememberedCredentials.password,
+        rememberLoginCredentials,
+      );
       onLoginSuccess();
     } catch (error) {
       showError(error);
@@ -459,6 +561,15 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                       className={inputClass}
                     />
                   </div>
+                  <label className="flex items-center gap-2 text-sm text-[var(--we2ai-ink)]">
+                    <Checkbox
+                      checked={rememberLoginCredentials}
+                      disabled={credentialsLoadedFor !== region || loginFlowBusy}
+                      onCheckedChange={handleRememberLoginCredentialsChange}
+                      className="rounded-sm border-2 border-[var(--we2ai-ink)]"
+                    />
+                    {t.rememberLoginCredentials}
+                  </label>
                   {displayedError && (
                     <p className="text-sm text-[var(--we2ai-orange)]">
                       {displayedError}
@@ -467,7 +578,11 @@ export function LoginPage({ t, onLoginSuccess }: LoginPageProps) {
                   <Button
                     type="submit"
                     className={`w-full ${primaryButtonClass}`}
-                    disabled={loginFlowBusy || regionSwitchBusy}
+                    disabled={
+                      loginFlowBusy ||
+                      regionSwitchBusy ||
+                      credentialsLoadedFor !== region
+                    }
                   >
                     {emailBusy ? t.loginButtonBusy : t.loginButton}
                   </Button>

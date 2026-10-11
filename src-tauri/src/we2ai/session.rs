@@ -589,6 +589,29 @@ pub struct SessionManager(Arc<Inner>);
 /// Tauri managed state 包装。
 pub struct We2aiSessionState(pub SessionManager);
 
+/// 登录页可选记忆的邮箱与密码，仅保存在系统钥匙串。
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RememberedLoginCredentials {
+    pub email: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for RememberedLoginCredentials {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RememberedLoginCredentials")
+            .field("email", &"[redacted]")
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+const LOGIN_CREDENTIALS_SERVICE: &str = "com.we2ai.desktop.login";
+
+fn login_credentials_account(region: Region) -> String {
+    region.storage_key().to_string()
+}
+
 /// 在阻塞线程池上执行一次钥匙串读取，避免占用 tokio 工作线程（真实系统
 /// 钥匙串可能弹出授权对话框、阻塞数十秒甚至更久——Codex 代码评审第 4 轮
 /// 中危项 1）。返回 `None` 表示条目不存在或读取失败，调用方（`resume_session`）
@@ -637,6 +660,63 @@ async fn keyring_delete(store: Arc<dyn SecretStore>, account: String) -> bool {
 }
 
 impl SessionManager {
+    /// 读取对应区域的已记忆邮箱密码。钥匙串 I/O 在阻塞线程池中执行。
+    pub async fn remembered_login_credentials(
+        &self,
+        region: Region,
+    ) -> Result<Option<RememberedLoginCredentials>, ()> {
+        let account = login_credentials_account(region);
+        let value = tokio::task::spawn_blocking({
+            let store = self.0.secret_store.clone();
+            move || {
+                store
+                    .get(LOGIN_CREDENTIALS_SERVICE, &account)
+                    .map_err(|_| ())
+            }
+        })
+        .await
+        .map_err(|_| ())?;
+        let Some(value) = value? else {
+            return Ok(None);
+        };
+        serde_json::from_str(&value).map(Some).map_err(|_| ())
+    }
+
+    /// 保存邮箱密码到系统钥匙串。
+    pub async fn save_remembered_login_credentials(
+        &self,
+        region: Region,
+        credentials: RememberedLoginCredentials,
+    ) -> Result<(), ()> {
+        let account = login_credentials_account(region);
+        let value = serde_json::to_string(&credentials).map_err(|_| ())?;
+        tokio::task::spawn_blocking({
+            let store = self.0.secret_store.clone();
+            move || {
+                store
+                    .set(LOGIN_CREDENTIALS_SERVICE, &account, &value)
+                    .map_err(|_| ())
+            }
+        })
+        .await
+        .map_err(|_| ())?
+    }
+
+    /// 删除对应区域记忆的邮箱密码；钥匙串本身保证不存在时幂等成功。
+    pub async fn delete_remembered_login_credentials(&self, region: Region) -> Result<(), ()> {
+        let account = login_credentials_account(region);
+        tokio::task::spawn_blocking({
+            let store = self.0.secret_store.clone();
+            move || {
+                store
+                    .delete(LOGIN_CREDENTIALS_SERVICE, &account)
+                    .map_err(|_| ())
+            }
+        })
+        .await
+        .map_err(|_| ())?
+    }
+
     pub fn new(
         secret_store: Arc<dyn SecretStore>,
         data_root: PathBuf,
@@ -2237,6 +2317,88 @@ mod tests {
         store: Arc<InMemorySecretStore>,
     ) -> SessionManager {
         SessionManager::new(store, data_root.to_path_buf(), "test".to_string())
+    }
+
+    #[tokio::test]
+    async fn remembered_login_credentials_round_trip_and_are_region_scoped() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let session = manager_with_store(dir.path(), store.clone());
+        let credentials = RememberedLoginCredentials {
+            email: "user@example.com".to_string(),
+            password: "secret-password".to_string(),
+        };
+
+        assert_eq!(
+            session
+                .remembered_login_credentials(Region::International)
+                .await
+                .unwrap(),
+            None
+        );
+        session
+            .save_remembered_login_credentials(Region::International, credentials.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .remembered_login_credentials(Region::International)
+                .await
+                .unwrap(),
+            Some(credentials)
+        );
+        assert_eq!(
+            session
+                .remembered_login_credentials(Region::DomesticProd)
+                .await
+                .unwrap(),
+            None
+        );
+
+        session
+            .delete_remembered_login_credentials(Region::International)
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .remembered_login_credentials(Region::International)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(!store.contains(LOGIN_CREDENTIALS_SERVICE, "international"));
+    }
+
+    #[tokio::test]
+    async fn remembered_login_keyring_failure_is_reported() {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let session = manager_with_store(dir.path(), store.clone());
+        store.set_fail_get(true);
+        assert!(session
+            .remembered_login_credentials(Region::International)
+            .await
+            .is_err());
+
+        store.set_fail_get(false);
+        store.set_fail_set(true);
+        assert!(session
+            .save_remembered_login_credentials(
+                Region::International,
+                RememberedLoginCredentials {
+                    email: "user@example.com".to_string(),
+                    password: "secret-password".to_string(),
+                },
+            )
+            .await
+            .is_err());
+
+        store.set_fail_set(false);
+        store.set_fail_delete(true);
+        assert!(session
+            .delete_remembered_login_credentials(Region::International)
+            .await
+            .is_err());
     }
 
     /// 测试期把 `SessionManager` 指向一个 `wiremock` server：直接操作内部状态
@@ -4049,8 +4211,7 @@ mod tests {
     // 单次退避的量级），断言这次慢请求依然被完整等待、其成功结果被正常
     // 采纳，而不是被提前判定失败或返回 Transient。
     #[tokio::test]
-    async fn refresh_backoff_waits_out_a_slow_in_flight_refresh_request_instead_of_cancelling_it()
-    {
+    async fn refresh_backoff_waits_out_a_slow_in_flight_refresh_request_instead_of_cancelling_it() {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(InMemorySecretStore::new());
         let manager = manager_with_store(dir.path(), store.clone());

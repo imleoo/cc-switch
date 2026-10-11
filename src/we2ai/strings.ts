@@ -139,6 +139,10 @@ export interface We2aiStrings {
   tabPhoneLogin: string;
   emailLabel: string;
   passwordLabel: string;
+  rememberLoginCredentials: string;
+  loginCredentialsLoadFailed: string;
+  loginCredentialsSaveFailed: string;
+  loginCredentialsDeleteFailed: string;
   loginButton: string;
   loginButtonBusy: string;
   twoFaTitle: string;
@@ -501,6 +505,10 @@ const zh: We2aiStrings = {
   tabPhoneLogin: "手机登录",
   emailLabel: "邮箱",
   passwordLabel: "密码",
+  rememberLoginCredentials: "记住用户名和密码（保存在系统钥匙串）",
+  loginCredentialsLoadFailed: "无法从系统钥匙串读取已保存的账号信息",
+  loginCredentialsSaveFailed: "登录成功，但无法将账号信息保存到系统钥匙串",
+  loginCredentialsDeleteFailed: "无法从系统钥匙串删除已保存的账号信息",
   loginButton: "登录",
   loginButtonBusy: "登录中…",
   twoFaTitle: "两步验证",
@@ -870,6 +878,13 @@ const en: We2aiStrings = {
   tabPhoneLogin: "Phone",
   emailLabel: "Email",
   passwordLabel: "Password",
+  rememberLoginCredentials: "Remember email and password (stored in system keychain)",
+  loginCredentialsLoadFailed:
+    "Couldn't read saved account details from the system keychain",
+  loginCredentialsSaveFailed:
+    "Signed in, but couldn't save account details to the system keychain",
+  loginCredentialsDeleteFailed:
+    "Couldn't remove saved account details from the system keychain",
   loginButton: "Sign in",
   loginButtonBusy: "Signing in…",
   twoFaTitle: "Two-factor authentication",

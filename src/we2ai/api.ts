@@ -44,6 +44,11 @@ export type We2aiLoginOutcome =
   | { kind: "loggedIn" }
   | { kind: "requires2fa"; tempToken: string; emailMasked: string };
 
+export interface We2aiRememberedLoginCredentials {
+  email: string;
+  password: string;
+}
+
 export type We2aiLogoutOutcome =
   | "revoked"
   | "localOnly"
@@ -491,6 +496,33 @@ export const we2aiApi = {
   /** 立即重试一次断网自动退避，不等后台定时器（窗口聚焦/`online`/手动按钮）。 */
   async retryNow(): Promise<We2aiResumeOutcome> {
     return await invoke("we2ai_retry_now");
+  },
+
+  async getRememberedLoginCredentials(
+    region: We2aiRegion,
+  ): Promise<We2aiRememberedLoginCredentials | null> {
+    return (
+      (await invoke<We2aiRememberedLoginCredentials | null>(
+        "we2ai_get_remembered_login_credentials",
+        { region },
+      )) ?? null
+    );
+  },
+
+  async saveRememberedLoginCredentials(
+    region: We2aiRegion,
+    email: string,
+    password: string,
+  ): Promise<void> {
+    await invoke("we2ai_save_remembered_login_credentials", {
+      region,
+      email,
+      password,
+    });
+  },
+
+  async deleteRememberedLoginCredentials(region: We2aiRegion): Promise<void> {
+    await invoke("we2ai_delete_remembered_login_credentials", { region });
   },
 
   async loginEmail(
