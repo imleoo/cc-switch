@@ -11,7 +11,7 @@ import we2aiLogo from "@/assets/icons/web-logo.svg";
 import { useTheme } from "@/components/theme-provider";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { settingsApi } from "@/lib/api/settings";
-import { WE2AI_WEBSITE_URL } from "@/config/we2ai";
+import { WE2AI_DOCS_URL, WE2AI_WEBSITE_URL } from "@/config/we2ai";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import "./we2ai-theme.css";
 import {
@@ -492,6 +492,10 @@ export function We2aiShell() {
 
   const handleOpenWebsite = () => {
     void settingsApi.openExternal(WE2AI_WEBSITE_URL);
+  };
+
+  const handleOpenDocs = () => {
+    void settingsApi.openExternal(WE2AI_DOCS_URL);
   };
 
   // 非文本模型（生图/生视频等）不在客户端模型广场展示，引导到当前区域的 Web
@@ -1138,6 +1142,13 @@ export function We2aiShell() {
                   className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
                 >
                   {t.officialWebsite}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleOpenDocs}
+                  className="rounded-lg border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
+                >
+                  {t.usageDocs}
                 </Button>
 
                 {update.hasUpdate ? (

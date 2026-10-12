@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  BookOpen,
   Download,
   Copy,
   ExternalLink,
@@ -27,6 +28,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
 import { settingsApi } from "@/lib/api";
+import { WE2AI_DOCS_URL } from "@/config/we2ai";
 import type {
   ToolInstallation,
   ToolInstallationReport,
@@ -945,6 +947,16 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             >
               <Globe className="h-3.5 w-3.5" />
               {t("settings.officialWebsite")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => settingsApi.openExternal(WE2AI_DOCS_URL)}
+              className="h-8 gap-1.5 text-xs"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              {t("settings.usageDocs")}
             </Button>
             <Button
               type="button"

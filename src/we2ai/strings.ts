@@ -126,6 +126,7 @@ export interface We2aiStrings {
    */
   checkFailedHint: string;
   officialWebsite: string;
+  usageDocs: string;
   saveFailed: string;
 
   // 登录（方案第 5.1、5.2 节）
@@ -492,6 +493,7 @@ const zh: We2aiStrings = {
   checkFailed: "检查更新失败",
   checkFailedHint: "暂时无法获取更新信息，请稍后重试",
   officialWebsite: "官方网站",
+  usageDocs: "使用文档",
   saveFailed: "保存设置失败",
 
   loginTitle: "登录 WE2AI",
@@ -865,6 +867,7 @@ const en: We2aiStrings = {
   checkFailedHint:
     "Couldn't fetch update information right now. Please try again later.",
   officialWebsite: "Official website",
+  usageDocs: "Documentation",
   saveFailed: "Failed to save settings",
 
   loginTitle: "Sign in to WE2AI",
