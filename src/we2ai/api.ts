@@ -131,6 +131,12 @@ export interface We2aiKeyList {
    * Key 管理页据此判断「当前工具在用」。缺省按 `null` 处理。
    */
   rememberedKeyId?: number | null;
+  /**
+   * AI 营销工坊（功能 27）的选中 Key：工坊自己的记忆优先，回退广场
+   * `selectedKeyId`；两者都要求 `active`，否则为 `null`（回退规则在 Rust 侧
+   * 收紧）。缺省按 `null` 处理（旧 Rust 编译产物）。
+   */
+  studioSelectedKeyId?: number | null;
 }
 
 /**
@@ -363,6 +369,82 @@ export const WE2AI_ANNOUNCEMENTS_CHANGED_EVENT = "we2ai-announcements-changed";
  * 4.15 校验两侧一致。
  */
 export const WE2AI_KEYS_CHANGED_EVENT = "we2ai-keys-changed";
+
+/**
+ * AI 营销工坊（功能 27）流式增量事件名。Rust 侧常量
+ * `playground.rs::PLAYGROUND_CHUNK_EVENT` 与这里各写一份字面量，
+ * `check-guards.sh` 4.17 校验两侧一致。
+ */
+export const WE2AI_PLAYGROUND_CHUNK_EVENT = "we2ai-playground-chunk";
+
+/** 工坊消息角色（工坊侧只允许 user/assistant，system 走独立字段）。 */
+export type We2aiPlaygroundRole = "user" | "assistant";
+
+/** 工坊对话消息（发送时向上累积，历史随每轮请求重发）。 */
+export interface We2aiPlaygroundMessage {
+  role: We2aiPlaygroundRole;
+  content: string;
+}
+
+/** 工坊 chat 请求（Rust `playground.rs::PlaygroundChatRequest`）。 */
+export interface We2aiPlaygroundChatRequest {
+  requestId: string;
+  keyId: number;
+  model: string;
+  messages: We2aiPlaygroundMessage[];
+  system?: string;
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+}
+
+/** 网关流式 usage；可能缺失（契约见方案【待联调】项），缺失时前端不显示。 */
+export interface We2aiPlaygroundUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+/** chat 终态（invoke resolve 即终态；增量已通过事件推送）。 */
+export interface We2aiPlaygroundChatOutcome {
+  finishReason: string | null;
+  usage: We2aiPlaygroundUsage | null;
+}
+
+/** 工坊模型列表（`we2ai_playground_models`）：只含明确 `kind == "text"` 的模型。 */
+export interface We2aiPlaygroundModels {
+  models: { id: string; provider: string | null }[];
+  blockedReason: string | null;
+}
+
+/** 工坊「选择 Key」结果。 */
+export interface We2aiPlaygroundChooseKeyResult {
+  studioSelectedKeyId: number | null;
+}
+
+/** 工坊增量事件载荷（Rust `PlaygroundChunkPayload`）。 */
+export interface We2aiPlaygroundChunkEvent {
+  requestId: string;
+  delta: string;
+}
+
+/** 工坊 chat 的稳定错误 code（Rust `playground.rs` 的 `PLAYGROUND_*` 系列）。 */
+export type We2aiPlaygroundErrorCode =
+  | "PLAYGROUND_KEY_NOT_FOUND"
+  | "PLAYGROUND_KEY_INACTIVE"
+  | "PLAYGROUND_KEY_INVALID"
+  | "PLAYGROUND_QUOTA_EXHAUSTED"
+  | "PLAYGROUND_RATE_LIMITED"
+  | "PLAYGROUND_IDENTITY_CHANGED"
+  | "PLAYGROUND_CANCELLED"
+  | "PLAYGROUND_NETWORK"
+  | "PLAYGROUND_PAYLOAD_TOO_LARGE"
+  | "PLAYGROUND_REQUEST_ID_IN_USE"
+  | "PLAYGROUND_BUSY"
+  | "PLAYGROUND_UPSTREAM_ERROR"
+  | "PLAYGROUND_BAD_REQUEST"
+  | "NO_ACTIVE_SESSION"
+  | "SESSION_CHANGED";
 
 /** Key 管理页里 Key 的状态（Rust 侧已归一化；未知值按 `inactive` 处理）。 */
 export type We2aiManagedKeyStatus =
@@ -753,5 +835,63 @@ export const we2aiApi = {
   /** 订阅 Rust 后台轮询的"公告有变化"事件，返回取消订阅函数。 */
   async onAnnouncementsChanged(handler: () => void): Promise<() => void> {
     return await listen(WE2AI_ANNOUNCEMENTS_CHANGED_EVENT, () => handler());
+  },
+
+  // ------------------------------------------------------------------
+  // AI 营销工坊（功能 27）
+  // ------------------------------------------------------------------
+
+  /** 工坊记住选中的 Key（独立于广场的记忆，只接受 `active` 的 Key）。 */
+  async playgroundChooseKey(keyId: number): Promise<We2aiPlaygroundChooseKeyResult> {
+    return await invoke("we2ai_playground_choose_key", { keyId });
+  },
+
+  /** 工坊可用模型（只含明确 `kind == "text"` 的模型；复用广场 B1 数据）。 */
+  async playgroundModels(keyId: number): Promise<We2aiPlaygroundModels> {
+    return await invoke("we2ai_playground_models", { keyId });
+  },
+
+  /**
+   * 发起一次流式对话：invoke 阻塞至终态（成功返回 usage/finishReason，失败
+   * 抛稳定 code 的错误）；增量经 `onPlaygroundChunk` 事件推送，先监听再调用。
+   * 明文 Key 由 Rust 按 `keyId` 从缓存取用，不经 IPC。
+   */
+  async playgroundChat(
+    request: We2aiPlaygroundChatRequest,
+  ): Promise<We2aiPlaygroundChatOutcome> {
+    return await invoke("we2ai_playground_chat", {
+      request: {
+        requestId: request.requestId,
+        keyId: request.keyId,
+        model: request.model,
+        messages: request.messages,
+        system: request.system ?? null,
+        temperature: request.temperature ?? null,
+        topP: request.topP ?? null,
+        maxTokens: request.maxTokens ?? null,
+      },
+    });
+  },
+
+  /** 停止指定请求（幂等；只取消属于当前会话的任务）。 */
+  async playgroundCancel(requestId: string): Promise<void> {
+    await invoke("we2ai_playground_cancel", { requestId });
+  },
+
+  /** 订阅工坊流式增量事件，返回取消订阅函数。 */
+  async onPlaygroundChunk(
+    handler: (event: We2aiPlaygroundChunkEvent) => void,
+  ): Promise<() => void> {
+    return await listen(WE2AI_PLAYGROUND_CHUNK_EVENT, (e) => {
+      const payload = e.payload as Partial<We2aiPlaygroundChunkEvent> | null;
+      if (
+        !payload ||
+        typeof payload.requestId !== "string" ||
+        typeof payload.delta !== "string"
+      ) {
+        return;
+      }
+      handler({ requestId: payload.requestId, delta: payload.delta });
+    });
   },
 };

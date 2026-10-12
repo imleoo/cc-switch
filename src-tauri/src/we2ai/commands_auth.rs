@@ -398,8 +398,13 @@ pub async fn we2ai_logout(
     app_handle: tauri::AppHandle,
     session: State<'_, We2aiSessionState>,
     keys: State<'_, super::keys::We2aiKeyState>,
+    playground: State<'_, super::playground::PlaygroundState>,
 ) -> Result<We2aiLogoutOutcome, We2aiApiError> {
     let manager = session.0.clone();
+    // 取消 AI 营销工坊的全部在途流（功能 27）：必须在 `logout().await` **之前**
+    // 调用。登出内部会等待 refresh 与远端响应（可能数秒到数十秒），先取消才能
+    // 保证登出瞬间旧会话的流不再继续请求计费；流内还会按注册身份复查兜底。
+    playground.cancel_all();
     let outcome: We2aiLogoutOutcome = manager.logout().await.into();
     // 登出后不在内存里继续保留明文 Key，并清除数据库行与备份里的 Key。
     keys.clear();

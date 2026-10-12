@@ -19,6 +19,7 @@ pub mod fsguard;
 pub mod key_manage;
 pub mod keys;
 pub mod mode;
+pub mod playground;
 pub mod region;
 pub mod secret_store;
 pub mod session;

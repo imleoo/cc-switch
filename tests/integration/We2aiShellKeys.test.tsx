@@ -151,6 +151,7 @@ describe("We2aiShell key management tab", () => {
     await screen.findByTestId("balance-chip");
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "模型广场",
+      "AI 营销工坊",
       "Key 管理",
       "充值",
       "设置",

@@ -1271,6 +1271,8 @@ pub fn run() {
                 app.manage(We2aiSessionState(session_manager));
                 app.manage(We2aiCaptchaState(Arc::new(CaptchaRegistry::new())));
                 app.manage(we2ai::keys::We2aiKeyState::default());
+                // AI 营销工坊（功能 27）：在途流任务表（身份取消链路）。
+                app.manage(we2ai::playground::PlaygroundState::default());
                 // 公告后台轮询：只在会话 Active 时发请求，会话结束/换账号即重置。
                 we2ai::announcements::start_background_poller(app.handle());
                 log::info!("✓ WE2AI session manager initialized");
@@ -1556,6 +1558,10 @@ pub fn run() {
                 we2ai::keys::we2ai_list_keys,
                 we2ai::keys::we2ai_select_key,
                 we2ai::keys::we2ai_key_models,
+                we2ai::playground::we2ai_playground_choose_key,
+                we2ai::playground::we2ai_playground_models,
+                we2ai::playground::we2ai_playground_chat,
+                we2ai::playground::we2ai_playground_cancel,
                 we2ai::key_manage::we2ai_manage_list_keys,
                 we2ai::key_manage::we2ai_list_key_groups,
                 we2ai::key_manage::we2ai_create_key,

@@ -1536,6 +1536,67 @@ for needle in 'rememberLoginCredentials' 'loginCredentialsSaveFailed' 'loginCred
   fi
 done
 
+# 4.18 功能 27（AI 营销工坊 P1）：机械字面量检查。语义行为由
+# `cargo test --lib we2ai::playground`、`cargo test --lib we2ai::keys`、
+# `tests/we2ai/PlaygroundPage.test.tsx`、`tests/integration/We2aiShellPlayground.test.tsx` 覆盖。
+# ① 4 个命令在 lib.rs 注册；② 增量事件名 Rust/TS 两侧一致；
+# ③ `we2ai_logout` 函数体内挂接任务取消（身份取消链路，方案 5.3 节）；
+# ④ playground.rs 不出现 `response.text()`（上游错误体可能回显明文，会被写进日志）；
+# ⑤ 工坊选择记忆存在于 keys.rs（studio_selections + save_studio_selection）；
+# ⑥ 前端命令封装与 Tab 挂载、文案存在。
+#
+# 有意不做的事（Codex 三轮复验的边界结论）：不扫描前端「apiKey/secret/剪贴板」
+# 禁词——那种宽泛扫描证明不了明文信息流，还会误伤合法的剪贴板功能；明文边界由
+# Rust 单测（`active_secret_for` 拒绝非 active、错误体不读入）与 IPC 断言覆盖。
+# 不校验取消调用与 await 的文本先后顺序——分支可达性与实际取消效果只能靠行为
+# 测试证明，字面量顺序检查不构成安全保证。本段检查只证明「要素存在」。
+for needle in \
+  'we2ai::playground::we2ai_playground_choose_key' \
+  'we2ai::playground::we2ai_playground_models' \
+  'we2ai::playground::we2ai_playground_chat' \
+  'we2ai::playground::we2ai_playground_cancel'; do
+  if ! grep -qF "$needle" "$lib_rs"; then
+    err "$lib_rs: 找不到 ${needle}（功能 27：工坊命令注册）"
+  fi
+done
+rust_playground_event="$(sed -n 's/.*PLAYGROUND_CHUNK_EVENT: &str = "\([^"]*\)".*/\1/p' src-tauri/src/we2ai/playground.rs 2>/dev/null)"
+ts_playground_event="$(sed -n 's/.*WE2AI_PLAYGROUND_CHUNK_EVENT = "\([^"]*\)".*/\1/p' src/we2ai/api.ts 2>/dev/null)"
+if [[ -z "$rust_playground_event" || "$rust_playground_event" != "$ts_playground_event" ]]; then
+  err "工坊增量事件名两侧不一致（功能 27）：playground.rs='${rust_playground_event}'，api.ts='${ts_playground_event}'"
+fi
+# ③ 登出路径在远端登出 await 之前取消工坊在途流（身份取消链路，方案 5.3 节）。
+#    只扫 we2ai_logout 的函数体（P3：搜整个文件会让注释里的同名调用蒙混过关）。
+logout_body="$(awk '/pub async fn we2ai_logout\(/{f=1} f{print} f&&/^\}/{exit}' src-tauri/src/we2ai/commands_auth.rs)"
+if [[ -z "$logout_body" ]]; then
+  err "src-tauri/src/we2ai/commands_auth.rs: 找不到 we2ai_logout 函数体（功能 27）"
+elif ! printf '%s\n' "$logout_body" | grep -qF 'playground.cancel_all();'; then
+  err "src-tauri/src/we2ai/commands_auth.rs: we2ai_logout 未取消工坊在途流（功能 27：身份取消链路必须挂接在登出函数体内）"
+fi
+# ④ 上游错误体不得读入（P1：可能回显 Key 明文，会被写进日志且不受取消监督）。
+#    直接扫生产代码里是否出现 `response.text()`——playground 的错误路径必须只按状态码映射。
+if grep -nE 'response\.text\(\)|\.text\(\)\.await' src-tauri/src/we2ai/playground.rs \
+  | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+  err "src-tauri/src/we2ai/playground.rs: 出现 response.text()（功能 27：错误体可能含 Key 明文，必须只按状态码映射）"
+fi
+# ⑤ 工坊前端页面不出现明文相关字样（明文只经 Rust active_secret_for）。
+if ! grep -qF 'studio_selections' src-tauri/src/we2ai/keys.rs; then
+  err "src-tauri/src/we2ai/keys.rs: 找不到 studio_selections（功能 27：工坊选择记忆）"
+fi
+if ! grep -qF 'pub(super) fn save_studio_selection' src-tauri/src/we2ai/keys.rs; then
+  err "src-tauri/src/we2ai/keys.rs: 找不到 save_studio_selection（功能 27：工坊选择记忆的持久化入口）"
+fi
+if ! grep -qF '"we2ai_playground_chat"' src/we2ai/api.ts; then
+  err "src/we2ai/api.ts: 找不到 invoke(\"we2ai_playground_chat\")（功能 27）"
+fi
+if ! grep -qF 'value="studio"' src/we2ai/We2aiShell.tsx; then
+  err "src/we2ai/We2aiShell.tsx: 找不到 value=\"studio\" 的 Tab（功能 27：工坊必须挂载在主外壳）"
+fi
+for needle in 'navStudio' 'studioTitle' 'studioErrorKeyInvalid'; do
+  if ! grep -q "$needle" src/we2ai/strings.ts; then
+    err "src/we2ai/strings.ts: 缺少 ${needle} 文案（功能 27）"
+  fi
+done
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"
 fi

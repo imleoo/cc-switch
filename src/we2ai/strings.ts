@@ -129,6 +129,42 @@ export interface We2aiStrings {
   usageDocs: string;
   saveFailed: string;
 
+  // AI 营销工坊（功能 27，方案 docs/we2ai/AI营销工坊设计方案.md）
+  navStudio: string;
+  studioTitle: string;
+  studioDescription: string;
+  studioModelLabel: string;
+  studioModelPlaceholder: string;
+  studioModelsEmpty: string;
+  studioBlockedPrefix: string;
+  studioPresetsLabel: string;
+  studioPresetsHint: string;
+  studioNewSession: string;
+  studioInputPlaceholder: string;
+  studioSend: string;
+  studioStop: string;
+  studioParamsLabel: string;
+  studioTemperatureLabel: string;
+  studioTopPLabel: string;
+  studioMaxTokensLabel: string;
+  studioHistoryHint: string;
+  /** 模板变量：`{total}`。 */
+  studioUsageTokens: string;
+  /** 停止后保留的部分结果提示。 */
+  studioStoppedPartial: string;
+  studioErrorKeyNotFound: string;
+  studioErrorKeyInactive: string;
+  studioErrorKeyInvalid: string;
+  studioErrorQuota: string;
+  studioErrorRateLimited: string;
+  studioErrorIdentity: string;
+  studioErrorCancelled: string;
+  studioErrorNetwork: string;
+  studioErrorPayload: string;
+  studioErrorBusy: string;
+  studioErrorUpstream: string;
+  studioErrorFallback: string;
+
   // 登录（方案第 5.1、5.2 节）
   loginTitle: string;
   loginSubtitle: string;
@@ -495,6 +531,40 @@ const zh: We2aiStrings = {
   officialWebsite: "官方网站",
   usageDocs: "使用文档",
   saveFailed: "保存设置失败",
+
+  // AI 营销工坊（功能 27）
+  navStudio: "AI 营销工坊",
+  studioTitle: "AI 营销工坊",
+  studioDescription: "在客户端直接生成营销文案：选一个 Key，挑一个场景，开聊。",
+  studioModelLabel: "模型",
+  studioModelPlaceholder: "选择模型",
+  studioModelsEmpty: "该 Key 暂无可用的文本模型",
+  studioBlockedPrefix: "该 Key 暂不可用",
+  studioPresetsLabel: "营销场景",
+  studioPresetsHint: "点击场景开启新会话",
+  studioNewSession: "新会话",
+  studioInputPlaceholder: "输入产品信息与要求…",
+  studioSend: "生成",
+  studioStop: "停止",
+  studioParamsLabel: "参数",
+  studioTemperatureLabel: "Temperature",
+  studioTopPLabel: "Top P",
+  studioMaxTokensLabel: "最大输出 tokens",
+  studioHistoryHint: "每轮会重新发送全部历史并计费",
+  studioUsageTokens: "{total} tokens",
+  studioStoppedPartial: "已停止，保留已生成的部分",
+  studioErrorKeyNotFound: "所选 Key 不在当前列表中，请刷新后重新选择",
+  studioErrorKeyInactive: "该 Key 当前不可用（额度耗尽或已停用），请选择其他 Key",
+  studioErrorKeyInvalid: "所选 Key 已失效或已被删除，请重新选择",
+  studioErrorQuota: "Key 额度已用完，请充值或更换 Key",
+  studioErrorRateLimited: "请求过于频繁，请稍后重试",
+  studioErrorIdentity: "会话已切换，本次生成已停止",
+  studioErrorCancelled: "已停止生成",
+  studioErrorNetwork: "网络异常，请稍后重试",
+  studioErrorPayload: "上下文过长，请开启新会话",
+  studioErrorBusy: "已有生成任务进行中，请先停止或等待完成",
+  studioErrorUpstream: "服务暂时不可用，请稍后重试",
+  studioErrorFallback: "生成失败，请稍后重试",
 
   loginTitle: "登录 WE2AI",
   loginSubtitle:
@@ -869,6 +939,44 @@ const en: We2aiStrings = {
   officialWebsite: "Official website",
   usageDocs: "Documentation",
   saveFailed: "Failed to save settings",
+
+  // AI Marketing Studio (feature 27)
+  navStudio: "AI Marketing Studio",
+  studioTitle: "AI Marketing Studio",
+  studioDescription:
+    "Draft marketing copy right inside the app: pick a key, choose a scenario, and start.",
+  studioModelLabel: "Model",
+  studioModelPlaceholder: "Select a model",
+  studioModelsEmpty: "No text models available for this key",
+  studioBlockedPrefix: "This key is currently unavailable",
+  studioPresetsLabel: "Scenarios",
+  studioPresetsHint: "Click a scenario to start a new session",
+  studioNewSession: "New session",
+  studioInputPlaceholder: "Describe your product and requirements…",
+  studioSend: "Generate",
+  studioStop: "Stop",
+  studioParamsLabel: "Parameters",
+  studioTemperatureLabel: "Temperature",
+  studioTopPLabel: "Top P",
+  studioMaxTokensLabel: "Max output tokens",
+  studioHistoryHint: "Each turn resends the full history and is billed",
+  studioUsageTokens: "{total} tokens",
+  studioStoppedPartial: "Stopped — partial result kept",
+  studioErrorKeyNotFound:
+    "The selected key is not in your list. Refresh and pick again",
+  studioErrorKeyInactive:
+    "This key is unavailable (quota exhausted or disabled). Pick another one",
+  studioErrorKeyInvalid:
+    "The selected key was revoked or deleted. Please select again",
+  studioErrorQuota: "This key's quota is used up. Top up or switch keys",
+  studioErrorRateLimited: "Too many requests. Please try again shortly",
+  studioErrorIdentity: "Session changed. Generation stopped",
+  studioErrorCancelled: "Generation stopped",
+  studioErrorNetwork: "Network error. Please try again later",
+  studioErrorPayload: "Context too long. Start a new session",
+  studioErrorBusy: "A generation is already running. Stop it or wait",
+  studioErrorUpstream: "Service temporarily unavailable. Try again later",
+  studioErrorFallback: "Generation failed. Please try again later",
 
   loginTitle: "Sign in to WE2AI",
   loginSubtitle:

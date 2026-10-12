@@ -237,6 +237,42 @@ impl We2aiKeyState {
         }
     }
 
+    /// 某个 Key 在可见缓存里的状态（`active`/`quota_exhausted`）。身份不一致
+    /// 时清空缓存（语义同 [`Self::secret_for`]）。工坊在调用前用它做独立校验：
+    /// 不依赖前端选择器的过滤结果（`secret_for` 只查 ID 不查状态）。
+    pub fn visible_key_status(
+        &self,
+        current: Option<SessionIdentity>,
+        key_id: i64,
+    ) -> Option<String> {
+        let mut guard = self.cache.lock().unwrap();
+        match (&*guard, current) {
+            (Some(cache), Some(current)) if cache.identity == current => cache
+                .keys
+                .iter()
+                .find(|k| k.id == key_id)
+                .map(|k| k.status.clone()),
+            (Some(_), _) => {
+                *guard = None;
+                None
+            }
+            (None, _) => None,
+        }
+    }
+
+    /// 取某个 Key 的明文（限 `active` 状态）。工坊（`playground.rs`）调用网关
+    /// `/v1/*` 前的独立校验入口：额度耗尽的 Key 不给明文。
+    pub fn active_secret_for(
+        &self,
+        current: Option<SessionIdentity>,
+        key_id: i64,
+    ) -> Option<String> {
+        if self.visible_key_status(current, key_id).as_deref() != Some("active") {
+            return None;
+        }
+        self.secret_for(current, key_id)
+    }
+
     fn contains(&self, current: Option<SessionIdentity>, key_id: i64) -> bool {
         self.secret_for(current, key_id).is_some()
     }
@@ -264,6 +300,11 @@ pub struct KeyListView {
     /// 时把第一个 Key 误报成在用。`KeyListView` 不在守卫 4.5 的字段锁定范围内
     /// （只锁 `KeyView`/`We2aiKeyView`）。
     pub remembered_key_id: Option<i64>,
+    /// AI 营销工坊的选中 Key（功能 27）：工坊自己的记忆优先，回退到广场
+    /// `selected_key_id`；两者都必须是列表里 `active` 的 Key，否则为 `None`
+    /// （前端置空并提示选择）。回退规则比广场严格：广场的选择规则只查 ID 存在
+    /// 不查状态，工坊侧在后端收紧。
+    pub studio_selected_key_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -512,6 +553,10 @@ struct KeySelectionFile;
 struct KeySelectionData {
     #[serde(default)]
     selections: HashMap<String, i64>,
+    /// AI 营销工坊的选择记忆（功能 27）：与广场分开存放，同一 slot 键
+    /// （`区域:用户`），旧文件没有这个字段时按空处理（`serde(default)`）。
+    #[serde(default)]
+    studio_selections: HashMap<String, i64>,
 }
 
 impl KeySelectionFile {
@@ -537,6 +582,13 @@ impl KeySelectionFile {
             .copied()
     }
 
+    fn load_studio(data_root: &Path, identity: &SessionIdentity) -> Option<i64> {
+        Self::read(data_root)
+            .studio_selections
+            .get(&Self::slot(identity))
+            .copied()
+    }
+
     fn save(
         data_root: &Path,
         identity: &SessionIdentity,
@@ -547,17 +599,46 @@ impl KeySelectionFile {
         let json = serde_json::to_string_pretty(&data).unwrap_or_default();
         crate::config::atomic_write_private(&Self::path(data_root), json.as_bytes())
     }
+
+    fn save_studio(
+        data_root: &Path,
+        identity: &SessionIdentity,
+        key_id: i64,
+    ) -> Result<(), crate::error::AppError> {
+        let mut data = Self::read(data_root);
+        data.studio_selections.insert(Self::slot(identity), key_id);
+        let json = serde_json::to_string_pretty(&data).unwrap_or_default();
+        crate::config::atomic_write_private(&Self::path(data_root), json.as_bytes())
+    }
 }
 
-/// 删除 Key 后清掉指向它的选择记忆（只清命中的那一项）。记忆只是界面便利，
-/// 写失败不影响删除结果：`choose_selected` 对已不在列表里的记忆本来就会回退。
+/// 工坊「选择 Key」命令的持久化入口（`playground.rs` 调用）。
+pub(super) fn save_studio_selection(
+    data_root: &Path,
+    identity: &SessionIdentity,
+    key_id: i64,
+) -> Result<(), crate::error::AppError> {
+    KeySelectionFile::save_studio(data_root, identity, key_id)
+}
+
+/// 删除 Key 后清掉指向它的选择记忆（广场与工坊两份都清，各自只清命中的那一项）。
+/// 记忆只是界面便利，写失败不影响删除结果：`choose_selected` 对已不在列表里的
+/// 记忆本来就会回退。
 pub(super) fn clear_selection_if(data_root: &Path, identity: &SessionIdentity, key_id: i64) {
     let mut data = KeySelectionFile::read(data_root);
     let slot = KeySelectionFile::slot(identity);
-    if data.selections.get(&slot) != Some(&key_id) {
+    let mut changed = false;
+    if data.selections.get(&slot) == Some(&key_id) {
+        data.selections.remove(&slot);
+        changed = true;
+    }
+    if data.studio_selections.get(&slot) == Some(&key_id) {
+        data.studio_selections.remove(&slot);
+        changed = true;
+    }
+    if !changed {
         return;
     }
-    data.selections.remove(&slot);
     let json = serde_json::to_string_pretty(&data).unwrap_or_default();
     if let Err(e) =
         crate::config::atomic_write_private(&KeySelectionFile::path(data_root), json.as_bytes())
@@ -643,6 +724,12 @@ pub async fn list_keys(
     let views: Vec<KeyView> = visible.iter().map(to_view).collect();
     let remembered = KeySelectionFile::load(manager.data_root(), &identity);
     let selected_key_id = choose_selected(&views, remembered);
+    // 工坊选中（功能 27）：工坊记忆优先，回退广场选中；两者都要求 `active`
+    //（工坊口径比广场严——广场的 `choose_selected` 只查 ID 存在）。
+    let active = |id: i64| views.iter().any(|k| k.id == id && k.status == "active");
+    let studio_selected_key_id = KeySelectionFile::load_studio(manager.data_root(), &identity)
+        .filter(|id| active(*id))
+        .or_else(|| selected_key_id.filter(|id| active(*id)));
     if !state.store(seq, identity, visible) {
         // 更新的一次拉取已经写入缓存：这次结果已过期，不能交给前端展示，
         // 否则界面显示的 Key 与缓存不一致。
@@ -652,6 +739,7 @@ pub async fn list_keys(
         keys: views,
         selected_key_id,
         remembered_key_id: remembered,
+        studio_selected_key_id,
     })
 }
 
@@ -885,6 +973,135 @@ mod tests {
             Some(12345),
             "记忆原样返回，不校验是否还在列表里"
         );
+    }
+
+    /// 工坊选择记忆（功能 27）：优先于广场选中、要求 `active`、持久化到
+    /// `key_selection.json` 的独立字段；旧文件（没有该字段）按无记忆回退。
+    #[tokio::test]
+    async fn studio_selection_persists_and_requires_active_key() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {"items": [
+                    key_json(1, SECRET_A, "active", None),
+                    key_json(3, SECRET_C, "quota_exhausted", None)
+                ], "total": 2, "page": 1, "page_size": 100, "pages": 1}
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        let identity = manager.current_identity().unwrap();
+
+        // 没有工坊记忆：回退广场选中（第一个 active Key）。
+        let first = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(first.studio_selected_key_id, Some(1));
+
+        // 记住的工坊 Key 不再 active：回退广场选中，而不是沿用记忆。
+        save_studio_selection(dir.path(), &identity, 3).unwrap();
+        let fallback = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(fallback.studio_selected_key_id, Some(1));
+
+        // active 的工坊记忆生效；重启（新 state、同一数据目录）仍在。
+        save_studio_selection(dir.path(), &identity, 1).unwrap();
+        let chosen = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(chosen.studio_selected_key_id, Some(1));
+        let fresh_state = We2aiKeyState::default();
+        // list_keys 会重新拉取并重建缓存，这里再拉一次验证持久化。
+        let after_restart = list_keys(&manager, &fresh_state).await.unwrap();
+        assert_eq!(after_restart.studio_selected_key_id, Some(1));
+
+        // 记住的工坊 Key 不在列表里：回退广场选中。
+        save_studio_selection(dir.path(), &identity, 99).unwrap();
+        let gone = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(gone.studio_selected_key_id, Some(1));
+    }
+
+    /// 删除 Key 时广场与工坊两份选择记忆都清（各自只清命中的那一项）。
+    #[tokio::test]
+    async fn clear_selection_covers_both_marketplace_and_studio_memories() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {"items": [
+                    key_json(1, SECRET_A, "active", None),
+                    key_json(2, SECRET_B, "active", None)
+                ], "total": 2, "page": 1, "page_size": 100, "pages": 1}
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        // 先拉一次列表填充缓存（select_key 校验依赖缓存）。
+        list_keys(&manager, &state).await.unwrap();
+        let identity = manager.current_identity().unwrap();
+
+        // 广场记 1，工坊记 2。
+        select_key(&manager, &state, 1).unwrap();
+        save_studio_selection(dir.path(), &identity, 2).unwrap();
+
+        // 删除 Key 1：只清广场记忆，工坊记忆（Key 2）不受影响。
+        clear_selection_if(dir.path(), &identity, 1);
+        let view = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(view.remembered_key_id, None);
+        assert_eq!(view.studio_selected_key_id, Some(2));
+
+        // 删除 Key 2：工坊记忆也清掉，回退广场选中（第一个 active）。
+        clear_selection_if(dir.path(), &identity, 2);
+        let view = list_keys(&manager, &state).await.unwrap();
+        assert_eq!(view.studio_selected_key_id, Some(1));
+    }
+
+    /// `active_secret_for`：额度耗尽的 Key 状态可见但拿不到明文（工坊调用前
+    /// 的独立校验入口）。
+    #[tokio::test]
+    async fn active_secret_for_rejects_non_active_keys() {
+        let dir = TempDir::new().unwrap();
+        let manager = manager(&dir);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "message": "success",
+                "data": {"items": [
+                    key_json(1, SECRET_A, "active", None),
+                    key_json(3, SECRET_C, "quota_exhausted", None)
+                ], "total": 2, "page": 1, "page_size": 100, "pages": 1}
+            })))
+            .mount(&server)
+            .await;
+        manager.test_seed_active(Region::International, 42, "access-1", server.uri());
+        let state = We2aiKeyState::default();
+        list_keys(&manager, &state).await.unwrap();
+        let identity = manager.current_identity();
+
+        assert_eq!(
+            state.visible_key_status(identity, 3).as_deref(),
+            Some("quota_exhausted")
+        );
+        assert_eq!(
+            state.secret_for(identity, 3).as_deref(),
+            Some(SECRET_C),
+            "secret_for 只查 ID 存在（既有语义，广场 apply 依赖）"
+        );
+        assert_eq!(
+            state.active_secret_for(identity, 3),
+            None,
+            "工坊入口必须拒绝非 active Key"
+        );
+        assert_eq!(
+            state.active_secret_for(identity, 1).as_deref(),
+            Some(SECRET_A)
+        );
+        assert_eq!(state.active_secret_for(identity, 99), None);
     }
 
     /// 会话身份变化（换账号、重新登录、登出）后缓存里的明文不再可取，并被清空。

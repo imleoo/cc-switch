@@ -30,6 +30,7 @@ import { BillingPage, formatWe2aiUsd } from "./BillingPage";
 import { KeyManagePage } from "./KeyManagePage";
 import { LoginPage, notifyLogoutOutcome } from "./LoginPage";
 import { ModelSquarePage } from "./ModelSquarePage";
+import { PlaygroundPage } from "./PlaygroundPage";
 import { ToolStatusBar } from "./ToolStatusBar";
 import {
   getWe2aiStrings,
@@ -65,7 +66,7 @@ import {
 } from "@/components/ui/dialog";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
-type ShellTab = "marketplace" | "keys" | "billing" | "settings";
+type ShellTab = "marketplace" | "studio" | "keys" | "billing" | "settings";
 
 /** 网络类错误码：不代表会话状态变化（与模型广场、公告一致）。 */
 const NETWORK_ERROR_CODES = new Set(["TRANSIENT", "NETWORK_ERROR"]);
@@ -943,6 +944,12 @@ export function We2aiShell() {
               {t.navMarketplace}
             </TabsTrigger>
             <TabsTrigger
+              value="studio"
+              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navStudio}
+            </TabsTrigger>
+            <TabsTrigger
               value="keys"
               className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
             >
@@ -1021,6 +1028,34 @@ export function We2aiShell() {
                   onSessionMaybeEnded={() => void refreshSessionStatus()}
                   openCreateRequested={createKeyRequested}
                   onCreateRequestHandled={handleCreateKeyRequestHandled}
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* AI 营销工坊（功能 27）：forceMount —— 对话非敏感但切走不丢（与 Key 管理
+              Tab 的不 forceMount 原因相反）。 */}
+          <TabsContent
+            value="studio"
+            forceMount
+            className="data-[state=inactive]:hidden"
+          >
+            <Card className="we2ai-panel">
+              <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
+                <CardTitle className="we2ai-heading text-xl">
+                  {t.studioTitle}
+                </CardTitle>
+                <CardDescription className="text-[color:color-mix(in_srgb,var(--we2ai-ink)_70%,transparent)]">
+                  {t.studioDescription}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="pt-6">
+                <PlaygroundPage
+                  key={loggedInIdentity ?? ""}
+                  t={t}
+                  language={language}
+                  onSessionMaybeEnded={() => void refreshSessionStatus()}
+                  onTerminal={() => void refreshBalance()}
                 />
               </CardContent>
             </Card>
