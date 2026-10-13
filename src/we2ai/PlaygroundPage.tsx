@@ -159,7 +159,12 @@ export function PlaygroundPage({
   );
   /** chunk 监听就绪 promise（resolve 为是否可用）。 */
   const listenerReadyRef = useRef<Promise<boolean> | null>(null);
-  /** 当前选中的 Key（供 loadKeys 这类无依赖回调比较，避免闭包过期）。 */
+  /**
+   * 当前选中的 Key（供 loadKeys 这类无依赖回调比较，避免闭包过期）。除渲染
+   * 同步外，所有改选择/清选择的入口都同步写它（Codex 复审修复项）：ref 必须
+   * 在「选择已变更、React 还没重渲染」的窗口里也是权威值——写盘前的列表刷新
+   * 若在这个窗口读到旧值，会把用户刚选的 Key 弹回去。
+   */
   const selectedKeyIdRef = useRef<number | null>(null);
   selectedKeyIdRef.current = selectedKeyId;
   /** 模型请求序号（P2）：丢弃乱序返回的旧 Key 结果。 */
@@ -189,6 +194,8 @@ export function PlaygroundPage({
     setModels(null);
     setModelsError(null);
     setModel(null);
+    // 立即成为权威值（不等重渲染）：这个窗口里到达的列表刷新必须看到新选择。
+    selectedKeyIdRef.current = nextKeyId;
     setSelectedKeyId(nextKeyId);
   }, []);
 
@@ -213,15 +220,25 @@ export function PlaygroundPage({
       if (seq !== keysRequestSeqRef.current) return;
       keysSupersededRetriesRef.current = 0;
       setKeys(list.keys);
-      const nextKeyId = list.studioSelectedKeyId ?? null;
+      // 本地选择仍然有效（在列表内且 active）时优先保留（Codex 验收修复项 1）：
+      // `handleSelectKey` 是先改本地、再异步把选择写入磁盘，写盘完成前的一次
+      // 列表刷新读到的还是旧记忆——若直接采用返回值，用户刚选的 Key 会被弹回
+      // 旧选择并触发 resetSession 清空会话。只有本地 Key 已被删除/失效才回退到
+      // 服务端记忆值（Rust 侧已对记忆做过 active 校验与广场回退）。
+      const local = selectedKeyIdRef.current;
+      const localStillValid =
+        local !== null &&
+        list.keys.some((k) => k.id === local && k.status === "active");
+      const nextKeyId = localStillValid
+        ? local
+        : (list.studioSelectedKeyId ?? null);
       // Key 因列表变化（被删/失效后回退）或首次加载而变：必须走会话切换，
       // 不能静默改选中项（否则旧 Key 的历史会被带到新 Key 重发）。
-      if (
-        selectedKeyIdRef.current !== null &&
-        selectedKeyIdRef.current !== nextKeyId
-      ) {
+      if (local !== null && local !== nextKeyId) {
         resetSession(nextKeyId);
       } else {
+        // 首次加载采纳服务端记忆：同样立即成为权威值（见 selectedKeyIdRef 注释）。
+        selectedKeyIdRef.current = nextKeyId;
         setSelectedKeyId(nextKeyId);
       }
     } catch (error) {

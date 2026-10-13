@@ -1596,6 +1596,17 @@ for needle in 'navStudio' 'studioTitle' 'studioErrorKeyInvalid'; do
     err "src/we2ai/strings.ts: 缺少 ${needle} 文案（功能 27）"
   fi
 done
+# ⑦ 传给子页面的回调必须是稳定引用（功能 27 回归修复）：内联箭头每次渲染都换
+#    身份，会沿 loadKeys/loadModels/handleError 的 useCallback 依赖链让拉取 effect
+#    重跑，外壳一次重渲染就重拉 Key/模型列表并把已选模型重置回第一个。
+#    行为由 `tests/integration/We2aiShellPlayground.test.tsx` 的「外壳重渲染不重置
+#    工坊的 Key 与模型选择」覆盖；这里只拦最易复发的写法。
+if grep -nE 'onSessionMaybeEnded=\{\(\) =>' src/we2ai/We2aiShell.tsx >/dev/null; then
+  err "src/we2ai/We2aiShell.tsx: onSessionMaybeEnded 不得用内联箭头（功能 27：回调换身份会导致子页面重拉列表并重置选中模型）"
+fi
+if ! grep -qF 'const handleSessionMaybeEnded = useCallback(' src/we2ai/We2aiShell.tsx; then
+  err "src/we2ai/We2aiShell.tsx: 找不到稳定的 handleSessionMaybeEnded（功能 27）"
+fi
 
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${expected})"

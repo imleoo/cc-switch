@@ -606,6 +606,25 @@ export function We2aiShell() {
     () => setBalanceArrivedTick((n) => n + 1),
     [],
   );
+  // 交给子页面的回调必须是稳定引用（不能在内联箭头里现造）：子页面把
+  // `onSessionMaybeEnded` 一路带进 `loadKeys`/`loadModels`/`handleError` 的
+  // `useCallback` 依赖链，一旦它每次渲染都换身份，外壳每次重渲染（窗口聚焦触发
+  // 余额刷新、切 Tab、工具状态刷新）都会让这些 effect 重跑——表现为工坊/广场
+  // 反复重拉 Key 与模型列表，并把用户已选的模型重置回列表第一个。
+  const handleSessionMaybeEnded = useCallback(
+    () => void refreshSessionStatus(),
+    [refreshSessionStatus],
+  );
+  const handleToolStatusRefresh = useCallback(
+    () => void refreshToolStatus(),
+    [refreshToolStatus],
+  );
+  /** 工坊每轮终态（成功/失败/取消）后刷新余额（方案第 5.1 节）。 */
+  const handleTerminal = useCallback(
+    () => void refreshBalance(),
+    [refreshBalance],
+  );
+
   const [activeTab, setActiveTab] = useState<ShellTab>("marketplace");
   // 模型广场「余额不足」提示条的「去充值」：切到充值 Tab 并让 BillingPage 直接走
   // 主按钮的流程（设计 4.1）。用 prop 传递的一次性计数，不走全局事件。
@@ -799,7 +818,7 @@ export function We2aiShell() {
           <AnnouncementCenter
             key={loggedInIdentity ?? ""}
             t={t}
-            onSessionMaybeEnded={() => void refreshSessionStatus()}
+            onSessionMaybeEnded={handleSessionMaybeEnded}
           />
           <Button
             variant="ghost"
@@ -830,7 +849,7 @@ export function We2aiShell() {
               }
             : null
         }
-        onRestored={() => void refreshToolStatus()}
+        onRestored={handleToolStatusRefresh}
       />
 
       <Dialog open={logoutDialogOpen} onOpenChange={setLogoutDialogOpen}>
@@ -995,10 +1014,10 @@ export function We2aiShell() {
                 <ModelSquarePage
                   key={loggedInIdentity ?? ""}
                   t={t}
-                  onSessionMaybeEnded={() => void refreshSessionStatus()}
+                  onSessionMaybeEnded={handleSessionMaybeEnded}
                   toolStatus={toolStatus}
                   quickCcSwitchStatus={quickCcSwitchCheck?.status ?? null}
-                  onApplied={() => void refreshToolStatus()}
+                  onApplied={handleToolStatusRefresh}
                   onBeforeApplyDialogOpen={checkCcSwitchRunningBeforeApply}
                   onOpenBilling={handleLaunchRecharge}
                   onCreateKey={handleLaunchCreateKey}
@@ -1025,7 +1044,7 @@ export function We2aiShell() {
                 <KeyManagePage
                   key={loggedInIdentity ?? ""}
                   t={t}
-                  onSessionMaybeEnded={() => void refreshSessionStatus()}
+                  onSessionMaybeEnded={handleSessionMaybeEnded}
                   openCreateRequested={createKeyRequested}
                   onCreateRequestHandled={handleCreateKeyRequestHandled}
                 />
@@ -1054,8 +1073,8 @@ export function We2aiShell() {
                   key={loggedInIdentity ?? ""}
                   t={t}
                   language={language}
-                  onSessionMaybeEnded={() => void refreshSessionStatus()}
-                  onTerminal={() => void refreshBalance()}
+                  onSessionMaybeEnded={handleSessionMaybeEnded}
+                  onTerminal={handleTerminal}
                 />
               </CardContent>
             </Card>
