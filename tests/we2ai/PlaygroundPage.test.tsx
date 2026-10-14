@@ -85,6 +85,12 @@ describe("PlaygroundPage（功能 27 P1）", () => {
       studioSelectedKeyId: 6,
     });
     vi.spyOn(we2aiApi, "playgroundCancel").mockResolvedValue(undefined);
+    // 图片 / 视频面板随选中 Key 常驻挂载，会各拉一次媒体模型。
+    vi.spyOn(we2aiApi, "playgroundMediaModels").mockResolvedValue({
+      models: [],
+      blockedReason: null,
+    });
+    vi.spyOn(we2aiApi, "onPlaygroundProgress").mockResolvedValue(() => {});
     vi.spyOn(we2aiApi, "onKeysChanged").mockResolvedValue(() => {});
     vi.spyOn(we2aiApi, "onPlaygroundChunk").mockImplementation(
       async (fn) => {
@@ -148,7 +154,9 @@ describe("PlaygroundPage（功能 27 P1）", () => {
     const request = chatRequest!;
     expect(request.keyId).toBe(5);
     expect(request.model).toBe("gpt-marketing");
-    expect(request.system).toContain("产品文案");
+    expect(request.system).toContain("产品页文案");
+    expect(request.system).toContain("硬性约束");
+    expect(request.system).toContain("English");
     expect(request.messages).toEqual([
       { role: "user", content: "智能水杯" },
     ]);
@@ -266,5 +274,71 @@ describe("PlaygroundPage（功能 27 P1）", () => {
     await waitFor(() => {
       expect(onSessionMaybeEnded).toHaveBeenCalled();
     });
+  });
+
+  it("模式切换：默认文本；图片 / 视频面板按选中 Key 挂载并各拉一次对应模型", async () => {
+    await renderPage();
+    await waitFor(() => {
+      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(5, "image");
+      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(5, "video");
+    });
+    expect(screen.getByTestId("we2ai-studio-mode-text")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    // 图片 / 视频面板在文本模式下存在但不可见（常驻挂载，切换不取消在途任务）。
+    expect(screen.getByTestId("we2ai-studio-image-panel").parentElement).toHaveClass("hidden");
+    expect(screen.getByTestId("we2ai-studio-video-panel").parentElement).toHaveClass("hidden");
+
+    await userEvent.click(screen.getByTestId("we2ai-studio-mode-image"));
+    expect(screen.getByTestId("we2ai-studio-text-mode")).toHaveClass("hidden");
+    expect(screen.getByTestId("we2ai-studio-image-panel").parentElement).not.toHaveClass("hidden");
+    // 场景预设只属于文本模式。
+    expect(screen.queryByTestId("we2ai-studio-preset-product-copy")).toBeNull();
+
+    await userEvent.click(screen.getByTestId("we2ai-studio-mode-video"));
+    expect(screen.getByTestId("we2ai-studio-video-panel").parentElement).not.toHaveClass("hidden");
+    expect(screen.getByTestId("we2ai-studio-image-panel").parentElement).toHaveClass("hidden");
+
+    await userEvent.click(screen.getByTestId("we2ai-studio-mode-text"));
+    expect(screen.getByTestId("we2ai-studio-text-mode")).not.toHaveClass("hidden");
+    expect(await screen.findByTestId("we2ai-studio-preset-product-copy")).toBeInTheDocument();
+  });
+
+  it("切换 Key 会重建图片 / 视频面板并按新 Key 拉模型", async () => {
+    await renderPage();
+    await waitFor(() => {
+      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(5, "image");
+    });
+    await selectOption("we2ai-studio-key-select", "备用");
+    await waitFor(() => {
+      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(6, "image");
+      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(6, "video");
+    });
+  });
+
+  it("输出语言：默认英语；选西班牙语后 system 带 Spanish；本地化场景不带输出语言", async () => {
+    await renderPage();
+    await waitFor(() => {
+      expect(we2aiApi.playgroundModels).toHaveBeenCalled();
+    });
+    await userEvent.selectOptions(
+      screen.getByTestId("we2ai-studio-output-language"),
+      "es",
+    );
+    await userEvent.click(await screen.findByTestId("we2ai-studio-preset-cold-email"));
+    await userEvent.type(await screen.findByTestId("we2ai-studio-input"), "pump");
+    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
+    await waitFor(() => expect(chatRequest).not.toBeNull());
+    expect(chatRequest!.system).toContain("Spanish");
+    expect(chatRequest!.system).toContain("硬性约束");
+
+    chatRequest = null;
+    await userEvent.click(await screen.findByTestId("we2ai-studio-preset-localization"));
+    await userEvent.type(await screen.findByTestId("we2ai-studio-input"), "翻成法语");
+    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
+    await waitFor(() => expect(chatRequest).not.toBeNull());
+    expect(chatRequest!.system).not.toContain("Spanish");
+    expect(chatRequest!.system).toContain("本地化专家");
   });
 });

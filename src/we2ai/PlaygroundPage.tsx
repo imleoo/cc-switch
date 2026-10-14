@@ -31,14 +31,27 @@ import {
   isWe2aiApiError,
   we2aiApi,
   type We2aiKeyView,
-  type We2aiPlaygroundErrorCode,
   type We2aiPlaygroundMessage,
   type We2aiPlaygroundModels,
   type We2aiPlaygroundUsage,
 } from "./api";
 import { renderAnnouncementHtml } from "./announcementMarkdown";
-import { getWe2aiPlaygroundPresets } from "./playgroundPrompts";
-import { formatWe2aiString, type We2aiLanguage, type We2aiStrings } from "./strings";
+import {
+  DEFAULT_OUTPUT_LANGUAGE_ID,
+  PLAYGROUND_OUTPUT_LANGUAGES,
+  buildPlaygroundSystem,
+  getWe2aiPlaygroundPresets,
+} from "./playgroundPrompts";
+import { StudioSelect } from "./StudioMediaParts";
+import { StudioImagePanel } from "./StudioImagePanel";
+import { StudioVideoPanel } from "./StudioVideoPanel";
+import { SESSION_ERROR_CODES, studioErrorMessage } from "./studioErrors";
+import { getStudioMediaStrings } from "./studioMediaStrings";
+import {
+  formatWe2aiString,
+  type We2aiLanguage,
+  type We2aiStrings,
+} from "./strings";
 
 /** 会话里的单条展示消息（发送给网关的 history 由它投影出来）。 */
 interface ChatItem {
@@ -66,55 +79,23 @@ interface PlaygroundPageProps {
   onTerminal: () => void;
 }
 
-/** 错误 code → 本地化文案；未识别的回退到通用提示。 */
-function studioErrorMessage(
-  t: We2aiStrings,
-  code: string | null,
-  fallback: string,
-): string {
-  switch (code as We2aiPlaygroundErrorCode | null) {
-    case "PLAYGROUND_KEY_NOT_FOUND":
-      return t.studioErrorKeyNotFound;
-    case "PLAYGROUND_KEY_INACTIVE":
-      return t.studioErrorKeyInactive;
-    case "PLAYGROUND_KEY_INVALID":
-      return t.studioErrorKeyInvalid;
-    case "PLAYGROUND_QUOTA_EXHAUSTED":
-      return t.studioErrorQuota;
-    case "PLAYGROUND_RATE_LIMITED":
-      return t.studioErrorRateLimited;
-    case "PLAYGROUND_IDENTITY_CHANGED":
-    case "SESSION_CHANGED":
-      return t.studioErrorIdentity;
-    case "PLAYGROUND_CANCELLED":
-      return t.studioErrorCancelled;
-    case "PLAYGROUND_NETWORK":
-      return t.studioErrorNetwork;
-    case "PLAYGROUND_PAYLOAD_TOO_LARGE":
-      return t.studioErrorPayload;
-    case "PLAYGROUND_BUSY":
-      return t.studioErrorBusy;
-    case "PLAYGROUND_UPSTREAM_ERROR":
-      return t.studioErrorUpstream;
-    default:
-      return fallback || t.studioErrorFallback;
-  }
-}
-
-/** 会话级错误（应让外壳复查会话状态）。 */
-const SESSION_ERROR_CODES = new Set([
-  "NO_ACTIVE_SESSION",
-  "SESSION_CHANGED",
-  "PLAYGROUND_IDENTITY_CHANGED",
-]);
-
 export function PlaygroundPage({
   t,
   language,
   onSessionMaybeEnded,
   onTerminal,
 }: PlaygroundPageProps) {
-  const presets = useMemo(() => getWe2aiPlaygroundPresets(language), [language]);
+  const presets = useMemo(
+    () => getWe2aiPlaygroundPresets(language),
+    [language],
+  );
+  const ms = useMemo(() => getStudioMediaStrings(language), [language]);
+  // 模式：文本对话 / 图片 / 视频。三个面板常驻挂载、仅切换可见性——切到别的模式
+  // 不能取消正在生成（视频任务已提交并计费）。
+  const [mode, setMode] = useState<"text" | "image" | "video">("text");
+  const [outputLanguageId, setOutputLanguageId] = useState(
+    DEFAULT_OUTPUT_LANGUAGE_ID,
+  );
 
   const [keys, setKeys] = useState<We2aiKeyView[] | null>(null);
   const [keysError, setKeysError] = useState<string | null>(null);
@@ -135,7 +116,10 @@ export function PlaygroundPage({
     enabled: false,
     value: "0.7",
   });
-  const [topP, setTopP] = useState<NumberParam>({ enabled: false, value: "0.9" });
+  const [topP, setTopP] = useState<NumberParam>({
+    enabled: false,
+    value: "0.9",
+  });
   const [maxTokens, setMaxTokens] = useState<NumberParam>({
     enabled: false,
     value: "1024",
@@ -299,13 +283,19 @@ export function PlaygroundPage({
         const result = await we2aiApi.playgroundModels(keyId);
         // 结果、异常都校验序号与当前 Key（P2）：A→B→A 快速切换时，B 的迟到
         // 结果不能覆盖 A 的列表；切走后也不再写状态。
-        if (seq !== modelsRequestSeqRef.current || selectedKeyIdRef.current !== keyId) {
+        if (
+          seq !== modelsRequestSeqRef.current ||
+          selectedKeyIdRef.current !== keyId
+        ) {
           return;
         }
         setModels(result);
         setModel(result.models[0]?.id ?? null);
       } catch (error) {
-        if (seq !== modelsRequestSeqRef.current || selectedKeyIdRef.current !== keyId) {
+        if (
+          seq !== modelsRequestSeqRef.current ||
+          selectedKeyIdRef.current !== keyId
+        ) {
           return;
         }
         setModels(null);
@@ -371,7 +361,10 @@ export function PlaygroundPage({
           const next = [...prev];
           const last = next[next.length - 1];
           if (last.role !== "assistant") return prev;
-          next[next.length - 1] = { ...last, content: last.content + event.delta };
+          next[next.length - 1] = {
+            ...last,
+            content: last.content + event.delta,
+          };
           return next;
         });
       })
@@ -435,6 +428,7 @@ export function PlaygroundPage({
     const keyIdAtStart = selectedKeyId;
     const modelAtStart = model;
     const presetAtStart = presets.find((p) => p.id === presetId) ?? null;
+    const outputLanguageAtStart = outputLanguageId;
     const temperatureAtStart = temperature;
     const topPAtStart = topP;
     const maxTokensAtStart = maxTokens;
@@ -497,7 +491,7 @@ export function PlaygroundPage({
         keyId: keyIdAtStart,
         model: modelAtStart,
         messages: [...history, { role: "user", content: text }],
-        system: preset?.system,
+        system: buildPlaygroundSystem(preset, outputLanguageAtStart, language),
         temperature: temperatureAtStart.enabled
           ? Number.parseFloat(temperatureAtStart.value)
           : undefined,
@@ -510,25 +504,36 @@ export function PlaygroundPage({
       });
       // 终态校验代次（P2）：切 Key 后旧请求的成功结果不能写进新会话。
       const active = activeRequestRef.current;
-      if (!active || active.requestId !== requestId || active.epoch !== sessionEpochRef.current) {
+      if (
+        !active ||
+        active.requestId !== requestId ||
+        active.epoch !== sessionEpochRef.current
+      ) {
         return;
       }
       setMessages((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last?.role === "assistant") {
-          next[next.length - 1] = { ...last, usage: outcome.usage ?? undefined };
+          next[next.length - 1] = {
+            ...last,
+            usage: outcome.usage ?? undefined,
+          };
         }
         return next;
       });
     } catch (error) {
       const active = activeRequestRef.current;
-      if (!active || active.requestId !== requestId || active.epoch !== sessionEpochRef.current) {
+      if (
+        !active ||
+        active.requestId !== requestId ||
+        active.epoch !== sessionEpochRef.current
+      ) {
         return;
       }
       const code = isWe2aiApiError(error) ? error.code : null;
       const fallback = error instanceof Error ? error.message : "";
-      const message = studioErrorMessage(t, code, fallback);
+      const message = studioErrorMessage(t, ms, code, fallback);
       setMessages((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -554,6 +559,9 @@ export function PlaygroundPage({
     model,
     presets,
     presetId,
+    outputLanguageId,
+    language,
+    ms,
     messages,
     temperature,
     topP,
@@ -652,281 +660,361 @@ export function PlaygroundPage({
           )}
         </div>
 
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="we2ai-label">{t.studioPresetsLabel}</span>
+        {mode === "text" && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="we2ai-label">{t.studioPresetsLabel}</span>
+            </div>
+            <p className="text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
+              {t.studioPresetsHint}
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => handlePresetClick(preset.id)}
+                  data-testid={`we2ai-studio-preset-${preset.id}`}
+                  className={`rounded-lg border-2 border-[var(--we2ai-ink)] px-3 py-2 text-left text-sm shadow-none transition-colors ${
+                    presetId === preset.id
+                      ? "bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)]"
+                      : "bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] hover:bg-[var(--we2ai-paper-2)]"
+                  }`}
+                  title={preset.hint}
+                >
+                  {preset.title}
+                </button>
+              ))}
+            </div>
           </div>
-          <p className="text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_60%,transparent)]">
-            {t.studioPresetsHint}
-          </p>
-          <div className="flex flex-col gap-1.5">
-            {presets.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                onClick={() => handlePresetClick(preset.id)}
-                data-testid={`we2ai-studio-preset-${preset.id}`}
-                className={`rounded-lg border-2 border-[var(--we2ai-ink)] px-3 py-2 text-left text-sm shadow-none transition-colors ${
-                  presetId === preset.id
-                    ? "bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)]"
-                    : "bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] hover:bg-[var(--we2ai-paper-2)]"
-                }`}
-                title={preset.hint}
-              >
-                {preset.title}
-              </button>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* 主列：模型选择 + 对话流 + 输入区 + 参数面板。 */}
+      {/* 主列：模式切换 + 文本对话 / 图片 / 视频（常驻挂载，仅切换可见性）。 */}
       <div className="flex min-w-0 flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="we2ai-label">{t.studioModelLabel}</span>
-          {loadingModels ? (
-            <span className="text-sm" data-testid="we2ai-studio-loading-models">
-              {t.loadingModels}
-            </span>
-          ) : modelsError ? (
-            <span className="text-sm" data-testid="we2ai-studio-models-error">
-              {modelsError}
-            </span>
-          ) : (models?.models.length ?? 0) === 0 ? (
-            <span className="text-sm" data-testid="we2ai-studio-models-empty">
-              {models?.blockedReason
-                ? `${t.studioBlockedPrefix}: ${models.blockedReason}`
-                : t.studioModelsEmpty}
-            </span>
-          ) : (
-            <Select
-              value={model ?? undefined}
-              onValueChange={setModel}
+        <div
+          className="flex flex-wrap gap-1.5"
+          role="group"
+          aria-label={t.studioTitle}
+        >
+          {(
+            [
+              ["text", ms.modeText],
+              ["image", ms.modeImage],
+              ["video", ms.modeVideo],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setMode(id)}
+              aria-pressed={mode === id}
+              data-testid={`we2ai-studio-mode-${id}`}
+              className={`rounded-lg border-2 border-[var(--we2ai-ink)] px-4 py-1.5 text-sm shadow-none transition-colors ${
+                mode === id
+                  ? "bg-[var(--we2ai-ink)] text-[var(--we2ai-paper)]"
+                  : "bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] hover:bg-[var(--we2ai-paper-2)]"
+              }`}
             >
-              <SelectTrigger
-                className="w-72 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none"
-                aria-label={t.studioModelLabel}
-                data-testid="we2ai-studio-model-select"
-              >
-                <SelectValue placeholder={t.studioModelPlaceholder} />
-              </SelectTrigger>
-              <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
-                {(models?.models ?? []).map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.id}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={handleNewSession}
-            disabled={messages.length === 0 && !streaming}
-            className="h-8 gap-1.5 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-xs text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
-            data-testid="we2ai-studio-new-session"
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
-            {t.studioNewSession}
-          </Button>
+              {label}
+            </button>
+          ))}
         </div>
 
         <div
-          ref={conversationRef}
-          className="we2ai-scroll min-h-64 flex-1 space-y-3 overflow-y-auto rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-4"
-          data-testid="we2ai-studio-conversation"
+          className={mode === "text" ? "flex min-w-0 flex-col gap-3" : "hidden"}
+          data-testid="we2ai-studio-text-mode"
         >
-          {chunkListenerError && (
-            <div
-              className="flex items-center gap-2 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-3 py-2 text-sm"
-              data-testid="we2ai-studio-listener-error"
-            >
-              <span>{chunkListenerError}</span>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setListenerAttempt((n) => n + 1)}
-                className="h-7 gap-1.5 text-xs"
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="we2ai-label">{t.studioModelLabel}</span>
+            {loadingModels ? (
+              <span
+                className="text-sm"
+                data-testid="we2ai-studio-loading-models"
               >
-                <RefreshCw className="h-3.5 w-3.5" />
-                {t.refresh}
-              </Button>
-            </div>
-          )}
-          {messages.length === 0 ? (
-            <p className="text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
-              {t.studioDescription}
-            </p>
-          ) : (
-            messages.map((message, index) =>
-              message.role === "user" ? (
-                <div
-                  key={index}
-                  className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] px-3 py-2 text-sm text-[var(--we2ai-paper)]"
-                  data-testid="we2ai-studio-user-message"
-                >
-                  {message.content}
-                </div>
-              ) : (
-                <div
-                  key={index}
-                  className="max-w-[90%] rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-3 py-2 text-sm"
-                  data-testid="we2ai-studio-assistant-message"
-                >
-                  {message.content ? (
-                    <div
-                      className="we2ai-markdown"
-                      // 公告同款的严格净化（白名单标签、仅 http(s) 链接）。
-                      dangerouslySetInnerHTML={{
-                        __html: renderAnnouncementHtml(message.content),
-                      }}
-                    />
-                  ) : (
-                    <span className="inline-block h-4 w-2 animate-pulse bg-[var(--we2ai-ink)] align-middle" />
-                  )}
-                  {message.usage && (
-                    <div className="mt-1 text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
-                      {formatWe2aiString(t.studioUsageTokens, {
-                        total: message.usage.totalTokens,
-                      })}
-                    </div>
-                  )}
-                  {message.stopped && (
-                    <div className="mt-1 text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
-                      {t.studioStoppedPartial}
-                    </div>
-                  )}
-                  {message.error && (
-                    <div
-                      className="mt-1 text-xs text-[var(--we2ai-danger,#b91c1c)]"
-                      data-testid="we2ai-studio-message-error"
-                    >
-                      {message.error}
-                    </div>
-                  )}
-                </div>
-              ),
-            )
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                if (canSend) void handleSend();
-              }
-            }}
-            placeholder={t.studioInputPlaceholder}
-            rows={3}
-            disabled={streaming}
-            className="w-full resize-none rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-3 text-sm text-[var(--we2ai-ink)] placeholder:text-[color:color-mix(in_srgb,var(--we2ai-ink)_40%,transparent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--we2ai-ink)] disabled:opacity-60"
-            data-testid="we2ai-studio-input"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            {streaming ? (
-              <Button
-                size="sm"
-                onClick={handleStop}
-                className="h-8 gap-1.5 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-xs text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-orange)]"
-                data-testid="we2ai-studio-stop"
-              >
-                <CircleStop className="h-3.5 w-3.5" />
-                {t.studioStop}
-              </Button>
+                {t.loadingModels}
+              </span>
+            ) : modelsError ? (
+              <span className="text-sm" data-testid="we2ai-studio-models-error">
+                {modelsError}
+              </span>
+            ) : (models?.models.length ?? 0) === 0 ? (
+              <span className="text-sm" data-testid="we2ai-studio-models-empty">
+                {models?.blockedReason
+                  ? `${t.studioBlockedPrefix}: ${models.blockedReason}`
+                  : t.studioModelsEmpty}
+              </span>
             ) : (
-              <Button
-                size="sm"
-                onClick={() => void handleSend()}
-                disabled={!canSend}
-                className="h-8 gap-1.5 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-xs text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-orange)]"
-                data-testid="we2ai-studio-send"
-              >
-                <Send className="h-3.5 w-3.5" />
-                {t.studioSend}
-              </Button>
+              <Select value={model ?? undefined} onValueChange={setModel}>
+                <SelectTrigger
+                  className="w-72 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)] shadow-none"
+                  aria-label={t.studioModelLabel}
+                  data-testid="we2ai-studio-model-select"
+                >
+                  <SelectValue placeholder={t.studioModelPlaceholder} />
+                </SelectTrigger>
+                <SelectContent className="we2ai-theme rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-[var(--we2ai-ink)]">
+                  {(models?.models ?? []).map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
-            <span className="text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
-              {t.studioHistoryHint}
-            </span>
+            <StudioSelect
+              label={ms.outputLanguageLabel}
+              value={outputLanguageId}
+              options={PLAYGROUND_OUTPUT_LANGUAGES.map((l) => ({
+                value: l.id,
+                label: l.label[language],
+              }))}
+              onChange={setOutputLanguageId}
+              disabled={streaming}
+              testId="we2ai-studio-output-language"
+            />
             <Button
               size="sm"
-              variant="ghost"
-              onClick={() => setParamsOpen((v) => !v)}
-              className="ml-auto h-8 gap-1.5 text-xs text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
-              data-testid="we2ai-studio-params-toggle"
+              variant="outline"
+              onClick={handleNewSession}
+              disabled={messages.length === 0 && !streaming}
+              className="h-8 gap-1.5 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-xs text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
+              data-testid="we2ai-studio-new-session"
             >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              {t.studioParamsLabel}
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              {t.studioNewSession}
             </Button>
           </div>
 
-          {paramsOpen && (
-            <div
-              className="grid gap-3 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-3 sm:grid-cols-3"
-              data-testid="we2ai-studio-params"
-            >
-              {(
-                [
-                  {
-                    label: t.studioTemperatureLabel,
-                    param: temperature,
-                    set: setTemperature,
-                    step: "0.1",
-                    min: "0",
-                    max: "2",
-                  },
-                  {
-                    label: t.studioTopPLabel,
-                    param: topP,
-                    set: setTopP,
-                    step: "0.05",
-                    min: "0",
-                    max: "1",
-                  },
-                  {
-                    label: t.studioMaxTokensLabel,
-                    param: maxTokens,
-                    set: setMaxTokens,
-                    step: "64",
-                    min: "1",
-                    max: "8192",
-                  },
-                ] as const
-              ).map(({ label, param, set, step, min, max }) => (
-                <div key={label} className="flex items-center gap-2">
-                  <Checkbox
-                    id={`we2ai-studio-param-${label}`}
-                    checked={param.enabled}
-                    onCheckedChange={(checked) =>
-                      set((prev) => ({ ...prev, enabled: checked === true }))
-                    }
-                  />
-                  <Label
-                    htmlFor={`we2ai-studio-param-${label}`}
-                    className="text-xs font-normal"
+          <div
+            ref={conversationRef}
+            className="we2ai-scroll min-h-64 flex-1 space-y-3 overflow-y-auto rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-4"
+            data-testid="we2ai-studio-conversation"
+          >
+            {chunkListenerError && (
+              <div
+                className="flex items-center gap-2 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-3 py-2 text-sm"
+                data-testid="we2ai-studio-listener-error"
+              >
+                <span>{chunkListenerError}</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setListenerAttempt((n) => n + 1)}
+                  className="h-7 gap-1.5 text-xs"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {t.refresh}
+                </Button>
+              </div>
+            )}
+            {messages.length === 0 ? (
+              <p className="text-sm text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
+                {t.studioDescription}
+              </p>
+            ) : (
+              messages.map((message, index) =>
+                message.role === "user" ? (
+                  <div
+                    key={index}
+                    className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] px-3 py-2 text-sm text-[var(--we2ai-paper)]"
+                    data-testid="we2ai-studio-user-message"
                   >
-                    {label}
-                  </Label>
-                  <Input
-                    type="number"
-                    value={param.value}
-                    step={step}
-                    min={min}
-                    max={max}
-                    disabled={!param.enabled}
-                    onChange={(e) =>
-                      set((prev) => ({ ...prev, value: e.target.value }))
-                    }
-                    className="h-8 w-24 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-xs shadow-none"
-                  />
-                </div>
-              ))}
+                    {message.content}
+                  </div>
+                ) : (
+                  <div
+                    key={index}
+                    className="max-w-[90%] rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-3 py-2 text-sm"
+                    data-testid="we2ai-studio-assistant-message"
+                  >
+                    {message.content ? (
+                      <div
+                        className="we2ai-markdown"
+                        // 公告同款的严格净化（白名单标签、仅 http(s) 链接）。
+                        dangerouslySetInnerHTML={{
+                          __html: renderAnnouncementHtml(message.content),
+                        }}
+                      />
+                    ) : (
+                      <span className="inline-block h-4 w-2 animate-pulse bg-[var(--we2ai-ink)] align-middle" />
+                    )}
+                    {message.usage && (
+                      <div className="mt-1 text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
+                        {formatWe2aiString(t.studioUsageTokens, {
+                          total: message.usage.totalTokens,
+                        })}
+                      </div>
+                    )}
+                    {message.stopped && (
+                      <div className="mt-1 text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
+                        {t.studioStoppedPartial}
+                      </div>
+                    )}
+                    {message.error && (
+                      <div
+                        className="mt-1 text-xs text-[var(--we2ai-danger,#b91c1c)]"
+                        data-testid="we2ai-studio-message-error"
+                      >
+                        {message.error}
+                      </div>
+                    )}
+                  </div>
+                ),
+              )
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault();
+                  if (canSend) void handleSend();
+                }
+              }}
+              placeholder={t.studioInputPlaceholder}
+              rows={3}
+              disabled={streaming}
+              className="w-full resize-none rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-3 text-sm text-[var(--we2ai-ink)] placeholder:text-[color:color-mix(in_srgb,var(--we2ai-ink)_40%,transparent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--we2ai-ink)] disabled:opacity-60"
+              data-testid="we2ai-studio-input"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              {streaming ? (
+                <Button
+                  size="sm"
+                  onClick={handleStop}
+                  className="h-8 gap-1.5 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-xs text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-orange)]"
+                  data-testid="we2ai-studio-stop"
+                >
+                  <CircleStop className="h-3.5 w-3.5" />
+                  {t.studioStop}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => void handleSend()}
+                  disabled={!canSend}
+                  className="h-8 gap-1.5 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-ink)] text-xs text-[var(--we2ai-paper)] shadow-none hover:bg-[var(--we2ai-orange)]"
+                  data-testid="we2ai-studio-send"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  {t.studioSend}
+                </Button>
+              )}
+              <span className="text-xs text-[color:color-mix(in_srgb,var(--we2ai-ink)_50%,transparent)]">
+                {t.studioHistoryHint}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setParamsOpen((v) => !v)}
+                className="ml-auto h-8 gap-1.5 text-xs text-[var(--we2ai-ink)] shadow-none hover:bg-[var(--we2ai-paper-2)]"
+                data-testid="we2ai-studio-params-toggle"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                {t.studioParamsLabel}
+              </Button>
             </div>
+
+            {paramsOpen && (
+              <div
+                className="grid gap-3 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-3 sm:grid-cols-3"
+                data-testid="we2ai-studio-params"
+              >
+                {(
+                  [
+                    {
+                      label: t.studioTemperatureLabel,
+                      param: temperature,
+                      set: setTemperature,
+                      step: "0.1",
+                      min: "0",
+                      max: "2",
+                    },
+                    {
+                      label: t.studioTopPLabel,
+                      param: topP,
+                      set: setTopP,
+                      step: "0.05",
+                      min: "0",
+                      max: "1",
+                    },
+                    {
+                      label: t.studioMaxTokensLabel,
+                      param: maxTokens,
+                      set: setMaxTokens,
+                      step: "64",
+                      min: "1",
+                      max: "8192",
+                    },
+                  ] as const
+                ).map(({ label, param, set, step, min, max }) => (
+                  <div key={label} className="flex items-center gap-2">
+                    <Checkbox
+                      id={`we2ai-studio-param-${label}`}
+                      checked={param.enabled}
+                      onCheckedChange={(checked) =>
+                        set((prev) => ({ ...prev, enabled: checked === true }))
+                      }
+                    />
+                    <Label
+                      htmlFor={`we2ai-studio-param-${label}`}
+                      className="text-xs font-normal"
+                    >
+                      {label}
+                    </Label>
+                    <Input
+                      type="number"
+                      value={param.value}
+                      step={step}
+                      min={min}
+                      max={max}
+                      disabled={!param.enabled}
+                      onChange={(e) =>
+                        set((prev) => ({ ...prev, value: e.target.value }))
+                      }
+                      className="h-8 w-24 rounded-lg border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] text-xs shadow-none"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className={mode === "image" ? "" : "hidden"}>
+          {selectedKeyId !== null && (
+            <StudioImagePanel
+              key={selectedKeyId}
+              t={t}
+              ms={ms}
+              language={language}
+              keyId={selectedKeyId}
+              textModel={model}
+              onSessionMaybeEnded={onSessionMaybeEnded}
+              onTerminal={onTerminal}
+            />
+          )}
+        </div>
+        <div className={mode === "video" ? "" : "hidden"}>
+          {selectedKeyId !== null && (
+            <StudioVideoPanel
+              key={selectedKeyId}
+              t={t}
+              ms={ms}
+              language={language}
+              keyId={selectedKeyId}
+              textModel={model}
+              onSessionMaybeEnded={onSessionMaybeEnded}
+              onTerminal={onTerminal}
+            />
           )}
         </div>
       </div>

@@ -428,6 +428,100 @@ export interface We2aiPlaygroundChunkEvent {
   delta: string;
 }
 
+/**
+ * 工坊视频任务进度事件名。Rust 侧常量 `playground/media.rs::PLAYGROUND_PROGRESS_EVENT`
+ * 与这里各写一份字面量，`check-guards.sh` 4.19 校验两侧一致。
+ */
+export const WE2AI_PLAYGROUND_PROGRESS_EVENT = "we2ai-playground-progress";
+
+/** 媒体模型族（Rust `ImageFamily` / `VideoFamily`，按模型名判定）。 */
+export type We2aiImageFamily = "openai" | "grok" | "gemini";
+export type We2aiVideoFamily = "grok" | "seedance";
+
+/**
+ * 模型族可用的参数选项（Rust `MediaCapabilities`，单一事实来源）：空数组表示
+ * 该参数不适用，前端不渲染，后端也会拒绝。
+ */
+export interface We2aiMediaCapabilities {
+  sizes: string[];
+  aspectRatios: string[];
+  imageSizes: string[];
+  durations: number[];
+  resolutions: string[];
+  maxN: number;
+  supportsReference: boolean;
+  supportsAudio: boolean;
+  /** 参考图（首帧）宽高下限，0 表示无要求（Seedance 为 300）。 */
+  minReferenceSide: number;
+}
+
+export interface We2aiMediaModel<F extends string = string> {
+  id: string;
+  provider: string | null;
+  family: F;
+  capabilities: We2aiMediaCapabilities;
+}
+
+export interface We2aiMediaModels<F extends string = string> {
+  models: We2aiMediaModel<F>[];
+  blockedReason: string | null;
+}
+
+/** 参考图（图生图 / 图生视频的首帧）：前端读本地文件后以 base64 提交。 */
+export interface We2aiReferenceImage {
+  mime: "image/png" | "image/jpeg" | "image/webp";
+  dataBase64: string;
+}
+
+export interface We2aiImageRequest {
+  requestId: string;
+  keyId: number;
+  model: string;
+  prompt: string;
+  n?: number;
+  size?: string;
+  aspectRatio?: string;
+  imageSize?: string;
+  reference?: We2aiReferenceImage;
+}
+
+export interface We2aiVideoRequest {
+  requestId: string;
+  keyId: number;
+  model: string;
+  prompt: string;
+  duration?: number;
+  aspectRatio?: string;
+  resolution?: string;
+  generateAudio?: boolean;
+  reference?: We2aiReferenceImage;
+}
+
+/** 落盘的媒体文件；图片带 data URL 供直接展示，视频只给路径。 */
+export interface We2aiMediaFile {
+  path: string;
+  mime: string;
+  bytes: number;
+  dataUrl: string | null;
+}
+
+export interface We2aiImageOutcome {
+  images: We2aiMediaFile[];
+}
+
+export interface We2aiVideoOutcome {
+  video: We2aiMediaFile;
+}
+
+export type We2aiVideoStage = "submitted" | "running" | "downloading";
+
+export interface We2aiVideoProgressEvent {
+  requestId: string;
+  stage: We2aiVideoStage;
+  elapsedSecs: number;
+  progress: number | null;
+}
+
 /** 工坊 chat 的稳定错误 code（Rust `playground.rs` 的 `PLAYGROUND_*` 系列）。 */
 export type We2aiPlaygroundErrorCode =
   | "PLAYGROUND_KEY_NOT_FOUND"
@@ -443,6 +537,12 @@ export type We2aiPlaygroundErrorCode =
   | "PLAYGROUND_BUSY"
   | "PLAYGROUND_UPSTREAM_ERROR"
   | "PLAYGROUND_BAD_REQUEST"
+  | "PLAYGROUND_REJECTED"
+  | "PLAYGROUND_MEDIA_FAILED"
+  | "PLAYGROUND_MEDIA_TIMEOUT"
+  | "PLAYGROUND_MEDIA_INVALID"
+  | "PLAYGROUND_PATH_INVALID"
+  | "PLAYGROUND_SAVE_FAILED"
   | "NO_ACTIVE_SESSION"
   | "SESSION_CHANGED";
 
@@ -842,7 +942,9 @@ export const we2aiApi = {
   // ------------------------------------------------------------------
 
   /** 工坊记住选中的 Key（独立于广场的记忆，只接受 `active` 的 Key）。 */
-  async playgroundChooseKey(keyId: number): Promise<We2aiPlaygroundChooseKeyResult> {
+  async playgroundChooseKey(
+    keyId: number,
+  ): Promise<We2aiPlaygroundChooseKeyResult> {
     return await invoke("we2ai_playground_choose_key", { keyId });
   },
 
@@ -892,6 +994,86 @@ export const we2aiApi = {
         return;
       }
       handler({ requestId: payload.requestId, delta: payload.delta });
+    });
+  },
+
+  /** 工坊图片/视频模型（按 `kind` 过滤；视频只返回能识别请求体的模型族）。 */
+  async playgroundMediaModels(
+    keyId: number,
+    kind: "image" | "video",
+  ): Promise<We2aiMediaModels> {
+    return await invoke("we2ai_playground_media_models", { keyId, kind });
+  },
+
+  /** 生成/编辑图片：invoke 阻塞至终态，结果已落盘到工坊目录。 */
+  async playgroundImage(
+    request: We2aiImageRequest,
+  ): Promise<We2aiImageOutcome> {
+    return await invoke("we2ai_playground_image", {
+      request: {
+        requestId: request.requestId,
+        keyId: request.keyId,
+        model: request.model,
+        prompt: request.prompt,
+        n: request.n ?? null,
+        size: request.size ?? null,
+        aspectRatio: request.aspectRatio ?? null,
+        imageSize: request.imageSize ?? null,
+        reference: request.reference ?? null,
+      },
+    });
+  },
+
+  /** 生成视频：提交 + 轮询 + 下载一次完成；进度经 `onPlaygroundProgress` 推送。 */
+  async playgroundVideo(
+    request: We2aiVideoRequest,
+  ): Promise<We2aiVideoOutcome> {
+    return await invoke("we2ai_playground_video", {
+      request: {
+        requestId: request.requestId,
+        keyId: request.keyId,
+        model: request.model,
+        prompt: request.prompt,
+        duration: request.duration ?? null,
+        aspectRatio: request.aspectRatio ?? null,
+        resolution: request.resolution ?? null,
+        generateAudio: request.generateAudio ?? null,
+        reference: request.reference ?? null,
+      },
+    });
+  },
+
+  /** 另存为：弹系统保存对话框；返回目标路径，用户取消返回 null。 */
+  async playgroundMediaSaveAs(path: string): Promise<string | null> {
+    return await invoke("we2ai_playground_media_save_as", { path });
+  },
+
+  /** 用系统默认程序打开，或在文件夹中显示（路径必须在工坊目录内）。 */
+  async playgroundMediaOpen(path: string, reveal: boolean): Promise<void> {
+    await invoke("we2ai_playground_media_open", { path, reveal });
+  },
+
+  /** 订阅视频任务进度事件，返回取消订阅函数。 */
+  async onPlaygroundProgress(
+    handler: (event: We2aiVideoProgressEvent) => void,
+  ): Promise<() => void> {
+    return await listen(WE2AI_PLAYGROUND_PROGRESS_EVENT, (e) => {
+      const payload = e.payload as Partial<We2aiVideoProgressEvent> | null;
+      if (
+        !payload ||
+        typeof payload.requestId !== "string" ||
+        typeof payload.stage !== "string" ||
+        typeof payload.elapsedSecs !== "number"
+      ) {
+        return;
+      }
+      handler({
+        requestId: payload.requestId,
+        stage: payload.stage as We2aiVideoStage,
+        elapsedSecs: payload.elapsedSecs,
+        progress:
+          typeof payload.progress === "number" ? payload.progress : null,
+      });
     });
   },
 };

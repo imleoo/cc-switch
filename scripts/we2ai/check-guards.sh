@@ -1621,6 +1621,85 @@ if ! grep -qF 'const handleSessionMaybeEnded = useCallback(' src/we2ai/We2aiShel
   err "src/we2ai/We2aiShell.tsx: 找不到稳定的 handleSessionMaybeEnded（功能 27）"
 fi
 
+# ── 4.19 功能 27 续（P2 图片 / P3 视频 / 外贸模板）──────────────
+# 守住最易被改坏的几件事；行为由 `cargo test --lib we2ai::playground::media`、
+# `tests/we2ai/Studio{Image,Video}Panel.test.tsx`、`studioMediaTemplates.test.ts` 覆盖，
+# 这里只证明「要素存在」。
+media_rs=src-tauri/src/we2ai/playground/media.rs
+for needle in \
+  'we2ai::playground::media::we2ai_playground_media_models' \
+  'we2ai::playground::media::we2ai_playground_image' \
+  'we2ai::playground::media::we2ai_playground_video' \
+  'we2ai::playground::media::we2ai_playground_media_save_as' \
+  'we2ai::playground::media::we2ai_playground_media_open'; do
+  if ! grep -qF "$needle" "$lib_rs"; then
+    err "$lib_rs: 找不到 ${needle}（功能 27 续：图片/视频命令注册）"
+  fi
+done
+if ! grep -qE '^pub mod media;' src-tauri/src/we2ai/playground.rs; then
+  err "src-tauri/src/we2ai/playground.rs: 找不到 pub mod media;（功能 27 续）"
+fi
+# 进度事件名两侧一致。
+rust_progress_event="$(sed -n 's/.*PLAYGROUND_PROGRESS_EVENT: &str = "\([^"]*\)".*/\1/p' "$media_rs" 2>/dev/null)"
+ts_progress_event="$(sed -n 's/.*WE2AI_PLAYGROUND_PROGRESS_EVENT = "\([^"]*\)".*/\1/p' src/we2ai/api.ts 2>/dev/null)"
+if [[ -z "$rust_progress_event" || "$rust_progress_event" != "$ts_progress_event" ]]; then
+  err "工坊进度事件名两侧不一致（功能 27 续）：media.rs='${rust_progress_event}'，api.ts='${ts_progress_event}'"
+fi
+# 上游错误体不得读入（可能回显 Key 明文）。
+if grep -nE 'response\.text\(\)|\.text\(\)\.await' "$media_rs" \
+  | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' >/dev/null; then
+  err "$media_rs: 出现 response.text()（功能 27 续：错误体可能含 Key 明文，必须只按状态码映射）"
+fi
+# 图片临时 URL 的下载不得带 Authorization（URL 可能指向网关以外的主机）。
+download_body="$(awk '/^async fn download_image_url\(/{f=1} f{print} f&&/^\}/{exit}' "$media_rs")"
+if [[ -z "$download_body" ]]; then
+  err "$media_rs: 找不到 download_image_url（功能 27 续）"
+elif printf '%s\n' "$download_body" | grep -qE 'bearer_auth|authorization|AUTHORIZATION'; then
+  err "$media_rs: download_image_url 带了 Authorization（功能 27 续：不得把 Key 发给图片临时地址）"
+fi
+# 另存为 / 打开都必须先过工坊目录校验。
+if [[ "$(grep -cF 'resolve_studio_path(session.0.data_root()' "$media_rs")" -lt 2 ]]; then
+  err "$media_rs: save_as / open 必须都经 resolve_studio_path 校验路径在工坊目录内（功能 27 续）"
+fi
+# 资源协议只开放工坊目录，CSP 只为 media-src 放行 asset 协议。
+asset_scope="$(node -e 'const c=require(process.argv[1]);console.log(JSON.stringify(c.app?.security?.assetProtocol?.scope||null))' "$PWD/src-tauri/tauri.conf.json")"
+if [[ "$asset_scope" != '["$HOME/.we2ai/studio/**"]' ]]; then
+  err "src-tauri/tauri.conf.json: assetProtocol.scope 应仅为 [\"\$HOME/.we2ai/studio/**\"]，实际 ${asset_scope}（功能 27 续：视频预览，范围不得放宽）"
+fi
+if ! grep -qF "media-src 'self' asset: http://asset.localhost" src-tauri/tauri.conf.json; then
+  err "src-tauri/tauri.conf.json: CSP 缺少 media-src（功能 27 续：视频预览需要 asset 协议）"
+fi
+# 前后端共享的上限必须一致。
+rs_const() { sed -n "s/.*const $1: usize = \(.*\);.*/\1/p" "$media_rs" | tr -d ' ' | head -1; }
+ts_const() { sed -n "s/.*export const $1 = \(.*\);.*/\1/p" src/we2ai/studioMediaTemplates.ts src/we2ai/studioMediaCommon.ts | tr -d ' ' | head -1; }
+if [[ "$(rs_const MEDIA_GROK_MAX_PROMPT_BYTES)" != "$(ts_const GROK_VIDEO_PROMPT_MAX_BYTES)" ]]; then
+  err "Grok 视频提示词字节上限两侧不一致（功能 27 续）：media.rs='$(rs_const MEDIA_GROK_MAX_PROMPT_BYTES)'，前端='$(ts_const GROK_VIDEO_PROMPT_MAX_BYTES)'"
+fi
+if [[ "$(rs_const MEDIA_MAX_PROMPT_CHARS)" != "$(ts_const MEDIA_PROMPT_MAX_CHARS)" ]]; then
+  err "提示词字符上限两侧不一致（功能 27 续）：media.rs='$(rs_const MEDIA_MAX_PROMPT_CHARS)'，前端='$(ts_const MEDIA_PROMPT_MAX_CHARS)'"
+fi
+if [[ "$(rs_const MEDIA_MAX_REFERENCE_BYTES | tr -d '*')" != "$(ts_const REFERENCE_MAX_BYTES | tr -d '*')" ]]; then
+  err "参考图大小上限两侧不一致（功能 27 续）：media.rs='$(rs_const MEDIA_MAX_REFERENCE_BYTES)'，前端='$(ts_const REFERENCE_MAX_BYTES)'"
+fi
+# 新面板不得出现鉴权头 / 剪贴板字样（明文只经 Rust）。
+if grep -nE 'Bearer|Authorization|navigator\.clipboard' \
+  src/we2ai/StudioImagePanel.tsx src/we2ai/StudioVideoPanel.tsx src/we2ai/StudioMediaParts.tsx \
+  src/we2ai/studioMediaCommon.ts src/we2ai/studioMediaTemplates.ts >/dev/null; then
+  err "工坊图片/视频前端出现 Bearer/Authorization/navigator.clipboard（功能 27 续：明文边界）"
+fi
+# 模板里的「禁止编造」硬约束不得被删：文本 / 图片 / 视频 / AI 编译各一条。
+for needle in \
+  'src/we2ai/playgroundPrompts.ts|不得编造认证' \
+  'src/we2ai/playgroundPrompts.ts|Never invent certifications' \
+  'src/we2ai/studioMediaTemplates.ts|No text, letters, numbers, logos' \
+  'src/we2ai/studioMediaTemplates.ts|禁止出现任何字幕、水印、Logo' \
+  'src/we2ai/studioMediaTemplates.ts|never invent specifications' \
+  'src/we2ai/studioMediaTemplates.ts|不得推测或补写参数'; do
+  if ! grep -qF "${needle#*|}" "${needle%%|*}"; then
+    err "${needle%%|*}: 缺少「${needle#*|}」（功能 27 续：外贸模板的禁止编造 / 画面无文字硬约束）"
+  fi
+done
+
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${first_version})"
 fi

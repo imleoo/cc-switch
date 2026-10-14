@@ -221,7 +221,8 @@ describe("We2aiShell AI marketing studio tab (feature 27)", () => {
     expect(chat?.body.request).toMatchObject({
       keyId: 5,
       model: "gpt-marketing",
-      system: expect.stringContaining("产品文案"),
+      // 场景指令 + 统一硬约束 + 默认输出语言（英文）三段都要下发。
+      system: expect.stringMatching(/产品页文案[\s\S]*硬性约束[\s\S]*English/),
       messages: [{ role: "user", content: "智能保温杯" }],
     });
     expect(typeof chat?.body.request.requestId).toBe("string");

@@ -29,6 +29,9 @@ use super::commands_auth::We2aiApiError;
 use super::keys::We2aiKeyState;
 use super::session::{SessionIdentity, SessionManager, We2aiSessionState};
 
+/// P2/P3：图片与视频（子模块直接复用本模块私有的任务表与监督逻辑）。
+pub mod media;
+
 /// 前端增量事件名（Rust → 前端）。守卫 4.17 校验两侧一致。
 pub const PLAYGROUND_CHUNK_EVENT: &str = "we2ai-playground-chunk";
 
