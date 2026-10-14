@@ -81,6 +81,9 @@ fi
 if ! grep -qF 'repository: ${{ env.RELEASE_REPO }}' "$release_yml"; then
   err "$release_yml: softprops/action-gh-release 缺少 repository: \${{ env.RELEASE_REPO }}"
 fi
+if ! grep -qE '^[[:space:]]+make_latest:[[:space:]]*"?true"?' "$release_yml"; then
+  err "$release_yml: softprops/action-gh-release 缺少 make_latest: \"true\"（功能 4：RELEASE_REPO 的 tag 创建时间早于历史版本，不显式指定会让 releases/latest 指向旧版）"
+fi
 if [[ "$(grep -cF -- '--repo "$RELEASE_REPO"' "$release_yml")" -lt 2 ]]; then
   err "$release_yml: assemble-latest-json 的 gh release download/upload 必须带 --repo \"\$RELEASE_REPO\""
 fi

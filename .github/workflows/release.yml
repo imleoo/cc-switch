@@ -703,6 +703,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: WE2AI ${{ github.ref_name }}
           prerelease: false
+          # RELEASE_REPO 里新建的 tag 指向它自己的 main（日期早于历史版本），GitHub 默认
+          # 按创建时间判定“最新”，不显式指定会让客户端 updater 的 releases/latest 指向旧版。
+          make_latest: "true"
           body: |
             ## WE2AI ${{ github.ref_name }}
 
