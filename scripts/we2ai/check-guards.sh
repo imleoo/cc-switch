@@ -81,6 +81,10 @@ fi
 if ! grep -qF 'repository: ${{ env.RELEASE_REPO }}' "$release_yml"; then
   err "$release_yml: softprops/action-gh-release 缺少 repository: \${{ env.RELEASE_REPO }}"
 fi
+if ! grep -qE '^  preflight:' "$release_yml" || ! grep -qE '^    needs: preflight' "$release_yml" \
+  || ! grep -qF 'if: ${{ !inputs.check_only }}' "$release_yml"; then
+  err "$release_yml: 缺少 preflight 前置检查，或 release 未依赖它 / 未支持 check_only（功能 4：token 失效要在构建前就失败）"
+fi
 if ! grep -qE '^[[:space:]]+make_latest:[[:space:]]*"?true"?' "$release_yml"; then
   err "$release_yml: softprops/action-gh-release 缺少 make_latest: \"true\"（功能 4：RELEASE_REPO 的 tag 创建时间早于历史版本，不显式指定会让 releases/latest 指向旧版）"
 fi

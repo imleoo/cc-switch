@@ -3,6 +3,11 @@ name: Release
 on:
   # we2ai: 上游触发器已禁用，仅手动触发（见 自定义开发功能列表.md 功能 2）
   workflow_dispatch:
+    inputs:
+      check_only:
+        description: "只检查 RELEASE_REPO_TOKEN 能否写入发布仓库，不构建、不发布（可在任意分支上运行）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -19,7 +24,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 构建一轮要 30 分钟、消耗约 377 个计费分钟；token 缺失或过期时在这里几秒内失败，
+  # 而不是等到构建完才在发布步骤报错。写入权限用“建一个临时草稿再删除”实测，
+  # 草稿不会创建 tag，也不会被客户端看到。
+  preflight:
+    name: Check release repo access
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Require release repo token
+        shell: bash
+        env:
+          RELEASE_REPO_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_REPO_TOKEN" ]; then
+            echo "::error::缺少 secret RELEASE_REPO_TOKEN（对 ${RELEASE_REPO} 有 contents:write 的 fine-grained PAT）。" >&2
+            exit 1
+          fi
+      - name: Verify write access to the release repo
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          probe="preflight-${GITHUB_RUN_ID}"
+          id=$(gh api "repos/${RELEASE_REPO}/releases" -f tag_name="$probe" -f name="preflight ${GITHUB_RUN_ID}" -f body="temporary draft, safe to delete" -F draft=true --jq .id) || {
+            echo "::error::RELEASE_REPO_TOKEN 无法在 ${RELEASE_REPO} 创建 Release（需要 Contents: Read and write，或 token 已过期 / 仓库未授权）。" >&2
+            exit 1
+          }
+          gh api -X DELETE "repos/${RELEASE_REPO}/releases/${id}"
+          echo "OK: RELEASE_REPO_TOKEN 可写入 ${RELEASE_REPO}"
+
   release:
+    needs: preflight
+    if: ${{ !inputs.check_only }}
     runs-on: ${{ matrix.os }}
     environment: release
     env:
@@ -672,16 +711,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Require release repo token
-        shell: bash
-        env:
-          RELEASE_REPO_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
-        run: |
-          if [ -z "$RELEASE_REPO_TOKEN" ]; then
-            echo "::error::缺少 secret RELEASE_REPO_TOKEN（对 ${RELEASE_REPO} 有 contents:write 的 PAT），Release 无法发布到公开仓库。" >&2
-            exit 1
-          fi
-
       - name: Download built release artifacts
         uses: actions/download-artifact@v8
         with:
