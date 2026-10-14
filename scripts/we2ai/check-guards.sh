@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# we2ai fork 守卫检查：防止上游同步静默还原 fork 定制。
+# we2ai 守卫检查：防止误改或还原 we2ai 定制。
 # 规则来源：自定义开发功能列表.md 风险表。
-#   1. 功能 1：4 个版本文件版本号一致，主号 = main 分支主号 + 1，次/修订号不低于 main 对应值
+#   1. 功能 1：4 个版本文件版本号一致
 #   2. 功能 2：.github/workflows/*.yml 的 on: 只允许 workflow_dispatch
-#   3. 功能 4：自动更新地址/签名公钥指向 we2ai，代码里无上游发布页链接
+#   3. 功能 4：自动更新地址/签名公钥指向 we2ai，代码里无上游发布页链接；Release 发布到 updater 所在公开仓库
 #   4. 功能 24：@tauri-apps/cli ≥ 2.10.0，release.yml 保留 deb 更新分发要素
 #   5. 功能 25：登录邮箱密码仅存系统钥匙串，IPC/前端入口同步登记
 # 退出码：0 全部通过；非 0 至少一条违规（详见 stderr）
@@ -13,14 +13,11 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 source scripts/we2ai/lib.sh
 
-MAIN_REF="${MAIN_REF:-main}"
 fail=0
 err() { echo "FAIL: $*" >&2; fail=1; }
 
 # ── 1. 版本号 ────────────────────────────────────────────────
-# 主号必须 = main 主号 + 偏移；次/修订号不得低于 main（fork 独立发版可以只升修订号，
-# 如上游 3.20.4 → we2ai 4.20.5）；四个版本文件必须互相一致。
-expected="$(fork_version "$(ref_version "$MAIN_REF")")"
+# 四个版本文件必须互相一致（新仓库独立维护，不再对齐上游版本）。
 first_version=""
 for f in "${WE2AI_VERSION_FILES[@]}"; do
   v="$(read_version "$f" < "$f")"
@@ -32,10 +29,6 @@ for f in "${WE2AI_VERSION_FILES[@]}"; do
     first_version="$v"
   elif [[ "$v" != "$first_version" ]]; then
     err "$f: 版本 ${v} 与 ${WE2AI_VERSION_FILES[0]} 的 ${first_version} 不一致"
-  fi
-  lowest="$(printf '%s\n%s\n' "$expected" "$v" | sort -V | head -1)"
-  if [[ "${v%%.*}" != "${expected%%.*}" || "$lowest" != "$expected" ]]; then
-    err "$f: 版本 ${v}，期望主号 ${expected%%.*}（${MAIN_REF} 主号 +${WE2AI_MAJOR_OFFSET}）且不低于 ${expected}"
   fi
 done
 
@@ -70,6 +63,26 @@ upstream_links="$(grep -rnE 'farion1231/cc-switch/releases|dl\.ccswitch\.io' src
 if [[ -n "$upstream_links" ]]; then
   err "代码中残留上游发布页/更新地址：
 ${upstream_links}"
+fi
+
+# ── 3.2 Release 发布到 updater 所在的公开仓库 ─────────────────
+# 本仓库私有，客户端匿名拉不到私有 Release。release.yml 的 RELEASE_REPO 必须等于
+# updater.endpoints 里的仓库，且不得再用 github.repository / GITHUB_REPOSITORY /
+# GITHUB_TOKEN 把 Release 发回本仓库。
+release_yml=.github/workflows/release.yml
+endpoint_repo="$(echo "$WE2AI_UPDATER_ENDPOINT" | sed -E 's#^https://github.com/([^/]+/[^/]+)/releases/.*#\1#')"
+release_repo="$(sed -nE 's/^  RELEASE_REPO:[[:space:]]*([^[:space:]#]+).*/\1/p' "$release_yml" | head -1)"
+if [[ "$release_repo" != "$endpoint_repo" ]]; then
+  err "$release_yml: RELEASE_REPO 应为 ${endpoint_repo}（与 updater.endpoints 同仓库），实际：${release_repo:-<空>}"
+fi
+if grep -nE 'github\.repository|GITHUB_REPOSITORY|secrets\.GITHUB_TOKEN' "$release_yml" >/dev/null; then
+  err "$release_yml: 不得使用 github.repository / GITHUB_REPOSITORY / secrets.GITHUB_TOKEN（Release 必须写入 RELEASE_REPO，用 RELEASE_REPO_TOKEN）"
+fi
+if ! grep -qF 'repository: ${{ env.RELEASE_REPO }}' "$release_yml"; then
+  err "$release_yml: softprops/action-gh-release 缺少 repository: \${{ env.RELEASE_REPO }}"
+fi
+if [[ "$(grep -cF -- '--repo "$RELEASE_REPO"' "$release_yml")" -lt 2 ]]; then
+  err "$release_yml: assemble-latest-json 的 gh release download/upload 必须带 --repo \"\$RELEASE_REPO\""
 fi
 
 # ── 3.1 功能 24：Linux deb 应用内更新分发 ────────────────────
@@ -1609,6 +1622,6 @@ if ! grep -qF 'const handleSessionMaybeEnded = useCallback(' src/we2ai/We2aiShel
 fi
 
 if [[ "$fail" == 0 ]]; then
-  echo "we2ai guards: all passed (version=${expected})"
+  echo "we2ai guards: all passed (version=${first_version})"
 fi
 exit "$fail"

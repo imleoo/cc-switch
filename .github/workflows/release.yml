@@ -7,6 +7,13 @@ on:
 permissions:
   contents: write
 
+env:
+  # we2ai-client 是私有仓库，客户端 updater 匿名拉取 latest.json，读不了私有 Release。
+  # 源码留在本仓库，Release（安装包 + latest.json）发布到公开的 RELEASE_REPO，
+  # 地址必须与 tauri.conf.json 的 updater.endpoints 同仓库（守卫 3.2 校验）。
+  # 写入需要 secret RELEASE_REPO_TOKEN：对 RELEASE_REPO 有 contents:write 的 PAT。
+  RELEASE_REPO: imleoo/cc-switch
+
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: true
@@ -16,7 +23,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     environment: release
     env:
-      # we2ai: fork 仓库（imleoo/cc-switch）目前没有配置 Apple Developer ID 证书，
+      # we2ai: 本仓库目前没有配置 Apple Developer ID 证书，
       # 只有 TAURI_SIGNING_PRIVATE_KEY[/_PASSWORD]（updater 签名，与 Apple 签名/
       # 公证无关）。HAS_APPLE_CERT 决定 macOS 走完整签名+公证流程，还是内测用的
       # 临时签名（ad-hoc）+ 不公证流程，见下方各 macOS 步骤的 if 条件，以及
@@ -665,6 +672,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Require release repo token
+        shell: bash
+        env:
+          RELEASE_REPO_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_REPO_TOKEN" ]; then
+            echo "::error::缺少 secret RELEASE_REPO_TOKEN（对 ${RELEASE_REPO} 有 contents:write 的 PAT），Release 无法发布到公开仓库。" >&2
+            exit 1
+          fi
+
       - name: Download built release artifacts
         uses: actions/download-artifact@v8
         with:
@@ -681,6 +698,8 @@ jobs:
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v3
         with:
+          repository: ${{ env.RELEASE_REPO }}
+          token: ${{ secrets.RELEASE_REPO_TOKEN }}
           tag_name: ${{ github.ref_name }}
           name: WE2AI ${{ github.ref_name }}
           prerelease: false
@@ -704,8 +723,6 @@ jobs:
             ---
             ${{ secrets.APPLE_CERTIFICATE != '' && 'macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。' || '⚠️ 内测包：macOS 版本未经 Apple 公证，首次打开需在「系统设置 → 隐私与安全性」中点「仍要打开」，或执行 `xattr -dr com.apple.quarantine /Applications/WE2AI.app` 后再打开。' }}
           files: release-assets/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   assemble-latest-json:
     name: Assemble latest.json
@@ -718,19 +735,19 @@ jobs:
         run: |
           gh --version || (type -p curl >/dev/null && sudo apt-get update && sudo apt-get install -y gh || true)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
       - name: Download all release assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
         run: |
           set -euxo pipefail
           TAG="${GITHUB_REF_NAME}"
           mkdir -p dl
-          gh release download "$TAG" --dir dl --repo "$GITHUB_REPOSITORY"
+          gh release download "$TAG" --dir dl --repo "$RELEASE_REPO"
           ls -la dl || true
       - name: Generate latest.json
         env:
-          REPO: ${{ github.repository }}
+          REPO: ${{ env.RELEASE_REPO }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -825,7 +842,7 @@ jobs:
           mv "$tmp_json" latest.json
       - name: Upload latest.json to release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
         run: |
           set -euxo pipefail
-          gh release upload "$GITHUB_REF_NAME" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$GITHUB_REF_NAME" latest.json --clobber --repo "$RELEASE_REPO"
