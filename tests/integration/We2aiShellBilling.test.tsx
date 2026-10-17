@@ -186,7 +186,7 @@ describe("We2aiShell balance chip and billing tab", () => {
     const chip = await screen.findByTestId("balance-chip");
     await waitFor(() => expect(chip).toHaveTextContent("$12.48"));
     const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
-    expect(tabs).toEqual(["模型广场", "AI 营销工坊", "Key 管理", "充值", "设置"]);
+    expect(tabs).toEqual(["模型广场", "AI 营销工坊", "作品列表", "Key 管理", "充值", "设置"]);
     expect(screen.getByRole("tab", { name: "模型广场" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -252,7 +252,7 @@ describe("We2aiShell balance chip and billing tab", () => {
       within(hint).getByRole("button", { name: "官网模型广场 ↗" }),
     );
 
-    await waitFor(() => expect(opened).toEqual(["https://we2ai.com/models"]));
+    await waitFor(() => expect(opened).toEqual(["https://we2ai.com/model-square"]));
   });
 
   it("the insufficient-balance banner button opens the billing tab and runs the main recharge flow (opens /purchase, starts waiting)", async () => {

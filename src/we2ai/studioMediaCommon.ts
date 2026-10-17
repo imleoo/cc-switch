@@ -14,6 +14,7 @@ import { SESSION_ERROR_CODES } from "./studioErrors";
 
 /** 参考图大小上限（字节），与 Rust `MEDIA_MAX_REFERENCE_BYTES` 一致。 */
 export const REFERENCE_MAX_BYTES = 8 * 1024 * 1024;
+export const REFERENCE_TOTAL_MAX_BYTES = 32 * 1024 * 1024;
 
 const REFERENCE_MIMES = ["image/png", "image/jpeg", "image/webp"] as const;
 
@@ -65,13 +66,15 @@ export function utf8Bytes(text: string): number {
 
 /**
  * 加载某个 Key 下的图片 / 视频模型。序号保护乱序返回；父组件以 `key={keyId}`
- * 重挂载面板，所以这里不处理换 Key。
+ * 重挂载面板，所以这里不处理换 Key。`refreshTick` 变化时静默重拉（切回 Tab、窗口
+ * 聚焦、手动刷新）：不显示加载态，已选模型仍在列表里就保留，失败时保留旧列表。
  */
 export function useMediaModels(
   keyId: number,
   kind: "image" | "video",
   fallbackError: string,
   onSessionMaybeEnded: () => void,
+  refreshTick = 0,
 ) {
   const [models, setModels] = useState<We2aiMediaModels | null>(null);
   const [model, setModel] = useState<We2aiMediaModel | null>(null);
@@ -81,27 +84,39 @@ export function useMediaModels(
   const sessionEndedRef = useRef(onSessionMaybeEnded);
   sessionEndedRef.current = onSessionMaybeEnded;
 
-  const load = useCallback(async () => {
-    const seq = ++seqRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await we2aiApi.playgroundMediaModels(keyId, kind);
-      if (seq !== seqRef.current) return;
-      setModels(result);
-      setModel(result.models[0] ?? null);
-    } catch (e) {
-      if (seq !== seqRef.current) return;
-      setModels(null);
-      setModel(null);
-      setError(isWe2aiApiError(e) ? e.message : fallbackError);
-      if (isWe2aiApiError(e) && SESSION_ERROR_CODES.has(e.code)) {
-        sessionEndedRef.current();
+  const load = useCallback(
+    async (silent = false) => {
+      const seq = ++seqRef.current;
+      if (!silent) {
+        setLoading(true);
+        setError(null);
       }
-    } finally {
-      if (seq === seqRef.current) setLoading(false);
-    }
-  }, [keyId, kind, fallbackError]);
+      try {
+        const result = await we2aiApi.playgroundMediaModels(keyId, kind);
+        if (seq !== seqRef.current) return;
+        // 先在 try 内取出列表：更新函数在渲染阶段执行，里面抛错不会被这里捕获。
+        const list = result.models;
+        setModels(result);
+        setModel(
+          (prev) => list.find((m) => m.id === prev?.id) ?? list[0] ?? null,
+        );
+      } catch (e) {
+        if (seq !== seqRef.current) return;
+        if (!silent) {
+          setModels(null);
+          setModel(null);
+          setError(isWe2aiApiError(e) ? e.message : fallbackError);
+        }
+        if (isWe2aiApiError(e) && SESSION_ERROR_CODES.has(e.code)) {
+          sessionEndedRef.current();
+        }
+      } finally {
+        // 静默请求可能顶替了仍在加载的前台请求，收尾不按 silent 区分。
+        if (seq === seqRef.current) setLoading(false);
+      }
+    },
+    [keyId, kind, fallbackError],
+  );
 
   useEffect(() => {
     void load();
@@ -110,6 +125,13 @@ export function useMediaModels(
     };
   }, [load]);
 
+  const lastTickRef = useRef(refreshTick);
+  useEffect(() => {
+    if (refreshTick === lastTickRef.current) return;
+    lastTickRef.current = refreshTick;
+    void load(true);
+  }, [refreshTick, load]);
+
   const selectModel = useCallback(
     (id: string) => {
       setModel(models?.models.find((m) => m.id === id) ?? null);
@@ -117,7 +139,14 @@ export function useMediaModels(
     [models],
   );
 
-  return { models, model, selectModel, loading, error, reload: load };
+  return {
+    models,
+    model,
+    selectModel,
+    loading,
+    error,
+    reload: () => load(),
+  };
 }
 
 export interface CompileResult {

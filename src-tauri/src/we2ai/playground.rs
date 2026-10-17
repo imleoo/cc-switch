@@ -89,6 +89,8 @@ pub struct PlaygroundChatRequest {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub save_as_work: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -810,13 +812,32 @@ pub async fn we2ai_playground_chat(
         token: task_token,
     };
 
+    let mut work = if request.save_as_work {
+        Some(media::WorkGuard::start(
+            manager.data_root(),
+            &request.request_id,
+            "text",
+            &request.model,
+            request
+                .messages
+                .last()
+                .map(|m| m.content.as_str())
+                .unwrap_or(""),
+        )?)
+    } else {
+        None
+    };
+    let mut generated = String::new();
     let url = format!("{}/v1/chat/completions", identity.region.base_url());
     let identity_manager = manager.clone();
     let registered_identity = identity;
     let identity_ok = move || identity_manager.current_identity() == Some(registered_identity);
     let emit_app = app.clone();
     let emit_request_id = request.request_id.clone();
-    let mut on_delta = move |delta: &str| {
+    let mut on_delta = |delta: &str| {
+        if work.is_some() {
+            generated.push_str(delta);
+        }
         let _ = emit_app.emit(
             PLAYGROUND_CHUNK_EVENT,
             PlaygroundChunkPayload {
@@ -826,7 +847,7 @@ pub async fn we2ai_playground_chat(
         );
     };
 
-    run_chat_stream(
+    let outcome = run_chat_stream(
         PLAYGROUND_HTTP_CLIENT.clone(),
         &url,
         &secret,
@@ -835,7 +856,24 @@ pub async fn we2ai_playground_chat(
         &identity_ok,
         &mut on_delta,
     )
-    .await
+    .await;
+    drop(on_delta);
+    if let Some(work) = work.as_mut() {
+        match &outcome {
+            Ok(_) => {
+                let file = match work.save_text(&generated) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        work.finish(Err(&e), None)?;
+                        return Err(e);
+                    }
+                };
+                work.finish(Ok(vec![file]), Some(generated))?;
+            }
+            Err(e) => work.finish(Err(e), None)?,
+        }
+    }
+    outcome
 }
 
 #[tauri::command]
@@ -907,6 +945,7 @@ mod tests {
 
     fn request() -> PlaygroundChatRequest {
         PlaygroundChatRequest {
+            save_as_work: false,
             request_id: "req-1".to_string(),
             key_id: 7,
             model: "gpt-test".to_string(),

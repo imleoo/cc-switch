@@ -324,3 +324,101 @@ export function ReferencePicker({
     </div>
   );
 }
+
+/** Video references keep their upload order; each thumbnail can be removed separately. */
+export function VideoReferencePicker({
+  ms,
+  previews,
+  maxImages,
+  hint,
+  error,
+  onPick,
+  onRemove,
+  disabled,
+}: {
+  ms: StudioMediaStrings;
+  previews: string[];
+  maxImages: number;
+  hint: string;
+  error: string | null;
+  onPick: (files: File[]) => void;
+  onRemove: (index: number) => void;
+  disabled: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const prefix = "we2ai-studio-video";
+  return (
+    <div className="space-y-2">
+      <span className="we2ai-label">{ms.referenceLabel}</span>
+      <p
+        className={`text-xs ${MUTED}`}
+        data-testid={`${prefix}-reference-count`}
+      >
+        {formatWe2aiString(ms.referenceCount, {
+          used: previews.length,
+          max: maxImages,
+        })}
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp"
+          disabled={disabled || maxImages === 0}
+          className="hidden"
+          data-testid={`${prefix}-reference-input`}
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            if (files.length) onPick(files);
+            e.target.value = "";
+          }}
+        />
+        {previews.map((url, index) => (
+          <div key={url + index} className="flex flex-col items-center gap-1">
+            <img
+              src={url}
+              alt={`${ms.referenceLabel} ${index + 1}`}
+              className="h-20 w-20 rounded-lg border-2 border-[var(--we2ai-ink)] object-cover"
+              data-testid={`${prefix}-reference-preview`}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              className={PLAIN_BUTTON}
+              onClick={() => onRemove(index)}
+              data-testid={`${prefix}-reference-remove-${index}`}
+            >
+              <X className="h-3 w-3" />
+              {ms.referenceRemove} {index + 1}
+            </Button>
+          </div>
+        ))}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => inputRef.current?.click()}
+          disabled={disabled || previews.length >= maxImages}
+          className={PLAIN_BUTTON}
+          data-testid={`${prefix}-reference-add`}
+        >
+          <ImagePlus className="h-3.5 w-3.5" />
+          {ms.referenceAdd}
+        </Button>
+      </div>
+      <p className={`text-xs ${MUTED}`}>
+        {maxImages === 0 ? ms.referenceUnsupported : hint}
+      </p>
+      {error && (
+        <p
+          role="alert"
+          className="text-xs text-[var(--we2ai-danger,#b91c1c)]"
+          data-testid={`${prefix}-reference-error`}
+        >
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}

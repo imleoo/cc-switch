@@ -15,13 +15,14 @@ import {
   isWe2aiApiError,
   we2aiApi,
   type We2aiMediaFile,
+  type We2aiWorkKind,
   type We2aiReferenceImage,
   type We2aiVideoProgressEvent,
 } from "./api";
 import {
   FieldsForm,
   PromptEditor,
-  ReferencePicker,
+  VideoReferencePicker,
   StudioSelect,
   TemplateChips,
   studioBoxClass,
@@ -32,6 +33,7 @@ import { SESSION_ERROR_CODES, studioErrorMessage } from "./studioErrors";
 import {
   newRequestId,
   readReferenceFile,
+  REFERENCE_TOTAL_MAX_BYTES,
   useMediaModels,
   useStudioCompile,
   utf8Bytes,
@@ -59,9 +61,15 @@ interface StudioVideoPanelProps {
   language: We2aiLanguage;
   keyId: number;
   textModel: string | null;
+  /** 递增即静默重拉本面板的模型列表（切回 Tab、窗口聚焦、手动刷新）。 */
+  refreshTick?: number;
   onSessionMaybeEnded: () => void;
   onTerminal: () => void;
+  onWorkCompleted?: (kind: We2aiWorkKind) => void;
 }
+
+// Rust 下载总超时 300 秒，另留 5 秒等待 IPC 终态；不自动重新提交计费任务。
+const VIDEO_DOWNLOAD_WAIT_TIMEOUT_MS = 305_000;
 
 /** 默认时长取 10 秒（成本与五镜头结构的折中），没有 10 秒就取最长。 */
 function defaultDuration(durations: number[]): number {
@@ -79,8 +87,10 @@ export function StudioVideoPanel({
   language,
   keyId,
   textModel,
+  refreshTick = 0,
   onSessionMaybeEnded,
   onTerminal,
+  onWorkCompleted,
 }: StudioVideoPanelProps) {
   const templates = useMemo(
     () => getStudioVideoTemplates(language),
@@ -97,16 +107,32 @@ export function StudioVideoPanel({
     selectModel,
     loading,
     error: modelsError,
-  } = useMediaModels(keyId, "video", t.studioErrorNetwork, onSessionMaybeEnded);
+  } = useMediaModels(
+    keyId,
+    "video",
+    t.studioErrorNetwork,
+    onSessionMaybeEnded,
+    refreshTick,
+  );
   const caps = model?.capabilities ?? null;
   const family = model?.family ?? "grok";
 
-  const [reference, setReference] = useState<{
-    reference: We2aiReferenceImage;
-    previewUrl: string;
-  } | null>(null);
+  const [references, setReferences] = useState<
+    {
+      reference: We2aiReferenceImage;
+      previewUrl: string;
+      bytes: number;
+    }[]
+  >([]);
   const [referenceError, setReferenceError] = useState<string | null>(null);
-  const effectiveReference = caps?.supportsReference ? reference : null;
+  const [readingReferences, setReadingReferences] = useState(false);
+  const referenceReadRef = useRef(0);
+  const readingRef = useRef(false);
+  const [referencePromptChanged, setReferencePromptChanged] = useState(false);
+  const maxReferences = caps?.supportsReference
+    ? (caps.maxReferenceImages ?? 1)
+    : 0;
+  const referencesOverLimit = references.length > maxReferences;
 
   const [overrides, setOverrides] = useState<{
     duration?: number;
@@ -129,9 +155,17 @@ export function StudioVideoPanel({
       buildVideoPrompt(template.id, values, {
         lang: promptLang,
         duration,
-        hasReference: effectiveReference !== null,
+        referenceCount: references.length,
+        firstFrame: maxReferences === 1,
       }),
-    [template.id, values, promptLang, duration, effectiveReference],
+    [
+      template.id,
+      values,
+      promptLang,
+      duration,
+      references.length,
+      maxReferences,
+    ],
   );
   const [prompt, setPrompt] = useState(autoPrompt);
   const [dirty, setDirty] = useState(false);
@@ -143,14 +177,28 @@ export function StudioVideoPanel({
   const [progress, setProgress] = useState<We2aiVideoProgressEvent | null>(
     null,
   );
+  const [elapsedSecs, setElapsedSecs] = useState(0);
+  const progressClockRef = useRef({ updatedAt: 0, elapsedSecs: 0 });
+  const downloadStartedAtRef = useRef<number | null>(null);
   const [video, setVideo] = useState<We2aiMediaFile | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const activeRef = useRef<string | null>(null);
 
+  const finishRequest = useCallback(
+    (requestId: string) => {
+      if (activeRef.current !== requestId) return;
+      activeRef.current = null;
+      setGenerating(false);
+      setProgress(null);
+      onTerminal();
+    },
+    [onTerminal],
+  );
+
   const { compiling, compile } = useStudioCompile(keyId, textModel);
-  const busy = generating || compiling;
+  const busy = generating || compiling || readingReferences;
   const missing = missingRequiredFields(template.fields, values);
   const promptBytes = utf8Bytes(prompt);
   const isGrok = family === "grok";
@@ -162,15 +210,42 @@ export function StudioVideoPanel({
     model !== null &&
     prompt.trim() !== "" &&
     missing.length === 0 &&
-    !promptOverLimit;
+    !promptOverLimit &&
+    !referencesOverLimit;
 
   useEffect(
     () => () => {
+      referenceReadRef.current += 1;
       const id = activeRef.current;
+      activeRef.current = null;
       if (id) void we2aiApi.playgroundCancel(id).catch(() => {});
     },
     [],
   );
+
+  // 下载等待响应头/数据期间也持续计时，避免停在最后一条事件的秒数。
+  useEffect(() => {
+    if (!generating) return;
+    const timer = window.setInterval(() => {
+      const id = activeRef.current;
+      if (!id) return;
+      const started = downloadStartedAtRef.current;
+      if (
+        started !== null &&
+        Date.now() - started >= VIDEO_DOWNLOAD_WAIT_TIMEOUT_MS
+      ) {
+        void we2aiApi.playgroundCancel(id).catch(() => {});
+        setError(ms.videoDownloadTimeout);
+        finishRequest(id);
+        return;
+      }
+      const clock = progressClockRef.current;
+      setElapsedSecs(
+        clock.elapsedSecs + Math.floor((Date.now() - clock.updatedAt) / 1000),
+      );
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [generating, finishRequest, ms.videoDownloadTimeout]);
 
   // 进度事件：只认当前请求。
   useEffect(() => {
@@ -178,7 +253,19 @@ export function StudioVideoPanel({
     let cancelled = false;
     void we2aiApi
       .onPlaygroundProgress((event) => {
-        if (event.requestId === activeRef.current) setProgress(event);
+        if (event.requestId !== activeRef.current) return;
+        if (
+          (event.stage === "downloading" || event.stage === "saving") &&
+          downloadStartedAtRef.current === null
+        ) {
+          downloadStartedAtRef.current = Date.now();
+        }
+        progressClockRef.current = {
+          updatedAt: Date.now(),
+          elapsedSecs: event.elapsedSecs,
+        };
+        setElapsedSecs(event.elapsedSecs);
+        setProgress(event);
       })
       .then((fn) => {
         if (cancelled) fn();
@@ -204,34 +291,77 @@ export function StudioVideoPanel({
   );
 
   const handleSelectModel = (id: string) => {
+    if (dirty && references.length > 0) setReferencePromptChanged(true);
     selectModel(id);
     setOverrides({});
     setReferenceError(null);
   };
 
-  const handlePickReference = async (file: File) => {
+  const handlePickReferences = async (files: File[]) => {
+    if (busy || readingRef.current) return;
     setReferenceError(null);
-    const result = await readReferenceFile(file);
-    if (!result.ok) {
+    if (references.length + files.length > maxReferences) {
       setReferenceError(
-        result.reason === "type"
-          ? ms.referenceBadType
-          : result.reason === "size"
-            ? ms.referenceTooLarge
-            : ms.errorMediaInvalid,
+        formatWe2aiString(ms.referenceCountExceeded, { max: maxReferences }),
       );
       return;
     }
-    setReference({
-      reference: result.reference,
-      previewUrl: result.previewUrl,
-    });
+    if (
+      references.reduce((sum, image) => sum + image.bytes, 0) +
+        files.reduce((sum, file) => sum + file.size, 0) >
+      REFERENCE_TOTAL_MAX_BYTES
+    ) {
+      setReferenceError(ms.referenceTotalTooLarge);
+      return;
+    }
+    const seq = ++referenceReadRef.current;
+    readingRef.current = true;
+    setReadingReferences(true);
+    try {
+      const added: typeof references = [];
+      // Read sequentially to keep order and bound peak allocation.
+      for (const file of files) {
+        const result = await readReferenceFile(file);
+        if (seq !== referenceReadRef.current) return;
+        if (!result.ok) {
+          setReferenceError(
+            result.reason === "type"
+              ? ms.referenceBadType
+              : result.reason === "size"
+                ? ms.referenceTooLarge
+                : ms.errorMediaInvalid,
+          );
+          return;
+        }
+        added.push({
+          reference: result.reference,
+          previewUrl: result.previewUrl,
+          bytes: file.size,
+        });
+      }
+      setReferences((previous) => [...previous, ...added]);
+      if (dirty) setReferencePromptChanged(true);
+    } finally {
+      if (seq === referenceReadRef.current) {
+        readingRef.current = false;
+        setReadingReferences(false);
+      }
+    }
+  };
+
+  const handleRemoveReference = (index: number) => {
+    setReferences((previous) => previous.filter((_, i) => i !== index));
+    setReferenceError(null);
+    if (dirty) setReferencePromptChanged(true);
   };
 
   const handleGenerate = async () => {
-    if (!canGenerate || !model) return;
+    if (!canGenerate || !model || readingRef.current) return;
     const requestId = newRequestId();
     activeRef.current = requestId;
+    downloadStartedAtRef.current = null;
+    progressClockRef.current = { updatedAt: Date.now(), elapsedSecs: 0 };
+    setElapsedSecs(0);
     setGenerating(true);
     setProgress(null);
     setError(null);
@@ -247,26 +377,26 @@ export function StudioVideoPanel({
         aspectRatio: aspectRatio || undefined,
         resolution: resolution || undefined,
         generateAudio: model.capabilities.supportsAudio ? audio : undefined,
-        reference: effectiveReference?.reference,
+        references: references.map((image) => image.reference),
       });
       if (activeRef.current !== requestId) return;
       setVideo(outcome.video);
+      onWorkCompleted?.("video");
     } catch (e) {
       if (activeRef.current !== requestId) return;
       showError(e);
     } finally {
-      if (activeRef.current === requestId) {
-        activeRef.current = null;
-        setGenerating(false);
-        setProgress(null);
-      }
-      onTerminal();
+      finishRequest(requestId);
     }
   };
 
   const handleStop = () => {
     const id = activeRef.current;
-    if (id) void we2aiApi.playgroundCancel(id);
+    if (id) {
+      void we2aiApi.playgroundCancel(id).catch(() => {});
+      setNotice(ms.videoWaitStopped);
+      finishRequest(id);
+    }
   };
 
   const handleOptimize = async () => {
@@ -317,11 +447,13 @@ export function StudioVideoPanel({
   };
 
   const stageLabel =
-    progress?.stage === "downloading"
-      ? ms.videoStageDownloading
-      : progress?.stage === "running"
-        ? ms.videoStageRunning
-        : ms.videoStageSubmitted;
+    progress?.stage === "saving"
+      ? ms.videoStageSaving
+      : progress?.stage === "downloading"
+        ? ms.videoStageDownloading
+        : progress?.stage === "running"
+          ? ms.videoStageRunning
+          : ms.videoStageSubmitted;
 
   return (
     <div
@@ -391,21 +523,31 @@ export function StudioVideoPanel({
         />
       </section>
 
-      <ReferencePicker
+      <VideoReferencePicker
         ms={ms}
-        supported={caps?.supportsReference ?? false}
-        previewUrl={reference?.previewUrl ?? null}
-        hint={
+        previews={references.map((image) => image.previewUrl)}
+        maxImages={maxReferences}
+        hint={`${maxReferences === 1 ? ms.referenceHintFirstFrame : ms.referenceHintVideo}${
           caps && caps.minReferenceSide > 0
-            ? `${ms.referenceHintVideo}；${formatWe2aiString(ms.referenceMinSide, { n: caps.minReferenceSide })}`
-            : ms.referenceHintVideo
+            ? `; ${formatWe2aiString(ms.referenceMinSide, { n: caps.minReferenceSide })}`
+            : ""
+        }`}
+        error={
+          referencesOverLimit
+            ? formatWe2aiString(ms.referenceCountExceeded, {
+                max: maxReferences,
+              })
+            : referenceError
         }
-        error={referenceError}
-        onPick={(file) => void handlePickReference(file)}
-        onClear={() => setReference(null)}
+        onPick={(files) => void handlePickReferences(files)}
+        onRemove={handleRemoveReference}
         disabled={busy}
-        testPrefix="we2ai-studio-video"
       />
+      {referencePromptChanged && (
+        <p className={`text-xs ${studioMutedClass}`} role="status">
+          {ms.referencePromptChanged}
+        </p>
+      )}
 
       <PromptEditor
         ms={ms}
@@ -417,12 +559,13 @@ export function StudioVideoPanel({
         dirty={dirty}
         onReset={() => {
           setDirty(false);
+          setReferencePromptChanged(false);
           setPrompt(autoPrompt);
         }}
         onOptimize={() => void handleOptimize()}
         optimizing={compiling}
         canOptimize={textModel !== null}
-        disabled={generating}
+        disabled={generating || readingReferences}
         byteLimit={isGrok ? GROK_VIDEO_PROMPT_MAX_BYTES : undefined}
         byteCount={isGrok ? promptBytes : undefined}
         testPrefix="we2ai-studio-video"
@@ -514,9 +657,7 @@ export function StudioVideoPanel({
           <span className="text-xs" data-testid="we2ai-studio-video-progress">
             {stageLabel}
             {progress?.progress != null ? ` ${progress.progress}%` : ""}
-            {progress
-              ? ` · ${formatWe2aiString(ms.videoElapsed, { secs: progress.elapsedSecs })}`
-              : ""}
+            {` · ${formatWe2aiString(ms.videoElapsed, { secs: elapsedSecs })}`}
           </span>
         )}
         {!generating && missing.length > 0 && (

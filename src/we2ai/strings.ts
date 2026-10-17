@@ -11,6 +11,7 @@ export type We2aiLanguage = "zh" | "en";
 export interface We2aiStrings {
   brand: string;
   navMarketplace: string;
+  navWorks: string;
   navSettings: string;
   marketplaceTitle: string;
   marketplaceDescription: string;
@@ -133,6 +134,7 @@ export interface We2aiStrings {
   navStudio: string;
   studioTitle: string;
   studioDescription: string;
+  studioCopywritingHint: string;
   studioModelLabel: string;
   studioModelPlaceholder: string;
   studioModelsEmpty: string;
@@ -426,10 +428,11 @@ export interface We2aiStrings {
 const zh: We2aiStrings = {
   brand: "WE2AI",
   navMarketplace: "模型广场",
+  navWorks: "作品列表",
   navSettings: "设置",
   marketplaceTitle: "模型广场",
   marketplaceDescription: "选择 Key 后查看它可用的模型，以及每个模型支持的工具",
-  marketplaceMediaHint: "生图、生视频等非文本模型不在此列出，请登录官网查看。",
+  marketplaceMediaHint: "生图、生视频等非文本模型不在此列出，请登录官网或者去 AI 营销工坊查看。",
   marketplaceMediaLink: "官网模型广场 ↗",
   keyLabel: "Key",
   keyPlaceholder: "选择一个 Key",
@@ -535,7 +538,9 @@ const zh: We2aiStrings = {
   // AI 营销工坊（功能 27）
   navStudio: "AI 营销工坊",
   studioTitle: "AI 营销工坊",
-  studioDescription: "在客户端直接生成营销文案：选一个 Key，挑一个场景，开聊。",
+  studioDescription: "选择 Key 和场景，生成营销图片与视频。",
+  studioCopywritingHint:
+    "文案生成请使用 Codex 或 WorkBuddy；本工坊提供图片和视频生成。",
   studioModelLabel: "模型",
   studioModelPlaceholder: "选择模型",
   studioModelsEmpty: "该 Key 暂无可用的文本模型",
@@ -554,7 +559,8 @@ const zh: We2aiStrings = {
   studioUsageTokens: "{total} tokens",
   studioStoppedPartial: "已停止，保留已生成的部分",
   studioErrorKeyNotFound: "所选 Key 不在当前列表中，请刷新后重新选择",
-  studioErrorKeyInactive: "该 Key 当前不可用（额度耗尽或已停用），请选择其他 Key",
+  studioErrorKeyInactive:
+    "该 Key 当前不可用（额度耗尽或已停用），请选择其他 Key",
   studioErrorKeyInvalid: "所选 Key 已失效或已被删除，请重新选择",
   studioErrorQuota: "Key 额度已用完，请充值或更换 Key",
   studioErrorRateLimited: "请求过于频繁，请稍后重试",
@@ -821,12 +827,13 @@ const zh: We2aiStrings = {
 const en: We2aiStrings = {
   brand: "WE2AI",
   navMarketplace: "Model Marketplace",
+  navWorks: "Works list",
   navSettings: "Settings",
   marketplaceTitle: "Model Marketplace",
   marketplaceDescription:
     "Pick a key to see the models it can use and the tools each model supports",
   marketplaceMediaHint:
-    "Image, video and other non-text models are not listed here; sign in on the website to see them.",
+    "Image, video and other non-text models are not listed here. Sign in on the website or open AI Marketing Studio to see them.",
   marketplaceMediaLink: "Website models ↗",
   keyLabel: "Key",
   keyPlaceholder: "Select a key",
@@ -944,7 +951,9 @@ const en: We2aiStrings = {
   navStudio: "AI Marketing Studio",
   studioTitle: "AI Marketing Studio",
   studioDescription:
-    "Draft marketing copy right inside the app: pick a key, choose a scenario, and start.",
+    "Choose a key and scenario to generate marketing images and videos.",
+  studioCopywritingHint:
+    "Use Codex or WorkBuddy to generate copy. This studio creates images and videos.",
   studioModelLabel: "Model",
   studioModelPlaceholder: "Select a model",
   studioModelsEmpty: "No text models available for this key",
@@ -989,7 +998,8 @@ const en: We2aiStrings = {
   tabPhoneLogin: "Phone",
   emailLabel: "Email",
   passwordLabel: "Password",
-  rememberLoginCredentials: "Remember email and password (stored in system keychain)",
+  rememberLoginCredentials:
+    "Remember email and password (stored in system keychain)",
   loginCredentialsLoadFailed:
     "Couldn't read saved account details from the system keychain",
   loginCredentialsSaveFailed:

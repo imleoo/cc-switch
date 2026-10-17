@@ -32,6 +32,8 @@ import { LoginPage, notifyLogoutOutcome } from "./LoginPage";
 import { ModelSquarePage } from "./ModelSquarePage";
 import { PlaygroundPage } from "./PlaygroundPage";
 import { ToolStatusBar } from "./ToolStatusBar";
+import { WorksPage } from "./WorksPage";
+import { getStudioMediaStrings } from "./studioMediaStrings";
 import {
   getWe2aiStrings,
   formatWe2aiString,
@@ -66,7 +68,13 @@ import {
 } from "@/components/ui/dialog";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
-type ShellTab = "marketplace" | "studio" | "keys" | "billing" | "settings";
+type ShellTab =
+  | "marketplace"
+  | "studio"
+  | "works"
+  | "keys"
+  | "billing"
+  | "settings";
 
 /** 网络类错误码：不代表会话状态变化（与模型广场、公告一致）。 */
 const NETWORK_ERROR_CODES = new Set(["TRANSIENT", "NETWORK_ERROR"]);
@@ -504,7 +512,7 @@ export function We2aiShell() {
   const handleOpenWebModels = async () => {
     try {
       const { webUrl } = await we2aiApi.gatewayInfo();
-      await settingsApi.openExternal(`${webUrl}/models`);
+      await settingsApi.openExternal(`${webUrl}/model-square`);
     } catch {
       toast.error(t.billingOpenFailed);
     }
@@ -602,6 +610,7 @@ export function We2aiShell() {
   // 到账检测成功时递增，通知模型广场重拉模型与 Key 准入状态（「余额不足」提示条
   // 随之消失）。用 prop 传递，不走全局事件。
   const [balanceArrivedTick, setBalanceArrivedTick] = useState(0);
+  const [worksRefreshTick, setWorksRefreshTick] = useState(0);
   const handleBalanceArrived = useCallback(
     () => setBalanceArrivedTick((n) => n + 1),
     [],
@@ -620,18 +629,34 @@ export function We2aiShell() {
     [refreshToolStatus],
   );
   /** 工坊每轮终态（成功/失败/取消）后刷新余额（方案第 5.1 节）。 */
-  const handleTerminal = useCallback(
-    () => void refreshBalance(),
-    [refreshBalance],
-  );
+  const handleTerminal = useCallback(() => {
+    void refreshBalance();
+    setWorksRefreshTick((n) => n + 1);
+  }, [refreshBalance]);
 
   const [activeTab, setActiveTab] = useState<ShellTab>("marketplace");
+  const [workReady, setWorkReady] = useState(false);
+  const handleWorkCompleted = useCallback(() => {
+    setWorkReady(true);
+    const ms = getStudioMediaStrings(language);
+    toast.success(ms.worksCompleteNotice, {
+      duration: 10000,
+      action: {
+        label: ms.worksView,
+        onClick: () => {
+          setActiveTab("works");
+          setWorkReady(false);
+        },
+      },
+    });
+  }, [language]);
   // 模型广场「余额不足」提示条的「去充值」：切到充值 Tab 并让 BillingPage 直接走
   // 主按钮的流程（设计 4.1）。用 prop 传递的一次性计数，不走全局事件。
   const [billingLaunchTick, setBillingLaunchTick] = useState(0);
   const handleTabChange = useCallback(
     (value: string) => {
       setActiveTab(value as ShellTab);
+      if (value === "works") setWorkReady(false);
       if (value === "billing") void refreshBalance();
     },
     [refreshBalance],
@@ -658,6 +683,7 @@ export function We2aiShell() {
     balanceInflight.current = null;
     setBalance(null);
     setActiveTab("marketplace");
+    setWorkReady(false);
     setCreateKeyRequested(false);
     if (loggedInIdentity) void refreshBalance();
   }, [loggedInIdentity, refreshBalance]);
@@ -768,12 +794,16 @@ export function We2aiShell() {
   }
 
   return (
-    <div className="we2ai-theme fixed inset-0 flex flex-col">
+    <Tabs
+      value={activeTab}
+      onValueChange={handleTabChange}
+      className="we2ai-theme fixed inset-0 flex flex-col"
+    >
       <header
-        className={`flex h-14 shrink-0 items-center justify-between border-b-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] pr-4 ${macDragPadding}`}
+        className={`flex h-14 shrink-0 items-center justify-between gap-3 border-b-[2.5px] border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] pr-4 ${macDragPadding}`}
         data-tauri-drag-region
       >
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
           <span className="we2ai-heading flex items-center gap-2 text-base">
             <img
               src={we2aiLogo}
@@ -783,6 +813,59 @@ export function We2aiShell() {
             />
             {t.brand}
           </span>
+        </div>
+        <nav className="min-w-0 flex-1 overflow-x-auto">
+          <TabsList className="w-max rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
+            <TabsTrigger
+              value="marketplace"
+              className="we2ai-label min-w-0 rounded-none px-3 border-0 data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navMarketplace}
+            </TabsTrigger>
+            <TabsTrigger
+              value="studio"
+              className="we2ai-label min-w-0 rounded-none px-3 border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navStudio}
+            </TabsTrigger>
+            <TabsTrigger
+              value="works"
+              className="we2ai-label min-w-0 rounded-none px-3 border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navWorks}
+            </TabsTrigger>
+            <TabsTrigger
+              value="keys"
+              className="we2ai-label min-w-0 rounded-none px-3 border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navKeys}
+            </TabsTrigger>
+            <TabsTrigger
+              value="billing"
+              className="we2ai-label min-w-0 rounded-none px-3 border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navBilling}
+            </TabsTrigger>
+            <TabsTrigger
+              value="settings"
+              className="we2ai-label min-w-0 rounded-none px-3 border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
+            >
+              {t.navSettings}
+            </TabsTrigger>
+          </TabsList>
+        </nav>
+        <div
+          className="flex shrink-0 items-center gap-3"
+          style={{ WebkitAppRegion: "no-drag" } as any}
+        >
+          {session.emailMasked && (
+            <span
+              className="we2ai-label max-w-32 truncate xl:max-w-64"
+              title={session.emailMasked}
+            >
+              {formatWe2aiString(t.loggedInAs, { email: session.emailMasked })}
+            </span>
+          )}
           <button
             type="button"
             data-testid="balance-chip"
@@ -804,16 +887,6 @@ export function We2aiShell() {
           >
             {balance ? formatWe2aiUsd(balance.balance) : "—"}
           </button>
-        </div>
-        <div
-          className="flex items-center gap-3"
-          style={{ WebkitAppRegion: "no-drag" } as any}
-        >
-          {session.emailMasked && (
-            <span className="we2ai-label">
-              {formatWe2aiString(t.loggedInAs, { email: session.emailMasked })}
-            </span>
-          )}
           {/* 以会话身份作 key：换账号或换区域后整体重建，不沿用上个会话的公告。 */}
           <AnnouncementCenter
             key={loggedInIdentity ?? ""}
@@ -949,45 +1022,27 @@ export function We2aiShell() {
         </div>
       )}
 
-      <div className="we2ai-scroll flex-1 overflow-y-auto p-6">
-        <Tabs
-          value={activeTab}
-          onValueChange={handleTabChange}
-          className="w-full"
+      {workReady && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-4 border-b-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper-2)] px-6 py-2 text-sm"
+          data-testid="we2ai-work-ready"
         >
-          <TabsList className="rounded-none border-2 border-[var(--we2ai-ink)] bg-[var(--we2ai-paper)] p-0">
-            <TabsTrigger
-              value="marketplace"
-              className="we2ai-label rounded-none border-0 data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
-            >
-              {t.navMarketplace}
-            </TabsTrigger>
-            <TabsTrigger
-              value="studio"
-              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
-            >
-              {t.navStudio}
-            </TabsTrigger>
-            <TabsTrigger
-              value="keys"
-              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
-            >
-              {t.navKeys}
-            </TabsTrigger>
-            <TabsTrigger
-              value="billing"
-              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
-            >
-              {t.navBilling}
-            </TabsTrigger>
-            <TabsTrigger
-              value="settings"
-              className="we2ai-label rounded-none border-0 border-l-2 border-[var(--we2ai-ink)] data-[state=active]:bg-[var(--we2ai-ink)] data-[state=active]:text-[var(--we2ai-paper)] data-[state=active]:shadow-none data-[state=inactive]:bg-transparent data-[state=inactive]:text-[var(--we2ai-ink)] data-[state=inactive]:opacity-100 data-[state=inactive]:hover:bg-[var(--we2ai-paper-2)]"
-            >
-              {t.navSettings}
-            </TabsTrigger>
-          </TabsList>
-
+          <span>{getStudioMediaStrings(language).worksCompleteNotice}</span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setActiveTab("works");
+              setWorkReady(false);
+            }}
+          >
+            {getStudioMediaStrings(language).worksView}
+          </Button>
+        </div>
+      )}
+      <div className="we2ai-scroll min-h-0 flex-1 overflow-y-auto p-6">
+        <div className="flex min-h-full w-full flex-col">
           <TabsContent value="marketplace">
             <Card className="we2ai-panel">
               <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
@@ -1027,6 +1082,14 @@ export function We2aiShell() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="works">
+            <WorksPage
+              t={t}
+              language={language}
+              refreshTick={worksRefreshTick}
+            />
+          </TabsContent>
+
           <TabsContent value="keys">
             <Card className="we2ai-panel">
               <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
@@ -1057,10 +1120,10 @@ export function We2aiShell() {
           <TabsContent
             value="studio"
             forceMount
-            className="data-[state=inactive]:hidden"
+            className="mt-0 flex flex-1 flex-col data-[state=inactive]:hidden"
           >
-            <Card className="we2ai-panel">
-              <CardHeader className="border-b-2 border-[var(--we2ai-ink)]">
+            <Card className="we2ai-panel flex flex-1 flex-col">
+              <CardHeader className="shrink-0 border-b-2 border-[var(--we2ai-ink)]">
                 <CardTitle className="we2ai-heading text-xl">
                   {t.studioTitle}
                 </CardTitle>
@@ -1068,13 +1131,15 @@ export function We2aiShell() {
                   {t.studioDescription}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="pt-6">
+              <CardContent className="flex flex-1 pt-6">
                 <PlaygroundPage
                   key={loggedInIdentity ?? ""}
                   t={t}
                   language={language}
+                  active={activeTab === "studio"}
                   onSessionMaybeEnded={handleSessionMaybeEnded}
                   onTerminal={handleTerminal}
+                  onWorkCompleted={handleWorkCompleted}
                 />
               </CardContent>
             </Card>
@@ -1253,9 +1318,9 @@ export function We2aiShell() {
               </CardContent>
             </Card>
           </TabsContent>
-        </Tabs>
+        </div>
       </div>
-    </div>
+    </Tabs>
   );
 }
 

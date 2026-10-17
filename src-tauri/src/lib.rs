@@ -494,6 +494,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(window_state_flags())
+                // 主窗口每次启动都使用配置中的最大化状态，避免旧尺寸覆盖。
+                .skip_initial_state("main")
                 .build(),
         )
         .setup(|app| {
@@ -1565,6 +1567,8 @@ pub fn run() {
                 we2ai::playground::media::we2ai_playground_media_models,
                 we2ai::playground::media::we2ai_playground_image,
                 we2ai::playground::media::we2ai_playground_video,
+                we2ai::playground::media::works::we2ai_playground_media_list,
+                we2ai::playground::media::works::we2ai_playground_work_update,
                 we2ai::playground::media::we2ai_playground_media_save_as,
                 we2ai::playground::media::we2ai_playground_media_open,
                 we2ai::key_manage::we2ai_manage_list_keys,

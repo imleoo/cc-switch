@@ -32,6 +32,36 @@ for f in "${WE2AI_VERSION_FILES[@]}"; do
   fi
 done
 
+# 功能 23：各入口默认最大化，主窗口不恢复上次保存的小尺寸。
+for window_conf in src-tauri/tauri.conf.json src-tauri/tauri.dev.conf.json src-tauri/tauri.windows.conf.json; do
+  if ! node -e 'const c=require(process.argv[1]);const w=c.app?.windows?.find(w=>w.label==="main");process.exit(w?.maximized===true && w.fullscreen===false ? 0 : 1)' "$PWD/$window_conf"; then
+    err "$window_conf: 主窗口必须 maximized=true、fullscreen=false（功能 23：启动默认最大化）"
+  fi
+done
+if ! grep -qF '.skip_initial_state("main")' src-tauri/src/lib.rs; then
+  err "src-tauri/src/lib.rs: 主窗口必须跳过旧窗口状态恢复（功能 23：避免保存的小尺寸覆盖默认最大化）"
+fi
+
+# 功能 13：Logo 与导航同在顶栏；邮箱 → 余额 → 通知，整体位于内容滚动区之外。
+if ! node --input-type=module <<'JS'
+import { readFileSync } from 'node:fs';
+const shell = readFileSync('src/we2ai/We2aiShell.tsx', 'utf8');
+const header = shell.indexOf('<header');
+const logo = shell.indexOf('src={we2aiLogo}', header);
+const nav = shell.indexOf('<nav ');
+const navEnd = shell.indexOf('</nav>', nav);
+const email = shell.indexOf('{session.emailMasked &&', navEnd);
+const balance = shell.indexOf('data-testid="balance-chip"');
+const notifications = shell.indexOf('<AnnouncementCenter');
+const headerEnd = shell.indexOf('</header>', header);
+const status = shell.indexOf('<ToolStatusBar');
+const scroll = shell.indexOf('className="we2ai-scroll min-h-0 flex-1 overflow-y-auto p-6"');
+process.exit(header >= 0 && logo > header && nav > logo && navEnd > nav && email > navEnd && balance > email && notifications > balance && headerEnd > notifications && status > headerEnd && scroll > status ? 0 : 1);
+JS
+then
+  err "src/we2ai/We2aiShell.tsx: 顶栏应为 Logo → 导航 → 邮箱 → 余额 → 通知，下方是状态栏与独立内容滚动容器（功能 13）"
+fi
+
 # ── 2. workflow 仅手动触发 ────────────────────────────────────
 for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
   [[ -f "$wf" ]] || continue
@@ -1694,6 +1724,15 @@ if grep -nE 'Bearer|Authorization|navigator\.clipboard' \
   src/we2ai/studioMediaCommon.ts src/we2ai/studioMediaTemplates.ts >/dev/null; then
   err "工坊图片/视频前端出现 Bearer/Authorization/navigator.clipboard（功能 27 续：明文边界）"
 fi
+# 工坊常驻挂载（forceMount），服务端改了 Key 列表客户端收不到事件：外壳必须把“是否激活”
+# 传下去，页面据此在切回 Tab / 窗口聚焦时静默重拉（行为由 PlaygroundRefresh.test.tsx 与
+# We2aiShellPlayground.test.tsx 覆盖，这里只拦最易被误删的接线）。
+if ! grep -qF 'active={activeTab === "studio"}' src/we2ai/We2aiShell.tsx; then
+  err "src/we2ai/We2aiShell.tsx: 未把 active={activeTab === \"studio\"} 传给 PlaygroundPage（功能 27：工坊常驻挂载，切回 Tab 必须靠它触发刷新）"
+fi
+if ! grep -qF 'FOCUS_REFRESH_MIN_INTERVAL_MS' src/we2ai/PlaygroundPage.tsx; then
+  err "src/we2ai/PlaygroundPage.tsx: 缺少窗口聚焦刷新的节流常量（功能 27）"
+fi
 # 模板里的「禁止编造」硬约束不得被删：文本 / 图片 / 视频 / AI 编译各一条。
 for needle in \
   'src/we2ai/playgroundPrompts.ts|不得编造认证' \
@@ -1706,6 +1745,92 @@ for needle in \
     err "${needle%%|*}: 缺少「${needle#*|}」（功能 27 续：外贸模板的禁止编造 / 画面无文字硬约束）"
   fi
 done
+
+# 功能 27：工坊只提供图片 / 视频，默认显示视频，并引导外部工具生成文案。
+if ! grep -qF 'useState<"image" | "video">("video")' src/we2ai/PlaygroundPage.tsx; then
+  err "src/we2ai/PlaygroundPage.tsx: 工坊必须默认选中视频模式（功能 27）"
+fi
+for layout in \
+  'src/we2ai/We2aiShell.tsx|flex min-h-full w-full flex-col' \
+  'src/we2ai/We2aiShell.tsx|we2ai-panel flex flex-1 flex-col' \
+  'src/we2ai/PlaygroundPage.tsx|grid flex-1 gap-4' \
+  'src/we2ai/PlaygroundPage.tsx|flex min-w-0 flex-col gap-3'; do
+  if ! grep -qF "${layout#*|}" "${layout%%|*}"; then
+    err "${layout%%|*}: 工坊缺少高度伸展布局 ${layout#*|}（功能 27）"
+  fi
+done
+
+if grep -qE 'playgroundChat|onPlaygroundChunk|studio-mode-text|studio-text-mode' src/we2ai/PlaygroundPage.tsx; then
+  err "src/we2ai/PlaygroundPage.tsx: 不得恢复文本对话入口或文本流订阅（功能 27）"
+fi
+if ! grep -qF 't.studioCopywritingHint' src/we2ai/PlaygroundPage.tsx; then
+  err "工坊缺少 Codex / WorkBuddy 文案生成提示（功能 27）"
+fi
+# 视频下载必须报告真实字节进度，并在前端持续计时。
+if ! grep -qF 'read_capped_with_progress(response, MEDIA_MAX_VIDEO_BYTES, &mut on_bytes)' src-tauri/src/we2ai/playground/media.rs; then
+  err "视频下载缺少真实字节进度接线（功能 27）"
+fi
+if ! grep -qF 'progressClockRef.current' src/we2ai/StudioVideoPanel.tsx; then
+  err "视频面板缺少持续计时（功能 27）"
+fi
+
+if ! grep -qF 'tokio::time::timeout(timing.download_timeout, download)' src-tauri/src/we2ai/playground/media.rs; then
+  err "视频下载缺少独立总超时（功能 27）"
+fi
+if ! grep -qF 'VIDEO_DOWNLOAD_WAIT_TIMEOUT_MS = 305_000' src/we2ai/StudioVideoPanel.tsx; then
+  err "视频前端缺少 IPC 终态等待上限（功能 27）"
+fi
+
+# 功能 28：本机作品入口与列表 IPC 不得脱接。
+for needle in \
+  'src-tauri/src/lib.rs|we2ai::playground::media::works::we2ai_playground_media_list' \
+  'src/we2ai/api.ts|invoke("we2ai_playground_media_list")' \
+  'src/we2ai/We2aiShell.tsx|<TabsContent value="works">' \
+  'src/we2ai/We2aiShell.tsx|setWorksRefreshTick((n) => n + 1)' \
+  'src/we2ai/WorksPage.tsx|we2aiApi.playgroundMediaList()' \
+  'src-tauri/src/lib.rs|media::works::we2ai_playground_work_update' \
+  'src-tauri/src/we2ai/playground.rs|request.save_as_work' \
+  'src-tauri/src/we2ai/playground/media.rs|WorkGuard::start' \
+  'src/we2ai/StudioVideoPanel.tsx|onWorkCompleted?.("video")' \
+  'src/we2ai/We2aiShell.tsx|onWorkCompleted={handleWorkCompleted}' \
+  'src/we2ai/strings.ts|navWorks: "作品列表"'; do
+  if ! grep -qF "${needle#*|}" "${needle%%|*}"; then
+    err "${needle%%|*}: 缺少作品接线 ${needle#*|}（功能 28）"
+  fi
+done
+
+if ! grep -qF '生图、生视频等非文本模型不在此列出，请登录官网或者去 AI 营销工坊查看。' src/we2ai/strings.ts; then
+  err "模型广场缺少官网 / AI 营销工坊的非文本模型说明"
+fi
+
+if ! grep -qF '`${webUrl}/model-square`' src/we2ai/We2aiShell.tsx; then
+  err "官网模型广场链接必须使用 /model-square 路径"
+fi
+
+if grep -qE 'worksText|worksCopy|navigator\.clipboard' src/we2ai/WorksPage.tsx; then
+  err "作品列表不得恢复文案筛选、展示或复制入口"
+fi
+
+# 视频多图：机械检查跨 IPC 的数组与两端总大小约束；行为由专门回归测试覆盖。
+if [[ "$(rs_const MEDIA_MAX_REFERENCE_TOTAL_BYTES | tr -d '*')" != "$(ts_const REFERENCE_TOTAL_MAX_BYTES | tr -d '*')" ]]; then
+  err "视频参考图总大小上限前后端不一致"
+fi
+for needle in \
+  'src/we2ai/StudioVideoPanel.tsx|references: references.map((image) => image.reference)' \
+  'src/we2ai/api.ts|references: request.references ?? []' \
+  'src-tauri/src/we2ai/playground/media.rs|pub references: Vec<PlaygroundReferenceImage>' \
+  'src-tauri/src/we2ai/playground/media.rs|body["reference_images"]' \
+  'src-tauri/src/we2ai/playground/media.rs|"reference_image"' \
+  'src/we2ai/studioMediaTemplates.ts|referenceCount > 0'; do
+  if ! grep -qF "${needle#*|}" "${needle%%|*}"; then
+    err "${needle%%|*}: 视频多图接线缺失 ${needle#*|}"
+  fi
+done
+
+# 作品详情必须保留两处显式关闭入口；交互边界由 WorksPage 测试覆盖。
+if [[ "$(grep -cF '<DialogClose asChild>' src/we2ai/WorksPage.tsx)" -lt 2 ]]; then
+  err "作品详情缺少顶部 / 底部鼠标关闭入口"
+fi
 
 if [[ "$fail" == 0 ]]; then
   echo "we2ai guards: all passed (version=${first_version})"

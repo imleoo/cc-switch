@@ -142,7 +142,7 @@ describe("We2aiShell key management tab", () => {
     vi.restoreAllMocks();
   });
 
-  it("orders the tabs marketplace | keys | billing | settings and loads the key list only when the tab opens", async () => {
+  it("orders the tabs marketplace | studio | works | keys | billing | settings and loads the key list only when the tab opens", async () => {
     const calls = mockShellCommands();
     const user = userEvent.setup();
 
@@ -152,6 +152,7 @@ describe("We2aiShell key management tab", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "模型广场",
       "AI 营销工坊",
+      "作品列表",
       "Key 管理",
       "充值",
       "设置",

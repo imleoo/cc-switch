@@ -102,7 +102,7 @@ export function ToolStatusBar({ t, report, onRestored }: ToolStatusBarProps) {
   if (!report) return null;
   return (
     <div
-      className="we2ai-ticker border-b-[2.5px] border-[var(--we2ai-ink)]"
+      className="we2ai-ticker shrink-0 border-b-[2.5px] border-[var(--we2ai-ink)]"
       data-testid="we2ai-tool-status"
     >
       {report.ccSwitchRunning && (

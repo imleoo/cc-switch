@@ -297,10 +297,22 @@ const VIDEO_NEGATIVE: BiPrompt = {
   en: "Use only the product name, model and features given; never invent specifications, capacity, certifications or customer names; no numbers or marks that were not provided may appear in the frame.",
 };
 
-const VIDEO_REFERENCE: BiPrompt = {
-  zh: "以参考图作为第一帧和产品依据，保持设备外形、颜色和结构一致，只让镜头与环境发生变化。",
-  en: "Use the reference image as the first frame and as the product reference; keep the machine's shape, color and structure unchanged, and animate only the camera and surroundings.",
-};
+/** Reference order is identical to the upload / request order. Grok indexes from zero. */
+function videoReferencePrompt(
+  lang: StudioPromptLanguage,
+  count: number,
+  firstFrame: boolean,
+): string {
+  if (firstFrame)
+    return lang === "zh"
+      ? "以参考图作为第一帧，保持设备外形、颜色和结构一致。"
+      : "Use the reference image as the first frame; preserve the machine's shape, color and structure.";
+  const range =
+    lang === "zh" ? `@image1–@image${count}` : `<IMAGE_0>–<IMAGE_${count - 1}>`;
+  return lang === "zh"
+    ? `按上传顺序使用 ${count} 张参考图（${range}），分别参考其产品、角度和场景，保持对应产品的外形、颜色和结构一致，不混淆不同主体，不将参考图固定为首帧。`
+    : `Use all ${count} reference images in upload order (${range}) for the corresponding products, angles and scenes. Preserve each product's shape, color and structure; keep distinct subjects separate. References do not pin the first frame.`;
+}
 
 const VIDEO_STYLE: BiPrompt = {
   zh: "冷灰与金属质感为主，自然光与车间灯光结合",
@@ -538,11 +550,16 @@ function timeRange(
 export function buildVideoPrompt(
   templateId: string,
   values: StudioValues,
-  opts: { lang: StudioPromptLanguage; duration: number; hasReference: boolean },
+  opts: {
+    lang: StudioPromptLanguage;
+    duration: number;
+    referenceCount: number;
+    firstFrame?: boolean;
+  },
 ): string {
   const template = VIDEO_TEMPLATES.find((t) => t.id === templateId);
   if (!template) return "";
-  const { lang, duration, hasReference } = opts;
+  const { lang, duration, referenceCount, firstFrame = false } = opts;
   const model = val(values, "model");
   const appearance = val(values, "appearance");
   const features = val(values, "features");
@@ -568,7 +585,8 @@ export function buildVideoPrompt(
     VIDEO_GLOBAL[lang],
     VIDEO_NEGATIVE[lang],
   ];
-  if (hasReference) lines.push(VIDEO_REFERENCE[lang]);
+  if (referenceCount > 0)
+    lines.push(videoReferencePrompt(lang, referenceCount, firstFrame));
   return lines.join("\n");
 }
 
@@ -583,7 +601,7 @@ const COMPILE_VIDEO: BiPrompt = {
     "规则：",
     "1. 用户明确给出的产品名称、型号、参数、企业信息必须原样保留，并用英文半角中括号 [] 括住，不得改写、遗漏或补充；用户没给的信息不要编造，需要时用描述性占位，如 [产品名称]。",
     "2. 画面内不出现任何文字、字幕、Logo、水印、认证标志；人物只用背影、侧影或手部特写。",
-    "3. 设备外形、颜色和结构以用户描述为准，不凭空增加部件。",
+    "3. 设备外形、颜色和结构以用户描述与参考图为准，不凭空增加部件。保留草稿中的参考图数量、上传顺序和图片编号（@image1 或 <IMAGE_0> 等），不得混淆不同产品，不擅自将参考图改成首帧。",
     "4. 保留草稿的分镜时间结构，按「画面主体、动作变化、运镜方式、节奏与氛围、结尾收束」连贯表达，运镜具体可执行。",
     "5. 只输出最终提示词，不要解释、标题或 Markdown；长度控制在 450 个汉字以内。",
   ].join("\n"),
@@ -592,7 +610,7 @@ const COMPILE_VIDEO: BiPrompt = {
     "Rules:",
     "1. Keep the product name, model, specifications and company details the user gave exactly as written and wrap each in square brackets [ ]; never rewrite, drop or add to them. Do not invent anything the user did not give; use a descriptive placeholder such as [product name] when needed.",
     "2. No text, subtitles, logos, watermarks or certification marks in frame; people only from behind, in profile or as hand close-ups.",
-    "3. The machine's shape, color and structure follow the user's description; add no parts.",
+    "3. Follow the description and reference images for shape, color and structure; add no parts. Preserve the reference count, upload order and image identifiers (e.g. <IMAGE_0> or @image1). Keep products distinct and do not change references into a pinned first frame.",
     "4. Keep the draft's shot-and-time structure and express it coherently across subject, action, camera move, pacing and closing; camera moves must be concrete and executable.",
     "5. Output only the final prompt, with no explanation, heading or Markdown, within 220 words.",
   ].join("\n"),

@@ -147,7 +147,7 @@ describe("视频模板", () => {
       const prompt = buildVideoPrompt(id, VALUES, {
         lang,
         duration,
-        hasReference: false,
+        referenceCount: 0,
       });
       const shotCount = (
         prompt.match(lang === "zh" ? /镜头\d（/g : /Shot \d \(/g) ?? []
@@ -169,7 +169,7 @@ describe("视频模板", () => {
     const zh = buildVideoPrompt("factory-strength", VALUES, {
       lang: "zh",
       duration: 15,
-      hasReference: false,
+      referenceCount: 0,
     });
     expect(zh).toContain("禁止出现任何字幕、水印、Logo");
     expect(zh).toContain("认证标志");
@@ -178,7 +178,7 @@ describe("视频模板", () => {
     const en = buildVideoPrompt("factory-strength", VALUES, {
       lang: "en",
       duration: 15,
-      hasReference: false,
+      referenceCount: 0,
     });
     expect(en).toContain("No subtitles, watermarks, logos");
     expect(en).toContain("never invent specifications");
@@ -188,13 +188,13 @@ describe("视频模板", () => {
     const zh = buildVideoPrompt(
       "product-demo",
       {},
-      { lang: "zh", duration: 10, hasReference: false },
+      { lang: "zh", duration: 10, referenceCount: 0 },
     );
     expect(zh).toContain("[产品名称]");
     const en = buildVideoPrompt(
       "product-demo",
       {},
-      { lang: "en", duration: 10, hasReference: false },
+      { lang: "en", duration: 10, referenceCount: 0 },
     );
     expect(en).toContain("[product name]");
   });
@@ -204,12 +204,44 @@ describe("视频模板", () => {
     expect(
       buildVideoPrompt("product-demo", VALUES, {
         ...base,
-        hasReference: false,
+        referenceCount: 0,
       }),
-    ).not.toContain("第一帧");
+    ).not.toContain("参考图");
     expect(
-      buildVideoPrompt("product-demo", VALUES, { ...base, hasReference: true }),
-    ).toContain("第一帧");
+      buildVideoPrompt("product-demo", VALUES, { ...base, referenceCount: 1 }),
+    ).toContain("@image1");
+  });
+
+  it("多图编号和数量跟随模型语言，参考图不固定首帧", () => {
+    const en = buildVideoPrompt("product-demo", VALUES, {
+      lang: "en",
+      duration: 10,
+      referenceCount: 3,
+    });
+    expect(en).toContain(
+      "all 3 reference images in upload order (<IMAGE_0>–<IMAGE_2>)",
+    );
+    expect(en).toContain("References do not pin the first frame");
+    const zh = buildVideoPrompt("product-demo", VALUES, {
+      lang: "zh",
+      duration: 10,
+      referenceCount: 3,
+    });
+    expect(zh).toContain("3 张参考图（@image1–@image3）");
+    expect(zh).toContain("不混淆不同主体");
+    const legacy = buildVideoPrompt("product-demo", VALUES, {
+      lang: "zh",
+      duration: 10,
+      referenceCount: 1,
+      firstFrame: true,
+    });
+    expect(legacy).toContain("作为第一帧");
+    expect(buildCompileSystem("video", "zh")).toContain(
+      "保留草稿中的参考图数量",
+    );
+    expect(buildCompileSystem("video", "en")).toContain(
+      "Preserve the reference count",
+    );
   });
 
   it("Grok 英文提示词在字段写得很长时仍不超过 4096 字节", () => {
@@ -228,7 +260,7 @@ describe("视频模板", () => {
       const prompt = buildVideoPrompt(tpl.id, values, {
         lang: "en",
         duration: 15,
-        hasReference: true,
+        referenceCount: 1,
       });
       expect(utf8(prompt), tpl.id).toBeLessThanOrEqual(
         GROK_VIDEO_PROMPT_MAX_BYTES,
@@ -241,7 +273,7 @@ describe("视频模板", () => {
       const prompt = buildVideoPrompt(tpl.id, VALUES, {
         lang: "zh",
         duration: 15,
-        hasReference: true,
+        referenceCount: 1,
       });
       expect(prompt.length, tpl.id).toBeLessThanOrEqual(MEDIA_PROMPT_MAX_CHARS);
     }

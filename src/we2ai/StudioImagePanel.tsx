@@ -13,6 +13,7 @@ import {
   isWe2aiApiError,
   we2aiApi,
   type We2aiMediaFile,
+  type We2aiWorkKind,
   type We2aiReferenceImage,
 } from "./api";
 import {
@@ -54,9 +55,12 @@ interface StudioImagePanelProps {
   keyId: number;
   /** 该 Key 下选中的文本模型，用于「AI 优化提示词」；没有则该按钮置灰。 */
   textModel: string | null;
+  /** 递增即静默重拉本面板的模型列表（切回 Tab、窗口聚焦、手动刷新）。 */
+  refreshTick?: number;
   onSessionMaybeEnded: () => void;
   /** 每次终态（成功 / 失败 / 取消）后刷新余额。 */
   onTerminal: () => void;
+  onWorkCompleted?: (kind: We2aiWorkKind) => void;
 }
 
 export function StudioImagePanel({
@@ -65,8 +69,10 @@ export function StudioImagePanel({
   language,
   keyId,
   textModel,
+  refreshTick = 0,
   onSessionMaybeEnded,
   onTerminal,
+  onWorkCompleted,
 }: StudioImagePanelProps) {
   const templates = useMemo(
     () => getStudioImageTemplates(language),
@@ -83,7 +89,13 @@ export function StudioImagePanel({
     selectModel,
     loading,
     error: modelsError,
-  } = useMediaModels(keyId, "image", t.studioErrorNetwork, onSessionMaybeEnded);
+  } = useMediaModels(
+    keyId,
+    "image",
+    t.studioErrorNetwork,
+    onSessionMaybeEnded,
+    refreshTick,
+  );
   const caps = model?.capabilities ?? null;
 
   const [reference, setReference] = useState<{
@@ -143,6 +155,7 @@ export function StudioImagePanel({
   useEffect(
     () => () => {
       const id = activeRef.current;
+      activeRef.current = null;
       if (id) void we2aiApi.playgroundCancel(id).catch(() => {});
     },
     [],
@@ -209,6 +222,7 @@ export function StudioImagePanel({
       });
       if (activeRef.current !== requestId) return;
       setImages(outcome.images);
+      onWorkCompleted?.("image");
     } catch (e) {
       if (activeRef.current !== requestId) return;
       showError(e);

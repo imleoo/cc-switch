@@ -1,344 +1,193 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  we2aiApi,
-  type We2aiKeyList,
-  type We2aiPlaygroundChatOutcome,
-  type We2aiPlaygroundChatRequest,
-  type We2aiPlaygroundChunkEvent,
-  type We2aiPlaygroundModels,
-} from "@/we2ai/api";
+import { we2aiApi, type We2aiKeyList } from "@/we2ai/api";
 import { PlaygroundPage } from "@/we2ai/PlaygroundPage";
 import { getWe2aiStrings } from "@/we2ai/strings";
 
-// Radix Select 打开时会滚动到选中项，jsdom 没有实现 scrollIntoView。
-if (!Element.prototype.scrollIntoView) {
+if (!Element.prototype.scrollIntoView)
   Element.prototype.scrollIntoView = () => {};
-}
-
-const t = getWe2aiStrings("zh");
-
-const KEY_LIST: We2aiKeyList = {
-  keys: [
-    { id: 5, name: "工作", groupName: null, status: "active", maskedKey: "sk-we2…5555" },
-    { id: 6, name: "备用", groupName: null, status: "active", maskedKey: "sk-we2…6666" },
-    { id: 7, name: "旧Key", groupName: null, status: "quota_exhausted", maskedKey: "sk-we2…7777" },
-  ],
+const KEYS: We2aiKeyList = {
+  keys: [5, 6].map((id) => ({
+    id,
+    name: id === 5 ? "工作" : "备用",
+    status: "active",
+    maskedKey: `sk-…${id}`,
+    groupName: null,
+  })),
   selectedKeyId: 5,
   rememberedKeyId: null,
   studioSelectedKeyId: 5,
 };
-
-const MODELS: We2aiPlaygroundModels = {
-  models: [{ id: "gpt-marketing", provider: null }],
-  blockedReason: null,
+const caps = {
+  sizes: [],
+  aspectRatios: ["16:9"],
+  imageSizes: [],
+  durations: [10],
+  resolutions: ["720p"],
+  maxN: 1,
+  supportsReference: false,
+  supportsAudio: false,
+  minReferenceSide: 0,
 };
-
-const OUTCOME: We2aiPlaygroundChatOutcome = {
-  finishReason: "stop",
-  usage: { promptTokens: 10, completionTokens: 6, totalTokens: 16 },
-};
-
-const onSessionMaybeEnded = vi.fn();
-const onTerminal = vi.fn();
-
-/** 捕获页面订阅的 chunk 回调，供用例模拟 Rust 增量事件。 */
-let chunkHandler: ((event: We2aiPlaygroundChunkEvent) => void) | null = null;
-
-async function renderPage() {
-  let view!: ReturnType<typeof render>;
-  await act(async () => {
-    view = render(
-      <PlaygroundPage
-        t={t}
-        language="zh"
-        onSessionMaybeEnded={onSessionMaybeEnded}
-        onTerminal={onTerminal}
-      />,
-    );
-  });
+const onSessionMaybeEnded = vi.fn(),
+  onTerminal = vi.fn();
+async function mount(language: "zh" | "en" = "zh") {
+  const view = render(
+    <PlaygroundPage
+      t={getWe2aiStrings(language)}
+      language={language}
+      onSessionMaybeEnded={onSessionMaybeEnded}
+      onTerminal={onTerminal}
+    />,
+  );
+  await screen.findByTestId("we2ai-studio-key-select");
   return view;
 }
 
-/** 打开 Radix Select 并点击一个选项（按可见文本定位）。 */
-async function selectOption(testId: string, label: string) {
-  await userEvent.click(screen.getByTestId(testId));
-  const listbox = await screen.findByRole("listbox");
-  const option = await within(listbox).findByText(label);
-  await userEvent.click(option);
-}
-
-describe("PlaygroundPage（功能 27 P1）", () => {
-  let chatRequest: We2aiPlaygroundChatRequest | null = null;
-
+describe("PlaygroundPage 图片与视频工坊", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    chunkHandler = null;
-    chatRequest = null;
     onSessionMaybeEnded.mockClear();
     onTerminal.mockClear();
-
-    vi.spyOn(we2aiApi, "listKeys").mockResolvedValue(KEY_LIST);
-    vi.spyOn(we2aiApi, "playgroundModels").mockResolvedValue(MODELS);
-    vi.spyOn(we2aiApi, "playgroundChooseKey").mockResolvedValue({
-      studioSelectedKeyId: 6,
-    });
-    vi.spyOn(we2aiApi, "playgroundCancel").mockResolvedValue(undefined);
-    // 图片 / 视频面板随选中 Key 常驻挂载，会各拉一次媒体模型。
-    vi.spyOn(we2aiApi, "playgroundMediaModels").mockResolvedValue({
-      models: [],
+    vi.spyOn(we2aiApi, "listKeys").mockResolvedValue(KEYS);
+    vi.spyOn(we2aiApi, "playgroundChooseKey").mockImplementation(
+      async (keyId) => ({ studioSelectedKeyId: keyId }),
+    );
+    vi.spyOn(we2aiApi, "playgroundModels").mockResolvedValue({
+      models: [{ id: "gpt-text", provider: null }],
       blockedReason: null,
     });
-    vi.spyOn(we2aiApi, "onPlaygroundProgress").mockResolvedValue(() => {});
+    vi.spyOn(we2aiApi, "playgroundMediaModels").mockImplementation(
+      async (_id, kind) => ({
+        models: [
+          {
+            id: kind === "image" ? "grok-image" : "grok-video",
+            family: "grok",
+            provider: null,
+            capabilities: caps,
+          },
+        ],
+        blockedReason: null,
+      }),
+    );
     vi.spyOn(we2aiApi, "onKeysChanged").mockResolvedValue(() => {});
-    vi.spyOn(we2aiApi, "onPlaygroundChunk").mockImplementation(
-      async (fn) => {
-        chunkHandler = fn;
-        return () => {
-          chunkHandler = null;
-        };
-      },
-    );
-    vi.spyOn(we2aiApi, "playgroundChat").mockImplementation(
-      async (request) => {
-        chatRequest = request;
-        // 发送后立即推送两个增量，模拟 Rust 流式事件。
-        chunkHandler?.({ requestId: request.requestId, delta: "第一段" });
-        chunkHandler?.({ requestId: request.requestId, delta: "第二段" });
-        return OUTCOME;
-      },
-    );
-  });
-
-  it("默认选中工坊记忆的 Key 并加载模型", async () => {
-    await renderPage();
-    expect(await screen.findByTestId("we2ai-studio-key-select")).toHaveTextContent(
-      "工作",
-    );
-    await waitFor(() => {
-      expect(we2aiApi.playgroundModels).toHaveBeenCalledWith(5);
-    });
-    expect(await screen.findByTestId("we2ai-studio-model-select")).toHaveTextContent(
-      "gpt-marketing",
-    );
-  });
-
-  it("额度耗尽的 Key 在选择器中禁用", async () => {
-    await renderPage();
-    await userEvent.click(await screen.findByTestId("we2ai-studio-key-select"));
-    const listbox = await screen.findByRole("listbox");
-    const disabled = within(listbox).getByText(/旧Key/);
-    expect(disabled.closest('[role="option"]')).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-  });
-
-  it("点击场景预设发送 system，流式增量渲染并显示 usage", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundModels).toHaveBeenCalled();
-    });
-
-    await userEvent.click(
-      await screen.findByTestId("we2ai-studio-preset-product-copy"),
-    );
-    const input = await screen.findByTestId("we2ai-studio-input");
-    await userEvent.type(input, "智能水杯");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-
-    await waitFor(() => {
-      expect(chatRequest).not.toBeNull();
-    });
-    const request = chatRequest!;
-    expect(request.keyId).toBe(5);
-    expect(request.model).toBe("gpt-marketing");
-    expect(request.system).toContain("产品页文案");
-    expect(request.system).toContain("硬性约束");
-    expect(request.system).toContain("English");
-    expect(request.messages).toEqual([
-      { role: "user", content: "智能水杯" },
-    ]);
-
-    const bubbles = await screen.findAllByTestId("we2ai-studio-assistant-message");
-    expect(bubbles[0]).toHaveTextContent("第一段第二段");
-    // usage 展示（总 tokens）。
-    expect(bubbles[0]).toHaveTextContent("16 tokens");
-    // 终态回调：外壳刷新余额。
-    expect(onTerminal).toHaveBeenCalled();
-  });
-
-  it("多轮历史随请求重发；错误轮与停止轮不进历史", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundModels).toHaveBeenCalled();
-    });
-
-    // 第一轮：失败（Key 失效）。
-    (we2aiApi.playgroundChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce({
-      code: "PLAYGROUND_KEY_INVALID",
-      message: "raw",
-    });
-    const input = screen.getByTestId("we2ai-studio-input");
-    await userEvent.type(input, "第一条");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("we2ai-studio-message-error"),
-      ).toHaveTextContent(t.studioErrorKeyInvalid);
-    });
-
-    // 第二轮：正常发送——历史只含第二条（错误轮不进历史）。
-    await userEvent.type(screen.getByTestId("we2ai-studio-input"), "第二条");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => {
-      const request = chatRequest!;
-      expect(request.messages).toEqual([{ role: "user", content: "第二条" }]);
+    vi.spyOn(we2aiApi, "onPlaygroundProgress").mockResolvedValue(() => {});
+    vi.spyOn(we2aiApi, "onPlaygroundChunk").mockResolvedValue(() => {});
+    vi.spyOn(we2aiApi, "playgroundCancel").mockResolvedValue(undefined);
+    vi.spyOn(we2aiApi, "playgroundChat").mockResolvedValue({
+      finishReason: "stop",
+      usage: null,
     });
   });
-
-  it("停止后保留部分内容并标记；停止轮不进下一轮历史", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundModels).toHaveBeenCalled();
-    });
-
-    (we2aiApi.playgroundChat as ReturnType<typeof vi.fn>).mockImplementationOnce(
-      async (request: We2aiPlaygroundChatRequest) => {
-        chatRequest = request;
-        chunkHandler?.({ requestId: request.requestId, delta: "半截" });
-        // 模拟用户点了停止：invoke 以 CANCELLED 终态 reject。
-        throw { code: "PLAYGROUND_CANCELLED", message: "raw" };
-      },
-    );
-    const input = screen.getByTestId("we2ai-studio-input");
-    await userEvent.type(input, "写一半");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => {
-      expect(screen.getByText(t.studioStoppedPartial)).toBeInTheDocument();
-    });
-    expect(
-      screen.getByTestId("we2ai-studio-assistant-message"),
-    ).toHaveTextContent("半截");
-
-    // 下一轮历史不含被停止的轮（user + 半截 assistant 整轮丢弃）。
-    await userEvent.type(screen.getByTestId("we2ai-studio-input"), "再来");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => {
-      const request = chatRequest!;
-      expect(request.messages).toEqual([{ role: "user", content: "再来" }]);
-    });
-  });
-
-  it("切换 Key 开新会话并调用 playgroundChooseKey 记忆", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundModels).toHaveBeenCalled();
-    });
-
-    // 先发一条消息，让会话里有内容。
-    const input = screen.getByTestId("we2ai-studio-input");
-    await userEvent.type(input, "会被清掉的");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => {
-      expect(chatRequest).not.toBeNull();
-    });
-
-    // 切到另一个 active Key：会话清空，且工坊记忆保存被调用。
-    await selectOption("we2ai-studio-key-select", "备用");
-    expect(we2aiApi.playgroundChooseKey).toHaveBeenCalledWith(6);
-    expect(
-      screen.queryByTestId("we2ai-studio-assistant-message"),
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId("we2ai-studio-key-select")).toHaveTextContent(
-      "备用",
-    );
-  });
-
-  it("会话级错误回调外壳复查会话状态", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundModels).toHaveBeenCalled();
-    });
-
-    (we2aiApi.playgroundChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce({
-      code: "SESSION_CHANGED",
-      message: "raw",
-    });
-    await userEvent.type(
-      screen.getByTestId("we2ai-studio-input"),
-      "触发会话错误",
-    );
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => {
-      expect(onSessionMaybeEnded).toHaveBeenCalled();
-    });
-  });
-
-  it("模式切换：默认文本；图片 / 视频面板按选中 Key 挂载并各拉一次对应模型", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(5, "image");
-      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(5, "video");
-    });
-    expect(screen.getByTestId("we2ai-studio-mode-text")).toHaveAttribute(
+  it("仅有图片和视频，默认视频，提示使用 Codex / WorkBuddy，挂载不订阅文本流或生成文案", async () => {
+    await mount();
+    expect(screen.getByTestId("we2ai-studio-mode-video")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    // 图片 / 视频面板在文本模式下存在但不可见（常驻挂载，切换不取消在途任务）。
-    expect(screen.getByTestId("we2ai-studio-image-panel").parentElement).toHaveClass("hidden");
-    expect(screen.getByTestId("we2ai-studio-video-panel").parentElement).toHaveClass("hidden");
-
-    await userEvent.click(screen.getByTestId("we2ai-studio-mode-image"));
-    expect(screen.getByTestId("we2ai-studio-text-mode")).toHaveClass("hidden");
-    expect(screen.getByTestId("we2ai-studio-image-panel").parentElement).not.toHaveClass("hidden");
-    // 场景预设只属于文本模式。
-    expect(screen.queryByTestId("we2ai-studio-preset-product-copy")).toBeNull();
-
-    await userEvent.click(screen.getByTestId("we2ai-studio-mode-video"));
-    expect(screen.getByTestId("we2ai-studio-video-panel").parentElement).not.toHaveClass("hidden");
-    expect(screen.getByTestId("we2ai-studio-image-panel").parentElement).toHaveClass("hidden");
-
-    await userEvent.click(screen.getByTestId("we2ai-studio-mode-text"));
-    expect(screen.getByTestId("we2ai-studio-text-mode")).not.toHaveClass("hidden");
-    expect(await screen.findByTestId("we2ai-studio-preset-product-copy")).toBeInTheDocument();
+    expect(screen.getByTestId("we2ai-studio-mode-image")).toBeInTheDocument();
+    for (const id of [
+      "we2ai-studio-mode-text",
+      "we2ai-studio-text-mode",
+      "we2ai-studio-input",
+      "we2ai-studio-send",
+    ])
+      expect(screen.queryByTestId(id)).toBeNull();
+    expect(
+      screen.getByTestId("we2ai-studio-copywriting-hint"),
+    ).toHaveTextContent("文案生成请使用 Codex 或 WorkBuddy");
+    expect(we2aiApi.playgroundChat).not.toHaveBeenCalled();
+    expect(we2aiApi.onPlaygroundChunk).not.toHaveBeenCalled();
   });
-
-  it("切换 Key 会重建图片 / 视频面板并按新 Key 拉模型", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(5, "image");
-    });
-    await selectOption("we2ai-studio-key-select", "备用");
-    await waitFor(() => {
-      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(6, "image");
-      expect(we2aiApi.playgroundMediaModels).toHaveBeenCalledWith(6, "video");
-    });
-  });
-
-  it("输出语言：默认英语；选西班牙语后 system 带 Spanish；本地化场景不带输出语言", async () => {
-    await renderPage();
-    await waitFor(() => {
-      expect(we2aiApi.playgroundModels).toHaveBeenCalled();
-    });
-    await userEvent.selectOptions(
-      screen.getByTestId("we2ai-studio-output-language"),
-      "es",
+  it("图片模式同样显示引导，输入和模式切换后不取消任务", async () => {
+    await mount();
+    fireEvent.change(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+      { target: { value: "设备" } },
     );
-    await userEvent.click(await screen.findByTestId("we2ai-studio-preset-cold-email"));
-    await userEvent.type(await screen.findByTestId("we2ai-studio-input"), "pump");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => expect(chatRequest).not.toBeNull());
-    expect(chatRequest!.system).toContain("Spanish");
-    expect(chatRequest!.system).toContain("硬性约束");
-
-    chatRequest = null;
-    await userEvent.click(await screen.findByTestId("we2ai-studio-preset-localization"));
-    await userEvent.type(await screen.findByTestId("we2ai-studio-input"), "翻成法语");
-    await userEvent.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => expect(chatRequest).not.toBeNull());
-    expect(chatRequest!.system).not.toContain("Spanish");
-    expect(chatRequest!.system).toContain("本地化专家");
+    const video = vi
+      .spyOn(we2aiApi, "playgroundVideo")
+      .mockImplementation(() => new Promise(() => {}));
+    await userEvent.click(screen.getByTestId("we2ai-studio-video-generate"));
+    await screen.findByTestId("we2ai-studio-video-stop");
+    await userEvent.click(screen.getByTestId("we2ai-studio-mode-image"));
+    expect(screen.getByTestId("we2ai-studio-copywriting-hint")).toBeVisible();
+    await userEvent.click(screen.getByTestId("we2ai-studio-mode-video"));
+    expect(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+    ).toHaveValue("设备");
+    expect(video).toHaveBeenCalledTimes(1);
+    expect(we2aiApi.playgroundCancel).not.toHaveBeenCalled();
+  });
+  it("英文使用相应的文案工具引导", async () => {
+    await mount("en");
+    expect(
+      screen.getByTestId("we2ai-studio-copywriting-hint"),
+    ).toHaveTextContent("Use Codex or WorkBuddy to generate copy.");
+  });
+  it("图片的 AI 优化提示词继续使用内部文本模型，不保存为文案作品", async () => {
+    await mount();
+    await userEvent.click(screen.getByTestId("we2ai-studio-mode-image"));
+    fireEvent.change(
+      screen.getByTestId("we2ai-studio-image-field-productName"),
+      { target: { value: "设备" } },
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("we2ai-studio-image-optimize")).toBeEnabled(),
+    );
+    await userEvent.click(screen.getByTestId("we2ai-studio-image-optimize"));
+    await waitFor(() =>
+      expect(we2aiApi.playgroundChat).toHaveBeenCalledTimes(1),
+    );
+    expect(vi.mocked(we2aiApi.playgroundChat).mock.calls[0][0]).toMatchObject({
+      keyId: 5,
+      model: "gpt-text",
+    });
+    expect(
+      vi.mocked(we2aiApi.playgroundChat).mock.calls[0][0].saveAsWork,
+    ).not.toBe(true);
+  });
+  it("切换 Key 取消旧 Key 的视频，重新拉取媒体与优化模型", async () => {
+    await mount();
+    fireEvent.change(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+      { target: { value: "设备" } },
+    );
+    const video = vi
+      .spyOn(we2aiApi, "playgroundVideo")
+      .mockImplementation(() => new Promise(() => {}));
+    await userEvent.click(screen.getByTestId("we2ai-studio-video-generate"));
+    await screen.findByTestId("we2ai-studio-video-stop");
+    await userEvent.click(screen.getByTestId("we2ai-studio-key-select"));
+    await userEvent.click(
+      within(await screen.findByRole("listbox")).getByText("备用"),
+    );
+    await waitFor(() =>
+      expect(we2aiApi.playgroundCancel).toHaveBeenCalledWith(
+        video.mock.calls[0][0].requestId,
+      ),
+    );
+    expect(we2aiApi.playgroundChooseKey).toHaveBeenCalledWith(6);
+    await waitFor(() =>
+      expect(we2aiApi.playgroundModels).toHaveBeenCalledWith(6),
+    );
+    expect(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+    ).toHaveValue("");
+  });
+  it("Key 拉取被取代时有限重试，错误可手动恢复", async () => {
+    vi.mocked(we2aiApi.listKeys).mockRejectedValueOnce({
+      code: "KEY_LIST_SUPERSEDED",
+      message: "superseded",
+    });
+    await mount();
+    expect(we2aiApi.listKeys).toHaveBeenCalledTimes(2);
   });
 });

@@ -133,6 +133,7 @@
 - Key 选择器与广场同款展示（name + masked_key）；切换 Key 开新会话，切换前 cancel 进行中的流。
 - 场景预设 = 内置 system prompt 模板（`playgroundPrompts.ts` 中英内置），点击开新会话；system 由「场景指令 + 统一硬约束 + 输出语言」三段拼成（第 12 节）。图片/视频模式的模板在各自面板内选择。
 - 会话历史存前端内存；工坊 Tab `forceMount`（对话非敏感，切走不丢）。
+- **Key / 模型列表刷新**：`forceMount` 意味着切 Tab 不会重新挂载，而服务端改动 Key 列表时客户端收不到事件（`we2ai-keys-changed` 只在本地写操作后发出）。因此工坊在三个时机静默重拉 Key 列表、文本模型和图片 / 视频模型：切回工坊 Tab、窗口重新聚焦（30 秒节流，隐藏时不触发）、点击选择器旁的刷新按钮。静默刷新不显示加载态、保留已选模型、失败不报错；选中的 Key 仍在列表里（含额度耗尽）就保留会话，被删除才回退并重置；不取消在途生成。
 - 顶栏余额 chip 在每轮终态后刷新（见 5.1）。
 
 ### 5.3 Rust 实现要点
@@ -194,8 +195,8 @@
 
 | 族 | 判定 | 创建请求体 | 创建响应 id | 时长 / 画幅 / 分辨率（能力表） | 音频 | 提示词语言与上限 |
 |---|---|---|---|---|---|---|
-| Grok（**默认优先**） | `grok*`、含 `grok-imagine` | `model/prompt/duration/aspect_ratio/resolution`，参考图为 `image:{url,type:"image_url"}`（data URL） | `request_id` | 5·10 秒 / 16:9·9:16·1:1 / 480p·720p（均已核对） | 无 | 英文；**≤ 4096 字节**（建单前拒绝，来自 video-miniAPP 的线上教训） |
-| Seedance | 含 `seedance` | `model/content[]`（text + `image_url` 且 `role:"first_frame"`）`/duration/ratio/resolution/watermark:false/generate_audio` | `id` | 5·10·15 秒 / 16:9·9:16·1:1·4:3·3:4 / 480p·720p（**mini 不支持 1080p**，其他型号未测，保守不开放） | 可选 | 中文；**首帧图宽高均 ≥ 300 像素**（Rust 前置校验并告知当前尺寸） |
+| Grok（**默认优先**） | `grok*`、含 `grok-imagine` | `model/prompt/duration/aspect_ratio/resolution`，多图为 `reference_images:[{url}]`（data URL）；旧 IPC 单张首帧保留 `image` | `request_id` | 5·10 秒 / 16:9·9:16·1:1 / 480p·720p（均已核对） | 无 | 英文；**≤ 4096 字节**（建单前拒绝，来自 video-miniAPP 的线上教训） |
+| Seedance | 含 `seedance` | `model/content[]`（text + 多个 `image_url`，2.x 为 `role:"reference_image"`，旧版为 `first_frame`）`/duration/ratio/resolution/watermark:false/generate_audio` | `id` | 5·10·15 秒 / 16:9·9:16·1:1·4:3·3:4 / 480p·720p（**mini 不支持 1080p**，其他型号未测，保守不开放） | 可选 | 中文；**首帧图宽高均 ≥ 300 像素**（Rust 前置校验并告知当前尺寸） |
 
 其余视频模型不展示：没有通用请求体，猜错会白白计费。取值范围已于 2026-10-14 逐项核对（见第 2 节）；`doubao-seedance-2.0` 与 `doubao-seedance-2.5` 当前在网关上对所有请求返回 502，选到它们会得到“网关服务异常”（详情与排查建议见 `网关问题-doubao-seedance-502.md`）。
 
@@ -235,7 +236,7 @@
 
 ### 7.5 UI（视频模式）
 
-模型 → 场景模板 → 产品信息字段 → 首帧参考图（可选）→ 可编辑提示词（Grok 显示字节计数）→ 时长 / 画幅 / 分辨率 / 音频 → 生成 / 停止（显示阶段、百分比、已用时）→ 成片预览与操作。时长不足 10 秒时分镜压缩为三镜头（第 12 节）。
+模型 → 场景模板 → 产品信息字段 → 参考图（可多选、逐张移除，按模型限制张数）→ 可编辑提示词（Grok 显示字节计数）→ 时长 / 画幅 / 分辨率 / 音频 → 生成 / 停止（显示阶段、百分比、已用时）→ 成片预览与操作。时长不足 10 秒时分镜压缩为三镜头（第 12 节）。
 
 ## 8. 影响面与同步风险
 
@@ -398,3 +399,17 @@ system 拼装：**场景指令 + 统一硬约束 + 输出语言**。输出语言
 | 13 | 其余型号：`doubao-seedance-2.0` 与 `2.5`（当前 502，已出报告）、`-fast`，Grok 的 `grok-imagine-video`、`grok-video-1.5` 等，GPT 的 `gpt-image-1/1.5/2.5-*`，Gemini 的其他图片型号 | 同族共用请求体与能力表；个别型号取值范围可能不同，不合法时创建即被拒（400/422）且不计费，界面给出“请求被网关拒绝” | 未逐个测 |
 
 探测中意外产生的任务（均已记录）：`doubao-seedance-2.0-fast` 对 256 像素的图未拒绝，创建了 1 条 5 秒 480p 视频任务（成功则计费）；Grok 接受损坏的首帧图，创建了 5 条任务，均异步 `failed`，未成功。
+
+## 2026-10-17 视频多参考图补充（4.21.8）
+
+| 模型 | 最大张数 | 新请求格式 | 提示词编号 |
+|------|----------|------------|------------|
+| Grok Imagine Video 1.5 | 14 | `reference_images[].url` | `<IMAGE_0>` 起 |
+| 其他 Grok 视频 | 7 | `reference_images[].url` | `<IMAGE_0>` 起 |
+| Seedance 2.0（含 fast / mini） | 9 | `content[].role:reference_image` | `@image1` 起 |
+| Seedance 2.5 | 30 | 同上 | `@image1` 起 |
+| 旧版 / 未识别版本 Seedance | 1 | `content[].role:first_frame` | 首帧 |
+
+依据：[xAI 多图参考协议](https://docs.x.ai/developers/model-capabilities/video/reference-to-video)、[火山视频任务 API](https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh)；网关本地代码解析 `reference_images`，video-miniAPP 的 Grok / Ark 实现也使用对应多图格式。此表为协议与本地测试覆盖，未新增付费上游实测，历史首帧联调记录不能视为多图实测。
+
+上传 → 依序读图 → 原子追加 → 按上传顺序提交所有图片。单张 ≤ 8 MB、合计 ≤ 32 MB（base64 后约 43 MB）；先校验张数和编码总长，再逐图校验类型、字节头、尺寸及原始总长。切模型保留图片，超限阻止生成。读图期间禁用生成和选择器；手改提示词不会被自动覆盖，参考图变化时提示核对编号。旧 IPC 单张字段保留首帧语义，禁止与新数组混用。

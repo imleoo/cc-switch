@@ -25,6 +25,9 @@ use tauri::Emitter;
 
 use super::*;
 
+pub mod works;
+pub(super) use works::WorkGuard;
+
 /// 视频任务进度事件名（Rust → 前端）。守卫 4.19 校验两侧一致。
 pub const PLAYGROUND_PROGRESS_EVENT: &str = "we2ai-playground-progress";
 
@@ -34,6 +37,7 @@ const MEDIA_MAX_PROMPT_CHARS: usize = 4000;
 const MEDIA_GROK_MAX_PROMPT_BYTES: usize = 4096;
 /// 参考图解码后的字节上限。
 const MEDIA_MAX_REFERENCE_BYTES: usize = 8 * 1024 * 1024;
+const MEDIA_MAX_REFERENCE_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 /// 单张生成图字节上限。
 const MEDIA_MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 /// 图片接口响应体上限（n=4 的 base64 合计）。
@@ -46,8 +50,6 @@ const MEDIA_IMAGE_TIMEOUT: Duration = Duration::from_secs(300);
 const MEDIA_VIDEO_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// 轮询连续网络失败容忍次数。
 const MEDIA_POLL_MAX_NET_ERRORS: u32 = 3;
-/// 落盘文件保留天数（超期在下一次保存时顺带清理）。
-const MEDIA_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
 
 const CODE_REJECTED: &str = "PLAYGROUND_REJECTED";
 const CODE_MEDIA_FAILED: &str = "PLAYGROUND_MEDIA_FAILED";
@@ -71,8 +73,9 @@ pub struct MediaCapabilities {
     pub resolutions: &'static [&'static str],
     pub max_n: u32,
     pub supports_reference: bool,
+    pub max_reference_images: usize,
     pub supports_audio: bool,
-    /// 参考图（首帧）宽高的下限，0 表示无要求。Seedance 实测：低于 300 像素会被
+    /// 参考图宽高的下限，0 表示无要求。Seedance 实测：低于 300 像素会被
     /// 网关以 `InvalidParameter: image_url` 拒绝（2026-10-14）。
     pub min_reference_side: u32,
 }
@@ -110,6 +113,7 @@ impl ImageFamily {
                 resolutions: &[],
                 max_n: 4,
                 supports_reference: true,
+                max_reference_images: 1,
                 supports_audio: false,
                 min_reference_side: 0,
             },
@@ -125,6 +129,7 @@ impl ImageFamily {
                 resolutions: &[],
                 max_n: 4,
                 supports_reference: true,
+                max_reference_images: 1,
                 supports_audio: false,
                 min_reference_side: 0,
             },
@@ -136,6 +141,7 @@ impl ImageFamily {
                 resolutions: &[],
                 max_n: 1,
                 supports_reference: true,
+                max_reference_images: 1,
                 supports_audio: false,
                 min_reference_side: 0,
             },
@@ -185,6 +191,7 @@ impl VideoFamily {
                 resolutions: &["480p", "720p"],
                 max_n: 1,
                 supports_reference: true,
+                max_reference_images: 1,
                 supports_audio: false,
                 min_reference_side: 0,
             },
@@ -196,10 +203,25 @@ impl VideoFamily {
                 resolutions: &["480p", "720p"],
                 max_n: 1,
                 supports_reference: true,
+                max_reference_images: 1,
                 supports_audio: true,
                 min_reference_side: 300,
             },
         }
+    }
+
+    fn capabilities_for_model(self, model: &str) -> MediaCapabilities {
+        let mut caps = self.capabilities();
+        let lower = model.to_ascii_lowercase();
+        caps.max_reference_images = match self {
+            Self::Grok if lower.contains("video-1.5") => 14,
+            Self::Grok => 7,
+            Self::Seedance if lower.contains("seedance-2.5") => 30,
+            Self::Seedance if lower.contains("seedance-2.0") => 9,
+            // Older / unversioned aliases retain their known first-frame contract.
+            Self::Seedance => 1,
+        };
+        caps
     }
 
     fn as_str(self) -> &'static str {
@@ -248,9 +270,12 @@ pub struct PlaygroundVideoRequest {
     pub resolution: Option<String>,
     pub generate_audio: Option<bool>,
     pub reference: Option<PlaygroundReferenceImage>,
+    /// New reference-to-video input; legacy `reference` retains first-frame semantics.
+    #[serde(default)]
+    pub references: Vec<PlaygroundReferenceImage>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaygroundMediaFile {
     pub path: String,
@@ -759,6 +784,7 @@ struct VideoPlan {
     resolution: Option<String>,
     generate_audio: bool,
     reference: Option<ReferenceImage>,
+    references: Vec<ReferenceImage>,
 }
 
 fn validate_video_request(request: &PlaygroundVideoRequest) -> Result<VideoPlan, We2aiApiError> {
@@ -769,7 +795,7 @@ fn validate_video_request(request: &PlaygroundVideoRequest) -> Result<VideoPlan,
     }
     let family =
         VideoFamily::of(model).ok_or_else(|| bad_request("暂不支持该视频模型的请求格式"))?;
-    let caps = family.capabilities();
+    let caps = family.capabilities_for_model(model);
     let prompt = check_prompt(&request.prompt)?;
     if family == VideoFamily::Grok && prompt.len() > MEDIA_GROK_MAX_PROMPT_BYTES {
         return Err(playground_error(
@@ -798,6 +824,32 @@ fn validate_video_request(request: &PlaygroundVideoRequest) -> Result<VideoPlan,
     if generate_audio && !caps.supports_audio {
         return Err(bad_request("该模型不支持生成音频"));
     }
+    if request.reference.is_some() && !request.references.is_empty() {
+        return Err(bad_request("首帧图与多图参考不能同时提交"));
+    }
+    if request.references.len() > caps.max_reference_images {
+        return Err(bad_request(format!(
+            "该模型最多支持 {} 张参考图",
+            caps.max_reference_images
+        )));
+    }
+    // Bound the encoded payload before decoding; 32 MB raw stays below a 64 MB JSON body.
+    let encoded_bytes: usize = request.references.iter().map(|r| r.data_base64.len()).sum();
+    if encoded_bytes
+        > MEDIA_MAX_REFERENCE_TOTAL_BYTES.div_ceil(3) * 4 + request.references.len() * 128
+    {
+        return Err(bad_request("参考图总大小不能超过 32 MB"));
+    }
+    let mut references = Vec::with_capacity(request.references.len());
+    let mut total_bytes = 0;
+    for raw in &request.references {
+        let image = decode_reference(raw, caps.min_reference_side)?;
+        total_bytes += image.bytes.len();
+        if total_bytes > MEDIA_MAX_REFERENCE_TOTAL_BYTES {
+            return Err(bad_request("参考图总大小不能超过 32 MB"));
+        }
+        references.push(image);
+    }
     let reference = match &request.reference {
         None => None,
         Some(reference) => Some(decode_reference(reference, caps.min_reference_side)?),
@@ -811,6 +863,7 @@ fn validate_video_request(request: &PlaygroundVideoRequest) -> Result<VideoPlan,
         resolution,
         generate_audio,
         reference,
+        references,
     })
 }
 
@@ -830,6 +883,13 @@ fn build_video_body(plan: &VideoPlan) -> Value {
             if let Some(reference) = &plan.reference {
                 body["image"] = json!({ "url": reference.data_url(), "type": "image_url" });
             }
+            if !plan.references.is_empty() {
+                body["reference_images"] = json!(plan
+                    .references
+                    .iter()
+                    .map(|image| json!({ "url": image.data_url() }))
+                    .collect::<Vec<_>>());
+            }
             body
         }
         VideoFamily::Seedance => {
@@ -839,6 +899,23 @@ fn build_video_body(plan: &VideoPlan) -> Value {
                     "type": "image_url",
                     "image_url": { "url": reference.data_url() },
                     "role": "first_frame",
+                }));
+            }
+            let role = if plan
+                .family
+                .capabilities_for_model(&plan.model)
+                .max_reference_images
+                > 1
+            {
+                "reference_image"
+            } else {
+                "first_frame"
+            };
+            for image in &plan.references {
+                content.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": image.data_url() },
+                    "role": role,
                 }));
             }
             let mut body = json!({
@@ -967,6 +1044,17 @@ impl MediaEnv<'_> {
         response: reqwest::Response,
         cap: usize,
     ) -> Result<Vec<u8>, We2aiApiError> {
+        self.read_capped_with_progress(response, cap, &mut |_| {})
+            .await
+    }
+
+    /// 复用字节上限与取消/身份监督，仅在收到真实数据后回报下载进度。
+    async fn read_capped_with_progress(
+        &self,
+        response: reqwest::Response,
+        cap: usize,
+        on_bytes: &mut (dyn FnMut(usize) + Send),
+    ) -> Result<Vec<u8>, We2aiApiError> {
         let read = async move {
             let mut stream = response.bytes_stream();
             let mut out: Vec<u8> = Vec::new();
@@ -976,6 +1064,7 @@ impl MediaEnv<'_> {
                     return Err(CODE_PAYLOAD_TOO_LARGE);
                 }
                 out.extend_from_slice(&chunk);
+                on_bytes(out.len());
             }
             Ok(out)
         };
@@ -1078,6 +1167,7 @@ async fn download_image_url(env: &MediaEnv<'_>, url: &str) -> Result<DecodedMedi
 struct VideoTiming {
     poll_interval: Duration,
     max_wait: Duration,
+    download_timeout: Duration,
 }
 
 impl Default for VideoTiming {
@@ -1085,6 +1175,7 @@ impl Default for VideoTiming {
         Self {
             poll_interval: Duration::from_secs(5),
             max_wait: Duration::from_secs(15 * 60),
+            download_timeout: MEDIA_VIDEO_DOWNLOAD_TIMEOUT,
         }
     }
 }
@@ -1176,19 +1267,45 @@ async fn run_video(
     on_progress(VideoProgress {
         stage: "downloading",
         elapsed_secs: elapsed(),
-        progress: Some(100),
+        progress: None,
     });
-    let response = env
-        .send(
-            env.http
-                .get(env.url(&format!("/v1/videos/{task_id}/content")))
-                .bearer_auth(env.api_key)
-                .timeout(MEDIA_VIDEO_DOWNLOAD_TIMEOUT),
-        )
-        .await?;
-    let bytes = env.read_capped(response, MEDIA_MAX_VIDEO_BYTES).await?;
-    let mime = sniff_video_mime(&bytes).ok_or_else(|| media_error(CODE_MEDIA_INVALID))?;
-    Ok(DecodedMedia { bytes, mime })
+    let download = async {
+        let response = env
+            .send(
+                env.http
+                    .get(env.url(&format!("/v1/videos/{task_id}/content")))
+                    .bearer_auth(env.api_key),
+            )
+            .await?;
+        let total_bytes = response.content_length().filter(|n| *n > 0);
+        let mut last_progress = None;
+        let mut on_bytes = |received: usize| {
+            // 未读到 EOF 前最多显示 99%，没有 Content-Length 时不编造百分比。
+            let progress = total_bytes
+                .map(|total| ((received as u64).saturating_mul(100) / total).min(99) as u32);
+            if progress != last_progress {
+                last_progress = progress;
+                on_progress(VideoProgress {
+                    stage: "downloading",
+                    elapsed_secs: elapsed(),
+                    progress,
+                });
+            }
+        };
+        let bytes = env
+            .read_capped_with_progress(response, MEDIA_MAX_VIDEO_BYTES, &mut on_bytes)
+            .await?;
+        let mime = sniff_video_mime(&bytes).ok_or_else(|| media_error(CODE_MEDIA_INVALID))?;
+        on_progress(VideoProgress {
+            stage: "saving",
+            elapsed_secs: elapsed(),
+            progress: None,
+        });
+        Ok(DecodedMedia { bytes, mime })
+    };
+    tokio::time::timeout(timing.download_timeout, download)
+        .await
+        .map_err(|_| media_error(CODE_MEDIA_TIMEOUT))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,30 +1324,6 @@ fn sanitize_id(request_id: &str) -> String {
         .collect()
 }
 
-/// 清理超期文件：尽力而为，失败只记日志，不影响本次保存。
-fn prune_studio_dir(dir: &Path, max_age: Duration) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let now = SystemTime::now();
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() {
-            continue;
-        }
-        let expired = meta
-            .modified()
-            .ok()
-            .and_then(|m| now.duration_since(m).ok())
-            .is_some_and(|age| age > max_age);
-        if expired {
-            if let Err(e) = std::fs::remove_file(entry.path()) {
-                log::debug!("playground-media: 清理旧文件失败: {e}");
-            }
-        }
-    }
-}
-
 fn save_media(
     dir: &Path,
     request_id: &str,
@@ -1238,7 +1331,6 @@ fn save_media(
     media: &DecodedMedia,
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    prune_studio_dir(dir, MEDIA_RETENTION);
     let epoch = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1250,8 +1342,84 @@ fn save_media(
         extension_for(media.mime)
     );
     let path = dir.join(name);
-    std::fs::write(&path, &media.bytes)?;
+    // 只把完整文件发布为作品；下载/写盘中的 .part 不会出现在列表里。
+    let partial = path.with_extension(format!("{}.part", extension_for(media.mime)));
+    if let Err(error) =
+        std::fs::write(&partial, &media.bytes).and_then(|_| std::fs::rename(&partial, &path))
+    {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
     Ok(path)
+}
+
+/// 未建索引的历史媒体文件；列表来自持久化文件，不依赖前端会话。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaygroundWork {
+    pub name: String,
+    pub saved_at_ms: u64,
+    pub file: PlaygroundMediaFile,
+}
+
+fn list_studio_works(data_root: &Path) -> std::io::Result<Vec<PlaygroundWork>> {
+    use std::io::Read;
+    let entries = match std::fs::read_dir(studio_dir(data_root)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut works = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|kind| kind.is_file())
+            || !matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("mp4" | "webm" | "png" | "jpg" | "jpeg" | "webp")
+            )
+        {
+            continue;
+        }
+        let Ok(path) = resolve_studio_path(data_root, &path.to_string_lossy()) else {
+            continue;
+        };
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(metadata) = file.metadata() else {
+            continue;
+        };
+        let mut header = [0u8; 64];
+        let Ok(read) = file.read(&mut header) else {
+            continue;
+        };
+        let Some(mime) =
+            sniff_video_mime(&header[..read]).or_else(|| sniff_image_mime(&header[..read]))
+        else {
+            continue;
+        };
+        works.push(PlaygroundWork {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            saved_at_ms: metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            file: PlaygroundMediaFile {
+                path: path.to_string_lossy().into_owned(),
+                mime: mime.to_string(),
+                bytes: metadata.len(),
+                data_url: None,
+            },
+        });
+    }
+    works.sort_by(|a, b| {
+        b.saved_at_ms
+            .cmp(&a.saved_at_ms)
+            .then_with(|| b.name.cmp(&a.name))
+    });
+    Ok(works)
 }
 
 /// 只接受工坊目录内、真实存在的文件；符号链接与 `..` 经 canonicalize 后再比较前缀。
@@ -1309,7 +1477,7 @@ pub async fn we2ai_playground_media_models(
             } else {
                 // 视频只展示能识别请求体的模型族。
                 let family = VideoFamily::of(&m.id)?;
-                (family.as_str(), family.capabilities())
+                (family.as_str(), family.capabilities_for_model(&m.id))
             };
             Some(PlaygroundMediaModelView {
                 id: m.id,
@@ -1370,35 +1538,50 @@ pub async fn we2ai_playground_image(
         request_id: request.request_id.clone(),
         token,
     };
-    let identity_manager = manager.clone();
-    let identity_ok = move || identity_manager.current_identity() == Some(identity);
-    let env = MediaEnv {
-        http: PLAYGROUND_HTTP_CLIENT.clone(),
-        base_url: identity.region.base_url().to_string(),
-        api_key: &secret,
-        cancel,
-        identity_ok: &identity_ok,
-        allow_http_urls: false,
-    };
-    let boundary = format!("----we2ai{}", uuid::Uuid::new_v4().simple());
-    let images = run_image(&env, &plan, &boundary).await?;
+    let mut work = WorkGuard::start(
+        manager.data_root(),
+        &request.request_id,
+        "image",
+        &request.model,
+        &request.prompt,
+    )?;
+    let outcome = async {
+        let identity_manager = manager.clone();
+        let identity_ok = move || identity_manager.current_identity() == Some(identity);
+        let env = MediaEnv {
+            http: PLAYGROUND_HTTP_CLIENT.clone(),
+            base_url: identity.region.base_url().to_string(),
+            api_key: &secret,
+            cancel,
+            identity_ok: &identity_ok,
+            allow_http_urls: false,
+        };
+        let boundary = format!("----we2ai{}", uuid::Uuid::new_v4().simple());
+        let images = run_image(&env, &plan, &boundary).await?;
 
-    let dir = studio_dir(manager.data_root());
-    let request_id = request.request_id.clone();
-    let saved = tauri::async_runtime::spawn_blocking(move || {
-        images
-            .iter()
-            .enumerate()
-            .map(|(i, media)| {
-                save_media(&dir, &request_id, i, media)
-                    .map(|path| media_file_view(&path, media, true))
-            })
-            .collect::<std::io::Result<Vec<_>>>()
-    })
-    .await
-    .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存图片失败: {e}")))?
-    .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存图片失败: {e}")))?;
-    Ok(PlaygroundImageOutcome { images: saved })
+        let dir = studio_dir(manager.data_root());
+        let request_id = request.request_id.clone();
+        let saved = tauri::async_runtime::spawn_blocking(move || {
+            images
+                .iter()
+                .enumerate()
+                .map(|(i, media)| {
+                    save_media(&dir, &request_id, i, media)
+                        .map(|path| media_file_view(&path, media, true))
+                })
+                .collect::<std::io::Result<Vec<_>>>()
+        })
+        .await
+        .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存图片失败: {e}")))?
+        .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存图片失败: {e}")))?;
+        Ok(PlaygroundImageOutcome { images: saved })
+    }
+    .await;
+    match &outcome {
+        Ok(o) => work.finish(Ok(o.images.clone()), None)?,
+        Err(e) => work.finish(Err(e), None)?,
+    }
+    outcome
 }
 
 #[tauri::command]
@@ -1423,39 +1606,56 @@ pub async fn we2ai_playground_video(
         request_id: request.request_id.clone(),
         token,
     };
-    let identity_manager = manager.clone();
-    let identity_ok = move || identity_manager.current_identity() == Some(identity);
-    let env = MediaEnv {
-        http: PLAYGROUND_HTTP_CLIENT.clone(),
-        base_url: identity.region.base_url().to_string(),
-        api_key: &secret,
-        cancel,
-        identity_ok: &identity_ok,
-        allow_http_urls: false,
-    };
-    let emit_request_id = request.request_id.clone();
-    let mut on_progress = move |p: VideoProgress| {
-        let _ = app.emit(
-            PLAYGROUND_PROGRESS_EVENT,
-            PlaygroundProgressPayload {
-                request_id: emit_request_id.clone(),
-                stage: p.stage,
-                elapsed_secs: p.elapsed_secs,
-                progress: p.progress,
-            },
-        );
-    };
-    let video = run_video(&env, &plan, VideoTiming::default(), &mut on_progress).await?;
+    let mut work = WorkGuard::start(
+        manager.data_root(),
+        &request.request_id,
+        "video",
+        &request.model,
+        &request.prompt,
+    )?;
+    let outcome = async {
+        let identity_manager = manager.clone();
+        let identity_ok = move || identity_manager.current_identity() == Some(identity);
+        let env = MediaEnv {
+            http: PLAYGROUND_HTTP_CLIENT.clone(),
+            base_url: identity.region.base_url().to_string(),
+            api_key: &secret,
+            cancel,
+            identity_ok: &identity_ok,
+            allow_http_urls: false,
+        };
+        let emit_request_id = request.request_id.clone();
+        let mut on_progress = |p: VideoProgress| {
+            work.progress(p.progress);
+            let _ = app.emit(
+                PLAYGROUND_PROGRESS_EVENT,
+                PlaygroundProgressPayload {
+                    request_id: emit_request_id.clone(),
+                    stage: p.stage,
+                    elapsed_secs: p.elapsed_secs,
+                    progress: p.progress,
+                },
+            );
+        };
+        let video = run_video(&env, &plan, VideoTiming::default(), &mut on_progress).await?;
 
-    let dir = studio_dir(manager.data_root());
-    let request_id = request.request_id.clone();
-    let view = tauri::async_runtime::spawn_blocking(move || {
-        save_media(&dir, &request_id, 0, &video).map(|path| media_file_view(&path, &video, false))
-    })
-    .await
-    .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存视频失败: {e}")))?
-    .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存视频失败: {e}")))?;
-    Ok(PlaygroundVideoOutcome { video: view })
+        let dir = studio_dir(manager.data_root());
+        let request_id = request.request_id.clone();
+        let view = tauri::async_runtime::spawn_blocking(move || {
+            save_media(&dir, &request_id, 0, &video)
+                .map(|path| media_file_view(&path, &video, false))
+        })
+        .await
+        .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存视频失败: {e}")))?
+        .map_err(|e| playground_error(CODE_SAVE_FAILED, format!("保存视频失败: {e}")))?;
+        Ok(PlaygroundVideoOutcome { video: view })
+    }
+    .await;
+    match &outcome {
+        Ok(o) => work.finish(Ok(vec![o.video.clone()]), None)?,
+        Err(e) => work.finish(Err(e), None)?,
+    }
+    outcome
 }
 
 /// 另存为：弹出系统保存对话框，把工坊目录内的文件复制到用户选择的位置。
@@ -1574,6 +1774,7 @@ mod tests {
             resolution: None,
             generate_audio: None,
             reference: None,
+            references: vec![],
         }
     }
 
@@ -1943,6 +2144,119 @@ mod tests {
     }
 
     #[test]
+    fn video_reference_arrays_preserve_order_and_native_roles() {
+        let first = png_of(640, 480);
+        let second = png_of(800, 600);
+        for model in [
+            "grok-imagine-video-1.5",
+            "doubao-seedance-2.0",
+            "doubao-seedance-2.5",
+        ] {
+            let mut request = video_request(model);
+            request.references = vec![
+                reference(&first, "image/png"),
+                reference(&second, "image/png"),
+            ];
+            let body = build_video_body(&validate_video_request(&request).unwrap());
+            if model.starts_with("grok") {
+                let images = body["reference_images"].as_array().unwrap();
+                assert_eq!(images.len(), 2);
+                assert_eq!(
+                    images[0]["url"],
+                    format!("data:image/png;base64,{}", b64(&first))
+                );
+                assert_eq!(
+                    images[1]["url"],
+                    format!("data:image/png;base64,{}", b64(&second))
+                );
+                assert!(body.get("image").is_none());
+            } else {
+                let content = body["content"].as_array().unwrap();
+                assert_eq!(content.len(), 3);
+                for (part, bytes) in content[1..].iter().zip([&first, &second]) {
+                    assert_eq!(part["role"], "reference_image");
+                    assert_eq!(
+                        part["image_url"]["url"],
+                        format!("data:image/png;base64,{}", b64(bytes))
+                    );
+                }
+            }
+        }
+        let mut legacy = video_request("seedance-1.0-pro");
+        legacy.references = vec![reference(&first, "image/png")];
+        assert_eq!(
+            build_video_body(&validate_video_request(&legacy).unwrap())["content"][1]["role"],
+            "first_frame"
+        );
+    }
+
+    #[test]
+    fn video_reference_limits_and_every_image_are_validated_before_submit() {
+        let image = reference(&png_of(300, 300), "image/png");
+        for (model, max) in [
+            ("grok-imagine-video", 7),
+            ("grok-imagine-video-1.5", 14),
+            ("doubao-seedance-2.0-mini", 9),
+            ("doubao-seedance-2.5", 30),
+            ("seedance-1.0-pro", 1),
+        ] {
+            let mut request = video_request(model);
+            request.references = vec![image.clone(); max];
+            assert!(
+                validate_video_request(&request).is_ok(),
+                "{model}: limit boundary"
+            );
+            request.references.push(image.clone());
+            assert!(validate_video_request(&request)
+                .unwrap_err()
+                .message
+                .contains("最多支持"));
+        }
+        let mut request = video_request("doubao-seedance-2.0");
+        request.references = vec![image.clone(), reference(&png_of(299, 300), "image/png")];
+        assert!(validate_video_request(&request)
+            .unwrap_err()
+            .message
+            .contains("299×300"));
+        request.references[1] = reference(PNG, "image/jpeg");
+        assert!(
+            validate_video_request(&request).is_err(),
+            "MIME mismatch on second image"
+        );
+        request.references[1] = PlaygroundReferenceImage {
+            mime: "image/png".into(),
+            data_base64: "invalid".into(),
+        };
+        assert!(
+            validate_video_request(&request).is_err(),
+            "invalid second image"
+        );
+        request.reference = Some(image);
+        assert!(validate_video_request(&request)
+            .unwrap_err()
+            .message
+            .contains("不能同时提交"));
+        let mut request = video_request("grok-imagine-video");
+        let mut bytes = PNG.to_vec();
+        bytes.resize(MEDIA_MAX_REFERENCE_BYTES, 0);
+        request.references = vec![reference(&bytes, "image/png"); 4];
+        assert!(validate_video_request(&request).is_ok(), "exactly 32 MB");
+        request.references.push(reference(PNG, "image/png"));
+        assert!(validate_video_request(&request)
+            .unwrap_err()
+            .message
+            .contains("32 MB"));
+        request.references.push(reference(&bytes, "image/png"));
+        assert!(
+            validate_video_request(&request)
+                .unwrap_err()
+                .message
+                .contains("32 MB"),
+            "encoded preflight"
+        );
+    }
+
+    #[test]
     fn grok_prompt_over_4096_bytes_is_rejected_before_submit() {
         let mut r = video_request("grok-imagine-video-1.5");
         r.prompt = "机".repeat(1400); // 4200 字节，字符数未超 4000
@@ -2033,17 +2347,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prune_removes_only_expired_files() {
-        let root = tempfile::tempdir().unwrap();
-        let fresh = root.path().join("fresh.png");
-        std::fs::write(&fresh, "x").unwrap();
-        prune_studio_dir(root.path(), Duration::from_secs(3600));
-        assert!(fresh.exists());
-        prune_studio_dir(root.path(), Duration::ZERO);
-        // 零保留期下刚写入的文件年龄可能为 0，允许删除或保留；只断言不 panic。
-    }
-
     // ---- 端到端（wiremock） ----
 
     fn env<'a>(
@@ -2065,6 +2368,7 @@ mod tests {
         VideoTiming {
             poll_interval: Duration::from_millis(20),
             max_wait: Duration::from_secs(5),
+            download_timeout: MEDIA_VIDEO_DOWNLOAD_TIMEOUT,
         }
     }
 
@@ -2220,6 +2524,114 @@ mod tests {
         }
     }
 
+    #[test]
+    fn works_survive_reload_and_keep_old_files_without_listing_partial_or_invalid_files() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(list_studio_works(root.path()).unwrap().is_empty());
+        let dir = studio_dir(root.path());
+        let media = DecodedMedia {
+            bytes: MP4.to_vec(),
+            mime: "video/mp4",
+        };
+        let old = save_media(&dir, "old", 0, &media).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .unwrap();
+        let new = save_media(&dir, "new", 0, &media).unwrap();
+        std::fs::write(dir.join("unfinished.mp4.part"), MP4).unwrap();
+        std::fs::write(dir.join("invalid.mp4"), b"not a video").unwrap();
+        std::fs::write(dir.join("image.png"), PNG).unwrap();
+        let listed = list_studio_works(root.path()).unwrap();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(
+            listed.iter().filter(|w| w.file.mime == "image/png").count(),
+            1
+        );
+        let first: Vec<_> = listed
+            .into_iter()
+            .filter(|w| w.file.mime.starts_with("video/"))
+            .collect();
+        let reloaded: Vec<_> = list_studio_works(root.path())
+            .unwrap()
+            .into_iter()
+            .filter(|w| w.file.mime.starts_with("video/"))
+            .collect();
+        assert!(old.exists(), "saved works must not expire automatically");
+        assert_eq!(first.len(), 2);
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(
+            first[0].file.path,
+            new.canonicalize().unwrap().to_string_lossy()
+        );
+        assert_eq!(
+            first[1].file.path,
+            old.canonicalize().unwrap().to_string_lossy()
+        );
+        assert_eq!(first[0].file.mime, "video/mp4");
+        assert_eq!(first[0].file.bytes, MP4.len() as u64);
+        assert!(first[0].file.data_url.is_none());
+        assert!(!new.with_extension("mp4.part").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn works_do_not_follow_symlinks_to_files_outside_studio() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = studio_dir(root.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = root.path().join("outside.mp4");
+        std::fs::write(&outside, MP4).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("linked.mp4")).unwrap();
+        assert!(list_studio_works(root.path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn video_download_deadline_ends_a_stalled_response() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/videos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"stalled"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/videos/stalled"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":"succeeded"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/videos/stalled/content"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_bytes(MP4.to_vec()),
+            )
+            .mount(&server)
+            .await;
+        let ok = always_ok();
+        let plan = validate_video_request(&video_request("grok-imagine-video-1.5")).unwrap();
+        let timing = VideoTiming {
+            download_timeout: Duration::from_millis(30),
+            ..fast()
+        };
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            run_video(
+                &env(&server, &ok, Arc::new(Notify::new())),
+                &plan,
+                timing,
+                &mut |_| {},
+            ),
+        )
+        .await
+        .expect("download deadline must settle the task");
+        assert_eq!(result.unwrap_err().code, CODE_MEDIA_TIMEOUT);
+    }
+
     #[tokio::test]
     async fn video_flow_submit_poll_and_download() {
         use wiremock::matchers::{method, path};
@@ -2252,7 +2664,13 @@ mod tests {
         let ok = always_ok();
         let plan = validate_video_request(&video_request("grok-imagine-video-1.5")).unwrap();
         let mut stages: Vec<&'static str> = Vec::new();
-        let mut on_progress = |p: VideoProgress| stages.push(p.stage);
+        let mut download_progress = Vec::new();
+        let mut on_progress = |p: VideoProgress| {
+            stages.push(p.stage);
+            if p.stage == "downloading" {
+                download_progress.push(p.progress);
+            }
+        };
         let video = run_video(
             &env(&server, &ok, Arc::new(Notify::new())),
             &plan,
@@ -2264,7 +2682,10 @@ mod tests {
         assert_eq!(video.mime, "video/mp4");
         assert_eq!(stages.first(), Some(&"submitted"));
         assert!(stages.contains(&"running"));
-        assert_eq!(stages.last(), Some(&"downloading"));
+        assert_eq!(download_progress.first(), Some(&None));
+        assert!(download_progress.iter().flatten().all(|p| *p < 100));
+        assert!(download_progress.iter().flatten().any(|p| *p > 0));
+        assert_eq!(stages.last(), Some(&"saving"));
         // 只提交一次：不自动重放。
         let received = server.received_requests().await.unwrap();
         assert_eq!(
@@ -2442,6 +2863,7 @@ mod tests {
         let timing = VideoTiming {
             poll_interval: Duration::from_millis(10),
             max_wait: Duration::from_millis(80),
+            ..VideoTiming::default()
         };
         let err = run_video(
             &env(&server, &ok, Arc::new(Notify::new())),
@@ -2500,6 +2922,7 @@ mod tests {
         let timing = VideoTiming {
             poll_interval: Duration::from_secs(30),
             max_wait: Duration::from_secs(60),
+            ..VideoTiming::default()
         };
         let err = tokio::time::timeout(
             Duration::from_secs(10),

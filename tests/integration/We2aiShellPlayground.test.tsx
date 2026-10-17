@@ -1,4 +1,11 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse, type JsonBodyType } from "msw";
@@ -8,6 +15,11 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { UpdateProvider } from "@/contexts/UpdateContext";
 import { isWe2aiIpcAllowed } from "@/we2ai/ipcWhitelist";
+import {
+  we2aiApi,
+  type We2aiStudioWork,
+  type We2aiVideoOutcome,
+} from "@/we2ai/api";
 import { We2aiShell } from "@/we2ai/We2aiShell";
 
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -131,6 +143,35 @@ function mockShellCommands(
             rememberedKeyId: null,
             studioSelectedKeyId: 5,
           });
+        case "we2ai_playground_media_models":
+          return HttpResponse.json({
+            models: ["grok", "grok-second"].map((id) => ({
+              id: `${id}-${body.kind}`,
+              family: "grok",
+              provider: null,
+              capabilities: {
+                sizes: [],
+                aspectRatios: ["16:9"],
+                imageSizes: [],
+                durations: [10],
+                resolutions: ["720p"],
+                maxN: 1,
+                supportsReference: false,
+                supportsAudio: false,
+                minReferenceSide: 0,
+              },
+            })),
+            blockedReason: null,
+          });
+        case "we2ai_playground_video":
+          return HttpResponse.json({
+            video: {
+              path: "/home/u/.we2ai/studio/generated.mp4",
+              mime: "video/mp4",
+              bytes: 1234,
+              dataUrl: null,
+            },
+          });
         case "we2ai_playground_models":
           return HttpResponse.json({
             models: [
@@ -172,189 +213,308 @@ function mockShellCommands(
 }
 
 describe("We2aiShell AI marketing studio tab (feature 27)", () => {
+  it("视频任务切换模式和顶栏功能后继续，完成后提醒并跳到作品列表", async () => {
+    mockShellCommands();
+    const user = userEvent.setup();
+    const file = {
+      path: "/home/u/.we2ai/studio/background.mp4",
+      mime: "video/mp4",
+      bytes: 1234,
+      dataUrl: null,
+    };
+    const work: We2aiStudioWork = {
+      id: "background",
+      name: "后台视频",
+      kind: "video",
+      status: "processing",
+      savedAtMs: Date.now(),
+      favorite: false,
+      model: "grok-imagine-video",
+      progress: 35,
+      message: null,
+      content: null,
+      files: [],
+    };
+    const cancel = vi
+      .spyOn(we2aiApi, "playgroundCancel")
+      .mockResolvedValue(undefined);
+    vi.spyOn(we2aiApi, "playgroundMediaModels").mockImplementation(
+      async (_id, kind) => ({
+        models:
+          kind === "video"
+            ? [
+                {
+                  id: "grok-imagine-video",
+                  provider: null,
+                  family: "grok",
+                  capabilities: {
+                    sizes: [],
+                    aspectRatios: ["16:9"],
+                    imageSizes: [],
+                    durations: [10],
+                    resolutions: ["720p"],
+                    maxN: 1,
+                    supportsReference: false,
+                    supportsAudio: false,
+                    minReferenceSide: 0,
+                  },
+                },
+              ]
+            : [],
+        blockedReason: null,
+      }),
+    );
+    let finish!: (outcome: We2aiVideoOutcome) => void;
+    const video = vi.spyOn(we2aiApi, "playgroundVideo").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.spyOn(we2aiApi, "playgroundMediaList").mockImplementation(async () => [
+      { ...work },
+    ]);
+    renderShell();
+    await screen.findByTestId("balance-chip");
+    await user.click(screen.getByRole("tab", { name: "AI 营销工坊" }));
+    fireEvent.change(
+      await screen.findByTestId("we2ai-studio-video-field-productName"),
+      { target: { value: "工业设备" } },
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("we2ai-studio-video-generate")).toBeEnabled(),
+    );
+    await user.click(screen.getByTestId("we2ai-studio-video-generate"));
+    await waitFor(() => expect(video).toHaveBeenCalledTimes(1));
+    for (const mode of ["image", "video"])
+      await user.click(screen.getByTestId(`we2ai-studio-mode-${mode}`));
+    for (const name of ["Key 管理", "充值", "设置", "作品列表"])
+      await user.click(screen.getByRole("tab", { name }));
+    expect(await screen.findByTestId("we2ai-work-status")).toHaveTextContent(
+      "生成中",
+    );
+    expect(cancel).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("tab", { name: "设置" }));
+    work.status = "success";
+    work.progress = 100;
+    work.files = [file];
+    await act(async () => {
+      finish({ video: file });
+    });
+    const notice = await screen.findByTestId("we2ai-work-ready");
+    expect(notice).toHaveTextContent("作品已生成并保存");
+    await user.click(
+      within(notice).getByRole("button", { name: "查看作品列表" }),
+    );
+    expect(screen.getByRole("tab", { name: "作品列表" })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(await screen.findByTestId("we2ai-work-player")).toBeInTheDocument();
+    expect(screen.queryByTestId("we2ai-work-ready")).toBeNull();
+    expect(video).toHaveBeenCalledTimes(1);
+    expect(cancel).not.toHaveBeenCalled();
+  });
   afterEach(() => {
     server.resetHandlers();
     vi.restoreAllMocks();
   });
 
-  it("orders the tabs marketplace | studio | keys | billing | settings", async () => {
+  it("orders the tabs marketplace | studio | works | keys | billing | settings", async () => {
     mockShellCommands();
     renderShell();
     await screen.findByTestId("balance-chip");
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "模型广场",
       "AI 营销工坊",
+      "作品列表",
       "Key 管理",
       "充值",
       "设置",
     ]);
   });
 
-  it("streams a chat round end-to-end and only invokes whitelisted commands", async () => {
-    const calls = mockShellCommands();
+  it("作品入口读取本机已保存视频，重新进入仍可下载", async () => {
+    const calls = mockShellCommands({
+      we2ai_playground_media_list: () => [
+        {
+          id: "saved",
+          kind: "video",
+          status: "success",
+          favorite: false,
+          model: "grok",
+          progress: 100,
+          message: null,
+          content: null,
+          name: "saved.mp4",
+          savedAtMs: 1792162964000,
+          files: [
+            {
+              path: "/home/u/.we2ai/studio/saved.mp4",
+              mime: "video/mp4",
+              bytes: 8000000,
+              dataUrl: null,
+            },
+          ],
+        },
+      ],
+      we2ai_playground_media_save_as: () => "/downloads/saved.mp4",
+    });
     const user = userEvent.setup();
-
     renderShell();
     await screen.findByTestId("balance-chip");
-    await user.click(await screen.findByRole("tab", { name: "AI 营销工坊" }));
+    await user.click(screen.getByRole("tab", { name: "作品列表" }));
+    await screen.findByTestId("we2ai-work-player");
+    await user.click(screen.getByRole("button", { name: "下载 / 另存为" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "/downloads/saved.mp4",
+    );
+    await user.click(screen.getByRole("tab", { name: "模型广场" }));
+    await user.click(screen.getByRole("tab", { name: "作品列表" }));
+    await screen.findByTestId("we2ai-work-player");
+    expect(
+      calls.filter((c) => c.command === "we2ai_playground_media_list"),
+    ).toHaveLength(2);
+  });
 
-    // 工坊挂载即预热 Key 缓存（方案 M1）：列表与模型拉取完成前发送按钮禁用。
-    await screen.findByTestId("we2ai-studio-key-select");
-    const modelSelect = await screen.findByTestId("we2ai-studio-model-select");
-    expect(modelSelect).toHaveTextContent("gpt-marketing");
-
-    // 点击场景预设 + 输入 + 生成。
-    await user.click(await screen.findByTestId("we2ai-studio-preset-product-copy"));
-    const input = screen.getByTestId("we2ai-studio-input");
-    await user.type(input, "智能保温杯");
-    await user.click(screen.getByTestId("we2ai-studio-send"));
-
-    // 流式增量与 usage 渲染。
-    const bubble = await screen.findByTestId("we2ai-studio-assistant-message");
-    await waitFor(() => {
-      expect(bubble).toHaveTextContent("第一段第二段");
-    });
-    expect(bubble).toHaveTextContent("16 tokens");
-
-    // 请求体：keyId/model/system/messages 契约。
-    const chat = calls.find((c) => c.command === "we2ai_playground_chat");
-    expect(chat?.body.request).toMatchObject({
+  it("只展示生图和视频，生成视频后刷新余额，全部调用符合 IPC 白名单", async () => {
+    const calls = mockShellCommands();
+    const user = userEvent.setup();
+    renderShell();
+    await screen.findByTestId("balance-chip");
+    await user.click(screen.getByRole("tab", { name: "AI 营销工坊" }));
+    await screen.findByTestId("we2ai-studio-video-model");
+    expect(screen.queryByTestId("we2ai-studio-mode-text")).toBeNull();
+    expect(
+      screen.getByTestId("we2ai-studio-copywriting-hint"),
+    ).toHaveTextContent("Codex 或 WorkBuddy");
+    fireEvent.change(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+      { target: { value: "智能保温杯" } },
+    );
+    await user.click(screen.getByTestId("we2ai-studio-video-generate"));
+    await screen.findByTestId("we2ai-work-ready");
+    const video = calls.find((c) => c.command === "we2ai_playground_video");
+    expect(video?.body.request).toMatchObject({
       keyId: 5,
-      model: "gpt-marketing",
-      // 场景指令 + 统一硬约束 + 默认输出语言（英文）三段都要下发。
-      system: expect.stringMatching(/产品页文案[\s\S]*硬性约束[\s\S]*English/),
-      messages: [{ role: "user", content: "智能保温杯" }],
+      model: "grok-video",
+      duration: 10,
+      aspectRatio: "16:9",
     });
-    expect(typeof chat?.body.request.requestId).toBe("string");
-    // 可选参数未启用时不下发（与 Web Playground 参数语义一致）。
-    expect(chat?.body.request.temperature).toBeNull();
-    expect(chat?.body.request.topP).toBeNull();
-    expect(chat?.body.request.maxTokens).toBeNull();
-
-    // 终态后余额刷新（方案 M7）。
-    await waitFor(() => {
+    expect(video?.body.request.prompt).toContain("智能保温杯");
+    expect(calls.some((c) => c.command === "we2ai_playground_chat")).toBe(
+      false,
+    );
+    await waitFor(() =>
       expect(
         calls.filter((c) => c.command === "we2ai_get_balance").length,
-      ).toBeGreaterThanOrEqual(2);
-    });
-
-    // 全部 invoke 均落在白名单内（含新命令）。
-    for (const { command } of calls) {
-      expect(
-        isWe2aiIpcAllowed(command),
-        `command "${command}" is not in the WE2AI IPC whitelist`,
-      ).toBe(true);
-    }
+      ).toBeGreaterThanOrEqual(2),
+    );
+    for (const { command } of calls)
+      expect(isWe2aiIpcAllowed(command), command).toBe(true);
   });
 
-  it("keeps the conversation when switching tabs (forceMount)", async () => {
+  it("切换顶栏功能保留图片 / 视频表单和当前模式", async () => {
     mockShellCommands();
     const user = userEvent.setup();
-
     renderShell();
     await screen.findByTestId("balance-chip");
-    await user.click(await screen.findByRole("tab", { name: "AI 营销工坊" }));
-    await screen.findByTestId("we2ai-studio-model-select");
-
-    await user.type(screen.getByTestId("we2ai-studio-input"), "跨 Tab 保留");
-    await user.click(screen.getByTestId("we2ai-studio-send"));
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("we2ai-studio-assistant-message"),
-      ).toHaveTextContent("第一段第二段");
-    });
-
-    // 切到模型广场再切回来：会话不丢（工坊 TabsContent forceMount）。
+    await user.click(screen.getByRole("tab", { name: "AI 营销工坊" }));
+    await screen.findByTestId("we2ai-studio-video-model");
+    fireEvent.change(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+      { target: { value: "跨 Tab 保留" } },
+    );
+    await user.click(screen.getByTestId("we2ai-studio-mode-image"));
     await user.click(screen.getByRole("tab", { name: "模型广场" }));
     await user.click(screen.getByRole("tab", { name: "AI 营销工坊" }));
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("we2ai-studio-assistant-message"),
-      ).toHaveTextContent("第一段第二段");
-    });
-    expect(screen.getByTestId("we2ai-studio-user-message")).toHaveTextContent(
-      "跨 Tab 保留",
+    expect(screen.getByTestId("we2ai-studio-mode-image")).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
+    await user.click(screen.getByTestId("we2ai-studio-mode-video"));
+    expect(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+    ).toHaveValue("跨 Tab 保留");
   });
 
-  it("外壳重渲染不重置工坊的 Key 与模型选择", async () => {
+  it("服务端新增 Key 后切回工坊刷新选择器，且媒体表单不丢", async () => {
+    const keyOf = (id: number, name: string) => ({
+      id,
+      name,
+      groupName: null,
+      status: "active",
+      maskedKey: `sk-…${id}`,
+    });
+    let keys = [keyOf(5, "工作")];
+    mockShellCommands({
+      we2ai_list_keys: () => ({
+        keys,
+        selectedKeyId: 5,
+        rememberedKeyId: null,
+        studioSelectedKeyId: 5,
+      }),
+    });
+    const user = userEvent.setup();
+    renderShell();
+    await screen.findByTestId("balance-chip");
+    await user.click(screen.getByRole("tab", { name: "AI 营销工坊" }));
+    await screen.findByTestId("we2ai-studio-video-model");
+    fireEvent.change(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+      { target: { value: "设备" } },
+    );
+    keys = [keyOf(5, "工作"), keyOf(9, "后台新增")];
+    await user.click(screen.getByRole("tab", { name: "Key 管理" }));
+    await user.click(screen.getByRole("tab", { name: "AI 营销工坊" }));
+    await user.click(screen.getByTestId("we2ai-studio-key-select"));
+    expect(
+      await within(await screen.findByRole("listbox")).findByText("后台新增"),
+    ).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.getByTestId("we2ai-studio-video-field-productName"),
+    ).toHaveValue("设备");
+  });
+
+  it("外壳重渲染不重置工坊 Key 与视频模型", async () => {
     const calls = mockShellCommands();
     const user = userEvent.setup();
-
     renderShell();
     const chip = await screen.findByTestId("balance-chip");
-    // 初始余额 12.48 + 第一次 get_balance 调用（=1）的递增值。
     await waitFor(() => expect(chip).toHaveTextContent("$13.48"));
-    await user.click(await screen.findByRole("tab", { name: "AI 营销工坊" }));
-
-    const modelSelect = await screen.findByTestId("we2ai-studio-model-select");
-    await waitFor(() => expect(modelSelect).toHaveTextContent("gpt-marketing"));
-
-    // 用户改选第二个模型（Key 不变：切换 Key 本来就会清会话并重置模型）。
-    await user.click(modelSelect);
-    const listbox = await screen.findByRole("listbox");
-    await user.click(await within(listbox).findByText("gpt-second"));
-    await waitFor(() =>
-      expect(screen.getByTestId("we2ai-studio-model-select")).toHaveTextContent(
-        "gpt-second",
-      ),
-    );
-    // 再改选第二个 Key（Codex 验收修复项 2：Key 选择也要锁定）。
+    await user.click(screen.getByRole("tab", { name: "AI 营销工坊" }));
     await user.click(await screen.findByTestId("we2ai-studio-key-select"));
-    const keyListbox = await screen.findByRole("listbox");
-    await user.click(await within(keyListbox).findByText("备用"));
+    await user.click(
+      within(await screen.findByRole("listbox")).getByText("备用"),
+    );
     await waitFor(() =>
       expect(screen.getByTestId("we2ai-studio-key-select")).toHaveTextContent(
         "备用",
       ),
     );
-    // 切 Key 会开新会话并重置模型为列表第一个（预期行为），重新改选模型。
-    await waitFor(() =>
-      expect(screen.getByTestId("we2ai-studio-model-select")).toHaveTextContent(
-        "gpt-marketing",
-      ),
-    );
-    await user.click(screen.getByTestId("we2ai-studio-model-select"));
-    const listbox2 = await screen.findByRole("listbox");
-    await user.click(await within(listbox2).findByText("gpt-second"));
-    await waitFor(() =>
-      expect(screen.getByTestId("we2ai-studio-model-select")).toHaveTextContent(
-        "gpt-second",
-      ),
-    );
-
-    const listKeysBefore = calls.filter(
+    const model = await screen.findByTestId("we2ai-studio-video-model");
+    await user.selectOptions(model, "grok-second-video");
+    const keysBefore = calls.filter(
       (c) => c.command === "we2ai_list_keys",
     ).length;
-    const modelsBefore = calls.filter(
-      (c) => c.command === "we2ai_playground_models",
+    const mediaBefore = calls.filter(
+      (c) => c.command === "we2ai_playground_media_models",
     ).length;
-
-    // 窗口重新聚焦会让外壳刷新余额并重渲染（refreshBalance → setBalance）。
-    // 传进工坊的回调必须是稳定引用，否则 loadKeys/loadModels 的 useCallback
-    // 会换身份，effect 重跑：重拉列表、把选中模型重置回列表第一个、把选中
-    // Key 弹回磁盘记忆。
-    await act(async () => {
-      window.dispatchEvent(new Event("focus"));
-    });
-
-    // 等待可观察的状态提交屏障：focus 触发的余额刷新返回了新值并渲染到 chip。
-    // （调用计数不构成屏障——请求被记录不代表 setBalance 已提交，Codex 验收修复项 2。）
+    await act(async () => window.dispatchEvent(new Event("focus")));
     await waitFor(() => expect(chip).toHaveTextContent("$14.48"));
-
     expect(screen.getByTestId("we2ai-studio-key-select")).toHaveTextContent(
       "备用",
     );
-    expect(screen.getByTestId("we2ai-studio-model-select")).toHaveTextContent(
-      "gpt-second",
+    expect(screen.getByTestId("we2ai-studio-video-model")).toHaveValue(
+      "grok-second-video",
     );
-    // 恒定重拉是根因的另一个表征：聚焦一次不该再拉一遍 Key 与模型列表。
     expect(calls.filter((c) => c.command === "we2ai_list_keys").length).toBe(
-      listKeysBefore,
+      keysBefore,
     );
     expect(
-      calls.filter((c) => c.command === "we2ai_playground_models").length,
-    ).toBe(modelsBefore);
+      calls.filter((c) => c.command === "we2ai_playground_media_models").length,
+    ).toBe(mediaBefore);
   });
 
   it("列表刷新读到旧磁盘记忆时保留仍有效的本地 Key 选择", async () => {
@@ -407,7 +567,7 @@ describe("We2aiShell AI marketing studio tab (feature 27)", () => {
     renderShell();
     await screen.findByTestId("balance-chip");
     await user.click(await screen.findByRole("tab", { name: "AI 营销工坊" }));
-    await screen.findByTestId("we2ai-studio-model-select");
+    await screen.findByTestId("we2ai-studio-video-model");
 
     await user.click(await screen.findByTestId("we2ai-studio-key-select"));
     const keyListbox = await screen.findByRole("listbox");

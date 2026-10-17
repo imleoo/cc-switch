@@ -35,6 +35,11 @@ export interface StudioMediaStrings {
   referenceRemove: string;
   referenceHintImage: string;
   referenceHintVideo: string;
+  referenceHintFirstFrame: string;
+  referenceCount: string;
+  referenceCountExceeded: string;
+  referenceTotalTooLarge: string;
+  referencePromptChanged: string;
   referenceMinSide: string;
   referenceUnsupported: string;
   referenceTooLarge: string;
@@ -72,6 +77,35 @@ export interface StudioMediaStrings {
   videoStageSubmitted: string;
   videoStageRunning: string;
   videoStageDownloading: string;
+  videoStageSaving: string;
+  videoDownloadTimeout: string;
+  videoWaitStopped: string;
+  worksAll: string;
+  worksVideo: string;
+  worksImage: string;
+  worksFavorites: string;
+  worksFavorite: string;
+  worksUnfavorite: string;
+  worksDelete: string;
+  worksDeleteConfirm: string;
+  worksCancel: string;
+  worksClose: string;
+  worksProcessing: string;
+  worksFailed: string;
+  worksCancelled: string;
+  worksInterrupted: string;
+  worksSuccess: string;
+  worksMore: string;
+  worksCompleteNotice: string;
+  worksView: string;
+  worksPreviewFailed: string;
+  worksNoMatch: string;
+  worksTitle: string;
+  worksDescription: string;
+  worksEmpty: string;
+  worksLoadError: string;
+  worksLoading: string;
+  worksDownload: string;
   videoElapsed: string;
   videoResultEmpty: string;
   videoPreviewFailed: string;
@@ -110,7 +144,14 @@ const ZH: StudioMediaStrings = {
   referenceAdd: "上传产品图",
   referenceRemove: "移除",
   referenceHintImage: "上传后按这张图保持设备外形，只换背景和光线",
-  referenceHintVideo: "作为视频首帧；含真人面孔的图片可能被网关拒绝",
+  referenceHintVideo:
+    "可多选或继续添加，按编号引用不同角度、产品和场景，不固定为首帧；PNG/JPEG/WebP，单张 ≤ 8 MB，合计 ≤ 32 MB；含真人面孔的图片可能被网关拒绝",
+  referenceHintFirstFrame: "该模型仅支持一张首帧图；PNG/JPEG/WebP，单张 ≤ 8 MB",
+  referenceCount: "已选 {used} / {max} 张参考图",
+  referenceCountExceeded: "该模型最多支持 {max} 张参考图，请移除多余图片后生成",
+  referenceTotalTooLarge: "参考图总大小不能超过 32 MB，请压缩或移除部分图片",
+  referencePromptChanged:
+    "参考图已变更，请同步检查已编辑提示词中的图片编号；可恢复模板提示词自动更新",
   referenceMinSide: "宽高都不能小于 {n} 像素",
   referenceUnsupported: "该模型不支持参考图",
   referenceTooLarge: "图片超过 8 MB，请压缩后再上传",
@@ -146,6 +187,36 @@ const ZH: StudioMediaStrings = {
   videoStageSubmitted: "已提交，排队中",
   videoStageRunning: "生成中",
   videoStageDownloading: "下载视频中",
+  videoStageSaving: "保存视频中",
+  videoDownloadTimeout:
+    "下载等待超时，请先到作品列表查看是否已保存，再决定后续操作",
+  videoWaitStopped: "已停止等待，已保存的视频可在作品列表查看",
+  worksAll: "全部",
+  worksVideo: "视频",
+  worksImage: "图片",
+  worksFavorites: "仅收藏",
+  worksFavorite: "收藏",
+  worksUnfavorite: "取消收藏",
+  worksDelete: "删除作品",
+  worksDeleteConfirm: "删除后无法恢复，将删除本机作品及其文件。确认继续吗？",
+  worksCancel: "取消",
+  worksClose: "关闭",
+  worksProcessing: "生成中，可切换其他功能，完成后会提醒。",
+  worksFailed: "生成失败",
+  worksCancelled: "已停止等待，上游任务可能仍继续计费",
+  worksInterrupted: "本机等待已结束，上游任务可能仍在运行；请勿直接重复提交。",
+  worksSuccess: "已完成",
+  worksMore: "加载更多",
+  worksCompleteNotice: "作品已生成并保存，可前往作品列表查看。",
+  worksView: "查看作品列表",
+  worksPreviewFailed: "无法预览，可下载或使用系统程序打开。",
+  worksNoMatch: "当前筛选下没有作品",
+  worksTitle: "作品列表",
+  worksDescription: "统一管理本机的图片和视频，查看生成状态、收藏与下载。",
+  worksEmpty: "还没有作品，去 AI 营销工坊开始创作。",
+  worksLoadError: "读取本机作品失败，请刷新重试",
+  worksLoading: "正在读取作品…",
+  worksDownload: "下载 / 另存为",
   videoElapsed: "已用时 {secs} 秒",
   videoResultEmpty: "生成的视频会显示在这里，并保存到本机，通常需要几分钟",
   videoPreviewFailed: "无法在应用内预览，请用系统播放器打开",
@@ -187,7 +258,16 @@ const EN: StudioMediaStrings = {
   referenceHintImage:
     "Keeps the machine's shape from this photo and changes only background and lighting",
   referenceHintVideo:
-    "Used as the first frame; images with real faces may be rejected by the gateway",
+    "Select multiple photos or add more. Refer to numbered angles, products and scenes without pinning the first frame. PNG/JPEG/WebP; up to 8 MB each, 32 MB total. Real faces may be rejected.",
+  referenceHintFirstFrame:
+    "This model supports one first-frame image. PNG/JPEG/WebP; up to 8 MB.",
+  referenceCount: "{used} / {max} reference images selected",
+  referenceCountExceeded:
+    "This model supports up to {max} references. Remove extra images before generating.",
+  referenceTotalTooLarge:
+    "References exceed 32 MB in total. Compress or remove some images.",
+  referencePromptChanged:
+    "References changed. Check image numbers in your edited prompt, or restore the template to update them automatically.",
   referenceMinSide: "Width and height must both be at least {n} px",
   referenceUnsupported: "This model does not support a reference image",
   referenceTooLarge: "Image is over 8 MB; please compress it first",
@@ -227,6 +307,42 @@ const EN: StudioMediaStrings = {
   videoStageSubmitted: "Submitted, queued",
   videoStageRunning: "Generating",
   videoStageDownloading: "Downloading video",
+  videoStageSaving: "Saving video",
+  videoDownloadTimeout:
+    "Download wait timed out. Check Works for a saved video before taking further action.",
+  videoWaitStopped: "Stopped waiting. Saved videos remain available in Works.",
+  worksAll: "All",
+  worksVideo: "Video",
+  worksImage: "Image",
+  worksFavorites: "Favorites",
+  worksFavorite: "Favorite",
+  worksUnfavorite: "Unfavorite",
+  worksDelete: "Delete work",
+  worksDeleteConfirm:
+    "This permanently deletes the local work and its files. Continue?",
+  worksCancel: "Cancel",
+  worksClose: "Close",
+  worksProcessing:
+    "Generating. You can switch features and will be notified when done.",
+  worksFailed: "Generation failed",
+  worksCancelled: "Waiting stopped. The upstream task may still incur charges",
+  worksInterrupted:
+    "Local waiting ended. The upstream task may still be running; avoid resubmitting.",
+  worksSuccess: "Completed",
+  worksMore: "Load more",
+  worksCompleteNotice:
+    "Your work is ready and saved. View it in the works list.",
+  worksView: "View works list",
+  worksPreviewFailed:
+    "Preview unavailable. Download or open with the system app.",
+  worksNoMatch: "No works match this filter",
+  worksTitle: "Works list",
+  worksDescription:
+    "Manage local images and videos, track generation, favorite and download.",
+  worksEmpty: "No works yet. Start creating in the AI marketing studio.",
+  worksLoadError: "Could not load saved works. Please refresh and try again.",
+  worksLoading: "Loading saved works…",
+  worksDownload: "Download / Save as",
   videoElapsed: "{secs} s elapsed",
   videoResultEmpty:
     "The generated video appears here and is saved on this computer; it usually takes a few minutes",

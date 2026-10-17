@@ -396,6 +396,7 @@ export interface We2aiPlaygroundChatRequest {
   temperature?: number;
   topP?: number;
   maxTokens?: number;
+  saveAsWork?: boolean;
 }
 
 /** 网关流式 usage；可能缺失（契约见方案【待联调】项），缺失时前端不显示。 */
@@ -450,8 +451,10 @@ export interface We2aiMediaCapabilities {
   resolutions: string[];
   maxN: number;
   supportsReference: boolean;
+  /** Absent on older backends: allow one reference only. */
+  maxReferenceImages?: number;
   supportsAudio: boolean;
-  /** 参考图（首帧）宽高下限，0 表示无要求（Seedance 为 300）。 */
+  /** 参考图宽高下限，0 表示无要求（Seedance 为 300）。 */
   minReferenceSide: number;
 }
 
@@ -467,7 +470,7 @@ export interface We2aiMediaModels<F extends string = string> {
   blockedReason: string | null;
 }
 
-/** 参考图（图生图 / 图生视频的首帧）：前端读本地文件后以 base64 提交。 */
+/** 参考图（图生图 / 图生视频）：前端读本地文件后以 base64 提交。 */
 export interface We2aiReferenceImage {
   mime: "image/png" | "image/jpeg" | "image/webp";
   dataBase64: string;
@@ -495,6 +498,7 @@ export interface We2aiVideoRequest {
   resolution?: string;
   generateAudio?: boolean;
   reference?: We2aiReferenceImage;
+  references?: We2aiReferenceImage[];
 }
 
 /** 落盘的媒体文件；图片带 data URL 供直接展示，视频只给路径。 */
@@ -513,7 +517,26 @@ export interface We2aiVideoOutcome {
   video: We2aiMediaFile;
 }
 
-export type We2aiVideoStage = "submitted" | "running" | "downloading";
+export type We2aiVideoStage =
+  | "submitted"
+  | "running"
+  | "downloading"
+  | "saving";
+
+export type We2aiWorkKind = "video" | "image" | "text";
+export interface We2aiStudioWork {
+  id: string;
+  name: string;
+  kind: We2aiWorkKind;
+  status: "processing" | "success" | "failed" | "cancelled" | "interrupted";
+  savedAtMs: number;
+  favorite: boolean;
+  model: string;
+  progress: number | null;
+  message: string | null;
+  files: We2aiMediaFile[];
+  content: string | null;
+}
 
 export interface We2aiVideoProgressEvent {
   requestId: string;
@@ -964,6 +987,7 @@ export const we2aiApi = {
     return await invoke("we2ai_playground_chat", {
       request: {
         requestId: request.requestId,
+        saveAsWork: request.saveAsWork ?? false,
         keyId: request.keyId,
         model: request.model,
         messages: request.messages,
@@ -1039,8 +1063,20 @@ export const we2aiApi = {
         resolution: request.resolution ?? null,
         generateAudio: request.generateAudio ?? null,
         reference: request.reference ?? null,
+        references: request.references ?? [],
       },
     });
+  },
+
+  async playgroundMediaList(): Promise<We2aiStudioWork[]> {
+    return await invoke("we2ai_playground_media_list");
+  },
+
+  async playgroundWorkUpdate(
+    id: string,
+    favorite: boolean | null,
+  ): Promise<void> {
+    await invoke("we2ai_playground_work_update", { id, favorite });
   },
 
   /** 另存为：弹系统保存对话框；返回目标路径，用户取消返回 null。 */
